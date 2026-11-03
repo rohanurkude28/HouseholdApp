@@ -1,0 +1,109 @@
+rules_version = '2';
+
+// Permissions are enforced here, not in the app UI. Kids can't read money data even with a modified app.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+
+    function memberPath(hid) {
+      return /databases/$(database)/documents/households/$(hid)/members/$(request.auth.uid);
+    }
+    function isMember(hid) { return signedIn() && exists(memberPath(hid)); }
+    function me(hid) { return get(memberPath(hid)).data; }
+    function isOwner(hid) { return isMember(hid) && me(hid).role == 'OWNER'; }
+    function hasModule(hid, module) { return isMember(hid) && me(hid).moduleAccess.get(module, false) == true; }
+
+    // Keep in sync with RolePolicy.kt
+    function defaultAccess(role) {
+      return {
+        'OWNER':  {'money': true,  'stock': true, 'medicine': true,  'plans': true,  'vault': true},
+        'ADULT':  {'money': true,  'stock': true, 'medicine': true,  'plans': true,  'vault': true},
+        'TEEN':   {'money': false, 'stock': true, 'medicine': false, 'plans': true,  'vault': false},
+        'KID':    {'money': false, 'stock': true, 'medicine': false, 'plans': true,  'vault': false},
+        'HELPER': {'money': false, 'stock': true, 'medicine': false, 'plans': false, 'vault': false}
+      }[role];
+    }
+
+    // Which permission module guards each household sub-collection. Unknown collections are denied.
+    function moduleOf(collection) {
+      return {
+        'transactions': 'money', 'budgets': 'money', 'transfers': 'money', 'credits': 'money', 'investments': 'money', 'trips': 'money', 'recurring': 'money', 'goals': 'money', 'paymentMethods': 'money',
+        'stock': 'stock', 'shopping': 'stock', 'recipes': 'stock', 'cookLog': 'stock',
+        'medicines': 'medicine',
+        'tasks': 'plans', 'events': 'plans', 'lists': 'plans', 'listItems': 'plans', 'weeklyGoals': 'plans', 'places': 'plans', 'dreams': 'plans', 'activities': 'plans', 'checkins': 'plans', 'wellPlans': 'plans', 'diary': 'plans',
+        'documents': 'vault', 'keptAt': 'vault'
+      }.get(collection, 'none');
+    }
+
+    // visibleTo: ["*"] = whole family; otherwise the uids allowed (restricted/private items).
+    function canSee(data) {
+      return data.createdBy == uid() || '*' in data.visibleTo || uid() in data.visibleTo;
+    }
+    // Medicines live in their own collection so a pantry query never has to touch them.
+    function canUse(hid, collection, data) {
+      return hasModule(hid, moduleOf(collection)) && canSee(data);
+    }
+
+    function isFounder(hid) {
+      return request.resource.data.role == 'OWNER'
+        && getAfter(/databases/$(database)/documents/households/$(hid)).data.createdBy == uid();
+    }
+    function validInvite(hid) {
+      let invite = get(/databases/$(database)/documents/invites/$(request.resource.data.inviteCode)).data;
+      return invite.householdId == hid
+        && invite.role == request.resource.data.role
+        && invite.role != 'OWNER'
+        && invite.expiresAt > request.time;
+    }
+
+    match /users/{userId} {
+      allow read, write: if signedIn() && uid() == userId;
+    }
+
+    // The 6-character code is the secret; anyone signed in may look one up.
+    // TODO before public launch: App Check + rate limiting to stop code guessing.
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow create: if isOwner(request.resource.data.householdId) && request.resource.data.role != 'OWNER';
+      allow delete: if isOwner(resource.data.householdId);
+    }
+
+    match /households/{hid} {
+      allow create: if signedIn() && request.resource.data.createdBy == uid();
+      allow read: if isMember(hid);
+      allow update: if isOwner(hid) && request.resource.data.createdBy == resource.data.createdBy;
+
+      match /members/{memberId} {
+        allow read: if isMember(hid);
+        // Joining: only yourself, only with the role's default access, either as founder or via a valid invite.
+        allow create: if signedIn() && memberId == uid()
+          && request.resource.data.moduleAccess == defaultAccess(request.resource.data.role)
+          && request.resource.data.restrictedCategories.size() == 0
+          && (isFounder(hid) || validInvite(hid));
+        allow update: if isOwner(hid) && memberId != uid();
+        allow delete: if isOwner(hid) || memberId == uid();
+      }
+
+      // What quick add has learned ("peanuts" = shopping). Words only, shared by every member.
+      match /phrases/{key} {
+        allow read: if isMember(hid);
+        allow write: if isMember(hid) && request.resource.data.keys().hasOnly(['kind', 'createdBy', 'visibleTo', 'updatedAt'])
+          && request.resource.data.kind is string && request.resource.data.kind.size() < 20;
+      }
+
+      // Note for list queries: rules aren't filters. Query with
+      // where("visibleTo", "array-contains-any", ["*", uid]) so every result is provably visible.
+      match /{collection}/{docId} {
+        // A missing document (e.g. the budget before it's first set) reads as "not found", not denied.
+        allow read: if (resource == null && hasModule(hid, moduleOf(collection))) || canUse(hid, collection, resource.data);
+        allow create: if request.resource.data.createdBy == uid() && canUse(hid, collection, request.resource.data);
+        allow update: if canUse(hid, collection, resource.data)
+          && request.resource.data.createdBy == resource.data.createdBy
+          && canUse(hid, collection, request.resource.data);
+        allow delete: if canUse(hid, collection, resource.data);
+      }
+    }
+  }
+}

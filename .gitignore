@@ -1,0 +1,19 @@
+*.iml
+.gradle/
+/local.properties
+/.idea/
+.DS_Store
+/build/
+/app/build/
+/captures
+.externalNativeBuild
+.cxx
+# Firebase config is per-developer; never commit it.
+/app/google-services.json
+.firebase/
+
+# Firebase emulator logs
+*-debug.log
+
+# Kotlin compiler caches
+.kotlin/
