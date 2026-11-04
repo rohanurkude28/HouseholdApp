@@ -12,6 +12,8 @@ import com.houseaffairs.app.core.model.Invite
 import com.houseaffairs.app.core.model.Member
 import com.houseaffairs.app.core.model.Role
 import com.houseaffairs.app.core.model.RolePolicy
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.filter
@@ -130,6 +132,31 @@ class HouseholdRepository @Inject constructor(
         ).await()
     }
 
+    /**
+     * Owner's "Reset everything": deletes every entry the owner can see, keeping the home, members,
+     * settings and connections. Other members' private items aren't visible to the owner, so they stay.
+     * Returns how many entries were removed.
+     */
+    suspend fun resetHousehold(householdId: String): Int {
+        val uid = requireUser().uid
+        // All collections at once: one after another took ~20 s on a phone connection.
+        return kotlinx.coroutines.coroutineScope {
+            DATA_COLLECTIONS.map { name ->
+                async {
+                    val col = household(householdId).collection(name)
+                    val shared = col.whereArrayContainsAny("visibleTo", listOf("*", uid)).get().await().documents
+                    val mine = col.whereEqualTo("createdBy", uid).get().await().documents
+                    val refs = (shared + mine).map { it.reference }.distinctBy { it.path }
+                    // Firestore batches take at most 500 writes.
+                    refs.chunked(450).forEach { chunk ->
+                        db.batch().apply { chunk.forEach(::delete) }.commit().await()
+                    }
+                    refs.size
+                }
+            }.awaitAll().sum()
+        }
+    }
+
     suspend fun setBaseCurrency(householdId: String, currency: String) {
         household(householdId).update("baseCurrency", currency).await()
     }
@@ -159,6 +186,14 @@ class HouseholdRepository @Inject constructor(
     }
 
     private companion object {
+        // Every entry collection; must match moduleOf() in firestore.rules.
+        val DATA_COLLECTIONS = listOf(
+            "transactions", "budgets", "transfers", "credits", "investments", "trips", "recurring", "goals", "paymentMethods",
+            "stock", "shopping", "recipes", "cookLog", "medicines",
+            "tasks", "events", "lists", "listItems", "weeklyGoals", "places", "dreams", "activities", "checkins", "wellPlans", "diary",
+            "documents", "keptAt",
+        )
+
         // No 0/O or 1/I so codes are easy to read aloud.
         const val CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     }

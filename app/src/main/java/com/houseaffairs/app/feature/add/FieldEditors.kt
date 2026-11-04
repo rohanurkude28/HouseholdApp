@@ -45,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.material.icons.outlined.Contacts
 import androidx.compose.ui.unit.dp
 import com.houseaffairs.app.core.data.Ingredient
 import com.houseaffairs.app.core.designsystem.Accent
@@ -103,13 +104,18 @@ private fun TextEditor(spec: TextSpec, value: String, onChange: (Any?) -> Unit, 
         label = { Text(spec.label) },
         placeholder = if (spec.placeholder.isNotEmpty()) ({ Text(spec.placeholder) }) else null,
         leadingIcon = if (spec.isLink) ({ Icon(Icons.Outlined.Link, contentDescription = null) }) else null,
+        trailingIcon = if (spec.isPhone) ({ ContactPickerButton(onChange) }) else null,
         singleLine = !spec.multiline,
         minLines = if (spec.multiline) 2 else 1,
         isError = showError,
         shape = MaterialTheme.shapes.medium,
         keyboardOptions = KeyboardOptions(
             capitalization = if (spec.isLink) KeyboardCapitalization.None else KeyboardCapitalization.Sentences,
-            keyboardType = if (spec.isLink) KeyboardType.Uri else KeyboardType.Text,
+            keyboardType = when {
+                spec.isLink -> KeyboardType.Uri
+                spec.isPhone -> KeyboardType.Phone
+                else -> KeyboardType.Text
+            },
         ),
         modifier = Modifier.fillMaxWidth(),
     )
@@ -381,4 +387,19 @@ private fun IngredientsEditor(value: List<Ingredient>, onChange: (Any?) -> Unit)
             Text("Add ingredient")
         }
     }
+}
+
+/** Opens the contacts app to pick one number; the picked row is readable without the contacts permission. */
+@Composable
+private fun ContactPickerButton(onChange: (Any?) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val launcher = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { result ->
+        val uri = result.data?.data ?: return@rememberLauncherForActivityResult
+        context.contentResolver.query(uri, arrayOf(android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER), null, null, null)?.use { c ->
+            if (c.moveToFirst()) onChange(c.getString(0))
+        }
+    }
+    androidx.compose.material3.IconButton(onClick = {
+        launcher.launch(android.content.Intent(android.content.Intent.ACTION_PICK, android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI))
+    }) { Icon(Icons.Outlined.Contacts, contentDescription = "Pick from contacts") }
 }

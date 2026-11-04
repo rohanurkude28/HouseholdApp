@@ -219,7 +219,7 @@ fun <T> LazyListScope.organizedSections(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    listOf(emoji, "${label(section.category)} · ${section.rows.size}").filter { it.isNotEmpty() }.joinToString("  "),
+                    listOf(emoji, "${label(section.category)} · ${section.rows.size} ${if (section.rows.size == 1) "item" else "items"}").filter { it.isNotEmpty() }.joinToString("  "),
                     style = MaterialTheme.typography.labelLarge,
                     color = color ?: MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),

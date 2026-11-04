@@ -453,7 +453,8 @@ private fun WeekNumbers(review: WeekReview) {
     fun minutes(kinds: Set<String>?, not: Set<String> = emptySet()) = w.activities.filter { (kinds == null || it.kind in kinds) && it.kind !in not }.sumOf { it.minutes }
     val walk = minutes(setOf("Walk", "Run", "Cycling"))
     val chores = minutes(setOf("Gardening", "Housework"))
-    val workout = minutes(null, setOf("Walk", "Run", "Cycling", "Gardening", "Housework"))
+    val workout = minutes(null, setOf("Walk", "Run", "Cycling", "Gardening", "Housework", "Study"))
+    val study = minutes(setOf("Study"))
     val together = w.meals.count { it.people >= 2 }
     val lines = buildList {
         add("🚶" to if (w.activities.isEmpty()) "No walks or workouts logged yet" else listOfNotNull(
@@ -461,6 +462,7 @@ private fun WeekNumbers(review: WeekReview) {
             workout.takeIf { it > 0 }?.let { "$it min workout" },
             chores.takeIf { it > 0 }?.let { "$it min chores & garden" },
         ).joinToString(" · "))
+        if (study > 0 || w.learned > 0) add("📖" to listOfNotNull(study.takeIf { it > 0 }?.let { "$it min studying" }, w.learned.takeIf { it > 0 }?.let { "$it finished on the Study list" }).joinToString(" · "))
         add("🍲" to if (w.meals.isEmpty()) "No home-cooked meals logged" else (if (w.meals.size == 1) "1 home-cooked meal" else "${w.meals.size} home-cooked meals") + if (together > 0) ", $together with family" else "")
         add("✅" to when {
             w.tasksDone == 0 && w.tasksOverdue == 0 -> "No tasks of yours this week"

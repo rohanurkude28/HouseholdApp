@@ -20,3 +20,12 @@
 
 # Built APKs shared for testing
 *.apk
+
+# iOS: generated Xcode project, per-developer Firebase config, build output
+/iosApp/iosApp.xcodeproj/
+/iosApp/iosApp/GoogleService-Info.plist
+/composeApp/build/
+/shared/build/
+xcuserdata/
+DerivedData/
+/iosApp/iosApp/Info.plist

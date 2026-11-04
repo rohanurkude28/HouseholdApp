@@ -49,7 +49,7 @@ val DREAM_KINDS = linkedMapOf(
     // Savings goals that aren't a purchase: an emergency fund, festivals, a rainy day.
     "Savings" to "🐷", "Emergency" to "🛟", "Festival" to "🪔", "Other" to "⭐",
 )
-val ACTIVITY_KINDS = listOf("Walk", "Run", "Cycling", "Yoga", "Gym", "Sports", "Swim", "Dance", "Gardening", "Housework")
+val ACTIVITY_KINDS = listOf("Walk", "Run", "Cycling", "Yoga", "Gym", "Sports", "Swim", "Dance", "Gardening", "Housework", "Study")
 val PLACE_KINDS = listOf("Restaurant", "Café", "Grocery", "Pharmacy", "Doctor", "Hospital", "Market", "Mall", "Salon", "Service", "Other")
 val INVESTMENT_KINDS = listOf("Fixed deposit", "Mutual fund", "Recurring deposit", "Savings account", "Gold", "Stocks", "PPF", "Other")
 val CREDIT_KINDS = listOf("Gift card", "Card points", "Coupon", "Cashback", "Voucher")
@@ -126,8 +126,9 @@ enum class EntryType(
             MoneySpec("cost", "Cost (adds to budget)", required = false, essential = false),
             TextSpec("store", "Bought at", essential = false),
             LevelSpec("level", "How much is left", "% left"),
-            ChoiceSpec("flavours", "Taste", FLAVOURS, multi = true, allowCustom = true, essential = false),
-            ChoiceSpec("rating", "Was it good?", RATING, essential = false),
+            // Feeds "what to cook" moods and the shopping list's "Last time: Amul 👍".
+            ChoiceSpec("flavours", "Taste (for snacks and treats)", FLAVOURS, multi = true, allowCustom = true, essential = false),
+            ChoiceSpec("rating", "Was this brand good?", RATING, essential = false),
             ChoiceSpec("restock", "Remind to restock", RESTOCK, essential = false),
         ),
     ),
@@ -171,6 +172,9 @@ enum class EntryType(
             MembersSpec("assignee", "Who", multi = false),
             DateSpec("due", "Due"),
             ChoiceSpec("priority", "Priority", TASK_PRIORITIES),
+            // "Call mom" / "message Ravi": the task row opens the dialer, WhatsApp or SMS with this number.
+            ChoiceSpec("reach", "Reach them by", listOf("Call", "WhatsApp", "SMS"), visibleWhen = { it["reach"] != null || com.houseaffairs.app.feature.quickadd.reachOf(it["title"] as? String ?: "") != null }),
+            TextSpec("phone", "Their number", "Pick a contact or type it", isPhone = true, visibleWhen = { it["reach"] != null }),
             ChoiceSpec("repeat", "Repeat", listOf("Never", "Daily", "Weekly", "Monthly"), essential = false),
             // A chore rota: each time it's done, the next one goes to the next person.
             MembersSpec("rotation", "Take turns", essential = false, visibleWhen = { (it["repeat"] as? String).let { r -> r != null && r != "Never" } }),
