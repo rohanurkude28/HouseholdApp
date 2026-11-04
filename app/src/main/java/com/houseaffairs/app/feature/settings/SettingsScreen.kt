@@ -2,6 +2,7 @@ package com.houseaffairs.app.feature.settings
 
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.material.icons.outlined.Event
@@ -100,6 +101,8 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
     val state by viewModel.state.collectAsStateWithLifecycle()
     var showCurrencyPicker by remember { mutableStateOf(false) }
     var showInviteRolePicker by remember { mutableStateOf(false) }
+    var showReset by remember { mutableStateOf(false) }
+    var resetNote by remember { mutableStateOf<String?>(null) }
     val me = state.members.firstOrNull { it.uid == state.myUid }
     val colors = LocalHouseColors.current
 
@@ -230,7 +233,13 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
         item { SectionHeader("Account") }
         item {
             SettingsGroup {
-                SettingsRow(Icons.AutoMirrored.Outlined.Logout, Accent(MaterialTheme.colorScheme.error, MaterialTheme.colorScheme.error.copy(alpha = 0.12f)), "Sign out", null, onClick = viewModel::signOut)
+                val danger = Accent(MaterialTheme.colorScheme.error, MaterialTheme.colorScheme.error.copy(alpha = 0.12f))
+                if (state.isOwner) {
+                    SettingsRow(Icons.Outlined.DeleteForever, danger, "Reset everything", resetNote ?: "Start fresh: clears all lists and entries for the family") {
+                        showReset = true
+                    }
+                }
+                SettingsRow(Icons.AutoMirrored.Outlined.Logout, danger, "Sign out", null, onClick = viewModel::signOut)
             }
         }
     }
@@ -252,6 +261,16 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
                 showInviteRolePicker = false
             },
             onDismiss = { showInviteRolePicker = false },
+        )
+    }
+    if (showReset) {
+        ResetDialog(
+            onReset = {
+                showReset = false
+                resetNote = "Clearing…"
+                viewModel.resetEverything { n -> resetNote = "Cleared $n entries" }
+            },
+            onDismiss = { showReset = false },
         )
     }
     state.inviteCode?.let { code -> InviteCodeDialog(code, onDismiss = viewModel::dismissInvite) }
@@ -311,6 +330,30 @@ private fun MemberRow(member: Member, isMe: Boolean, canEdit: Boolean, onRoleCha
         } else {
             null
         },
+    )
+}
+
+/** No undo for this one, so it asks the owner to type RESET first. */
+@Composable
+private fun ResetDialog(onReset: () -> Unit, onDismiss: () -> Unit) {
+    var typed by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Reset everything?") },
+        text = {
+            Column {
+                Text("This deletes all money, kitchen, medicine, plans and things entries for the whole family. The home, members, settings and connections stay. It can't be undone.")
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(value = typed, onValueChange = { typed = it }, singleLine = true, label = { Text("Type RESET to confirm") })
+            }
+        },
+        confirmButton = {
+            val ready = typed.trim().equals("RESET", ignoreCase = true)
+            TextButton(onClick = onReset, enabled = ready) {
+                Text("Reset", color = if (ready) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f))
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 

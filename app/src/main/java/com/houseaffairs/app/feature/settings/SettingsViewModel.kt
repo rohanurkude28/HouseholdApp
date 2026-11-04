@@ -190,6 +190,11 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { settings.setNotificationPrefs(prefs) }
     }
 
+    /** Owner only: wipes the family's entries, keeping the home and its members. */
+    fun resetEverything(onDone: (Int) -> Unit) {
+        withHousehold { hid -> onDone(households.resetHousehold(hid)) }
+    }
+
     fun signOut() {
         viewModelScope.launch { auth.signOut() }
     }

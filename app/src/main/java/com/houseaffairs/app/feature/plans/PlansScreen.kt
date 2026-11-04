@@ -279,6 +279,7 @@ fun PlansScreen(
                         Spacer(Modifier.width(4.dp))
                         Text(task.title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
                         PriorityTag(task.priority)
+                        task.reach?.let { com.houseaffairs.app.core.ui.ReachButton(it, task.phone, task.title) }
                         task.dueDate?.let { Text(formatDate(it), style = MaterialTheme.typography.labelLarge, color = plans.color) }
                     }
                 }

@@ -19,7 +19,7 @@ enum class DiaryKind { ACTIVITY, MEAL, TASK, EVENT, TRIP }
 
 private val ACTIVITY_EMOJI = mapOf(
     "Walk" to "🚶", "Run" to "🏃", "Cycling" to "🚴", "Yoga" to "🧘", "Gym" to "🏋️", "Sports" to "⚽",
-    "Swim" to "🏊", "Dance" to "💃", "Gardening" to "🌱", "Housework" to "🧹",
+    "Swim" to "🏊", "Dance" to "💃", "Gardening" to "🌱", "Housework" to "🧹", "Study" to "📖",
 )
 
 /** Something that happened that day, picked up from what was logged. */
@@ -131,6 +131,15 @@ class WeeklyRepository @Inject constructor(
         fun DocumentSnapshot.completed() = getTimestamp("completedAt")?.toDate()?.toInstant()?.atZone(ZoneId.systemDefault())?.toLocalDate()
         val doneTasks = tasks.filter { it.getBoolean("done") == true && inWeek(it.completed()) }
         val overdue = tasks.count { it.getBoolean("done") != true && it.localDate("due")?.isBefore(to) == true }
+        // Study items I added and finished this week; marking done stamps updatedAt.
+        val learned = if (me.canAccess(AppModule.PLANS)) {
+            visible(householdId, "listItems", uid).count { d ->
+                d.getString("template") == com.houseaffairs.app.feature.quickadd.ListTemplate.STUDY.label && d.getString("status") == "DONE" &&
+                    d.getString("createdBy") == uid && inWeek(d.getTimestamp("updatedAt")?.toDate()?.toInstant()?.atZone(ZoneId.systemDefault())?.toLocalDate())
+            }
+        } else {
+            0
+        }
 
         val tripDocs = if (me.canAccess(AppModule.MONEY)) {
             visible(householdId, "trips", uid).filter { d ->
@@ -186,7 +195,7 @@ class WeeklyRepository @Inject constructor(
             meals, activities, dining, allowance, doneTasks.size, overdue,
             togetherEvents = tripDocs.size + eventDocs.size,
             savedToDreamsMinor = saved, wasted = wasted, checkIn = check,
-            days = dates.size, diaryDays = diary.count { it.note != null },
+            days = dates.size, diaryDays = diary.count { it.note != null }, learned = learned,
         )
         val plan = loadPlan(householdId, uid)
         return WeekReview(liveWell(data, plan), data, spent, currency, activities.sumOf { it.minutes }, plan, counts, from, diary, me.canAccess(AppModule.STOCK), todayMacros)
@@ -215,6 +224,7 @@ class WeeklyRepository @Inject constructor(
             commitments = Pillar.entries.associateWith { p -> (raw?.get(p.name) as? List<*>).orEmpty().filterIsInstance<String>() },
             walkMinutes = d.getLong("walkMinutes")?.toInt() ?: 150,
             workoutMinutes = d.getLong("workoutMinutes")?.toInt() ?: 90,
+            studyMinutes = d.getLong("studyMinutes")?.toInt() ?: 0,
             homeMeals = d.getLong("homeMeals")?.toInt() ?: 7,
             familyMeals = d.getLong("familyMeals")?.toInt() ?: 5,
             macros = (d.get("macros") as? Map<*, *>)?.let { m ->
@@ -240,7 +250,7 @@ class WeeklyRepository @Inject constructor(
         col(householdId, "wellPlans").document(uid).set(
             mapOf(
                 "commitments" to plan.commitments.mapKeys { it.key.name },
-                "walkMinutes" to plan.walkMinutes, "workoutMinutes" to plan.workoutMinutes,
+                "walkMinutes" to plan.walkMinutes, "workoutMinutes" to plan.workoutMinutes, "studyMinutes" to plan.studyMinutes,
                 "homeMeals" to plan.homeMeals, "familyMeals" to plan.familyMeals,
                 "macros" to mapOf("protein" to plan.macros.protein, "carbs" to plan.macros.carbs, "fat" to plan.macros.fat, "fibre" to plan.macros.fibre),
                 "custom" to plan.custom.map { mapOf("name" to it.name, "pillar" to it.pillar.name, "perWeek" to it.perWeek) },

@@ -34,6 +34,8 @@ data class TextSpec(
     val placeholder: String = "",
     val multiline: Boolean = false,
     val isLink: Boolean = false,
+    /** A phone number: number keyboard plus a button to pick from contacts. */
+    val isPhone: Boolean = false,
     override val required: Boolean = false,
     override val essential: Boolean = true,
     override val visibleWhen: (FormValues) -> Boolean = { true },

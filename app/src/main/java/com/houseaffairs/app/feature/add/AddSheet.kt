@@ -260,6 +260,9 @@ private fun Picker(
                 suggestion, blocked,
                 thinking = state.thinking,
                 canAskAi = state.canAskAi,
+                hits = state.mediaHits,
+                chosen = state.chosenHit,
+                onPick = viewModel::pickHit,
                 onKind = viewModel::changeKind,
                 onAskAi = { viewModel.askAssistant() },
                 onEdit = viewModel::editSuggestion,
@@ -310,6 +313,9 @@ private fun SuggestionCard(
     blocked: Boolean,
     thinking: Boolean,
     canAskAi: Boolean,
+    hits: List<com.houseaffairs.app.core.data.MediaHit> = emptyList(),
+    chosen: com.houseaffairs.app.core.data.MediaHit? = null,
+    onPick: (com.houseaffairs.app.core.data.MediaHit) -> Unit = {},
     onKind: (LineKind) -> Unit,
     onAskAi: () -> Unit,
     onEdit: () -> Unit,
@@ -340,6 +346,37 @@ private fun SuggestionCard(
                     suggestion.unsure -> "Not sure what this is"
                     else -> null
                 }?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = accent.color) }
+            }
+        }
+        // Movies, books and songs: the exact title with its poster, from what was typed or said.
+        if (hits.isNotEmpty() && !blocked) {
+            Spacer(Modifier.height(10.dp))
+            Text(if (chosen == null) "Did you mean…?" else "Picked · tap again to undo", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(6.dp))
+            androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(hits.size) { i ->
+                    val h = hits[i]
+                    val on = chosen == h
+                    Column(
+                        Modifier
+                            .width(84.dp)
+                            .clip(MaterialTheme.shapes.small)
+                            .then(if (on) Modifier.background(accent.color.copy(alpha = 0.18f)) else Modifier)
+                            .clickable(onClickLabel = "Pick ${h.title}") { onPick(h) }
+                            .padding(4.dp),
+                    ) {
+                        Box(Modifier.size(width = 76.dp, height = 108.dp).clip(MaterialTheme.shapes.small).background(MaterialTheme.colorScheme.surfaceContainerHighest)) {
+                            if (h.poster != null) {
+                                coil.compose.AsyncImage(model = h.poster, contentDescription = h.title, contentScale = androidx.compose.ui.layout.ContentScale.Crop, modifier = Modifier.matchParentSize())
+                            } else {
+                                Text(h.kind.take(1), style = MaterialTheme.typography.titleLarge, modifier = Modifier.align(Alignment.Center))
+                            }
+                            if (on) Text("✓", color = Color.White, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).clip(CircleShape).background(accent.color).padding(horizontal = 6.dp))
+                        }
+                        Text(h.title, style = MaterialTheme.typography.labelMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(listOfNotNull(h.year, h.kind).joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             }
         }
         // An unsure line: one tap to say what it really is. The whole family's quick add learns it.
