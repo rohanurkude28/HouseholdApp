@@ -52,7 +52,8 @@ val PLACE_KINDS = listOf("Restaurant", "Café", "Grocery", "Pharmacy", "Doctor",
 val INVESTMENT_KINDS = listOf("Fixed deposit", "Mutual fund", "Recurring deposit", "Savings account", "Gold", "Stocks", "PPF", "Other")
 val CREDIT_KINDS = listOf("Gift card", "Card points", "Coupon", "Cashback", "Voucher")
 
-private fun template(values: FormValues) = values["template"] as? String
+/** The list a wish is on; older items stored the name ("WATCH") rather than the label, and both work. */
+private fun template(values: FormValues) = ListTemplate.of(values["template"] as? String)
 
 /** Everything that can be added. Each kind is a collection plus the fields its form shows. */
 enum class EntryType(
@@ -194,20 +195,21 @@ enum class EntryType(
             TextSpec("title", "What", "Dune 2, Bali, a new sofa…", required = true),
             ChoiceSpec(
                 "platform", "Where to watch", listOf("Theatre", "Netflix", "Prime Video", "Hotstar", "YouTube", "Other"),
-                visibleWhen = { template(it) == ListTemplate.WATCH.label },
+                visibleWhen = { template(it) == ListTemplate.WATCH },
             ),
             TextSpec(
                 "creator", "By", "Author or artist",
-                visibleWhen = { template(it) in setOf(ListTemplate.BOOKS.label, ListTemplate.MUSIC.label) }, essential = false,
+                visibleWhen = { template(it) in setOf(ListTemplate.BOOKS, ListTemplate.MUSIC) }, essential = false,
             ),
-            TextSpec("place", "Where", "City, restaurant, store", visibleWhen = { template(it) in setOf(ListTemplate.TRAVEL.label, ListTemplate.EAT_OUT.label) }),
-            MembersSpec("forWhom", "For", visibleWhen = { template(it) == ListTemplate.GIFTS.label }),
+            TextSpec("place", "Where", "City, restaurant, store", visibleWhen = { template(it) in setOf(ListTemplate.TRAVEL, ListTemplate.EAT_OUT) }),
+            MembersSpec("forWhom", "For", visibleWhen = { template(it) == ListTemplate.GIFTS }),
             // Links the gift to a birthday or anniversary, which then shows "🎁 2 gift ideas".
-            ChoiceSpec("event", "For the occasion", emptyList(), dynamicOptions = "events", hideWithoutDynamic = true, visibleWhen = { template(it) == ListTemplate.GIFTS.label }),
+            ChoiceSpec("event", "For the occasion", emptyList(), dynamicOptions = "events", hideWithoutDynamic = true, visibleWhen = { template(it) == ListTemplate.GIFTS }),
             TextSpec("link", "Link", "Instagram reel, website…", isLink = true, essential = false),
-            TextSpec("thingsToTry", "Things to try or buy there", multiline = true, essential = false, visibleWhen = { template(it) in setOf(ListTemplate.TRAVEL.label, ListTemplate.EAT_OUT.label) }),
-            MoneySpec("budget", "Rough budget", required = false, essential = false),
-            DateSpec("targetDate", "By when", essential = false),
+            TextSpec("thingsToTry", "Things to try or buy there", multiline = true, essential = false, visibleWhen = { template(it) in setOf(ListTemplate.TRAVEL, ListTemplate.EAT_OUT) }),
+            // Movies, books and music don't need a budget or a deadline; trips, buys and gifts do.
+            MoneySpec("budget", "Rough budget", required = false, essential = false, visibleWhen = { template(it)?.isMedia != true }),
+            DateSpec("targetDate", "By when", essential = false, visibleWhen = { template(it)?.isMedia != true }),
             TextSpec("note", "Note", multiline = true, essential = false),
         ),
     ),

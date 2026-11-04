@@ -462,9 +462,11 @@ class HomeViewModel @Inject constructor(
 
     fun markWatched(id: String, onDone: (com.houseaffairs.app.feature.add.SavedEntry) -> Unit) {
         val r = session.state.value as? SessionState.Ready ?: return
-        val title = state.value.watch.firstOrNull { it.id == id }?.title ?: "Item"
+        val item = state.value.watch.firstOrNull { it.id == id }
         val undo = watchRepo.markWatched(r.household.id, id)
-        onDone(com.houseaffairs.app.feature.add.SavedEntry("$title · done") { undo() })
+        // "Dune 2 · marked watched", so it's clear what the ✓ did.
+        val what = item?.template?.markLabel?.replaceFirstChar { it.lowercase() }?.replace("mark ", "marked ") ?: "done"
+        onDone(com.houseaffairs.app.feature.add.SavedEntry("${item?.title ?: "Item"} · $what") { undo() })
     }
 
     fun toggleHideAmounts() {

@@ -1,5 +1,7 @@
 package com.houseaffairs.app.feature.home
 
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.layout.WindowInsets
@@ -1139,6 +1141,20 @@ private fun WatchRow(watch: List<WatchItem>, why: Map<String, String>, onWatched
                             modifier = Modifier.align(Alignment.TopStart).padding(8.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.55f)).padding(horizontal = 8.dp, vertical = 3.dp),
                         )
                     }
+                    // A round ✓ on the poster: tap once it's watched (read, heard); Undo is in the snackbar.
+                    Box(
+                        Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(6.dp)
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.6f))
+                            .clickable(onClickLabel = w.template.markLabel) { onWatched(w.id) }
+                            .semantics { contentDescription = "${w.template.markLabel}: ${w.title}" },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Outlined.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                    }
                 }
                 Spacer(Modifier.height(8.dp))
                 Text(w.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1148,7 +1164,7 @@ private fun WatchRow(watch: List<WatchItem>, why: Map<String, String>, onWatched
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                // Always one line, so the "Mark watched" buttons line up across posters.
+                // Always one line, so the cards are the same height across posters.
                 Text(
                     w.whereToWatch?.let { "▶ $it" } ?: " ",
                     style = MaterialTheme.typography.labelMedium,
@@ -1156,15 +1172,6 @@ private fun WatchRow(watch: List<WatchItem>, why: Map<String, String>, onWatched
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                // An empty circle and a verb, like every other tick in the app, so it reads as "tap when done".
-                Row(
-                    Modifier.padding(top = 6.dp).clip(CircleShape).clickable { onWatched(w.id) }.padding(end = 8.dp, top = 4.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    TickCircle(LocalHouseColors.current.vault.color, onTick = { onWatched(w.id) }, size = 20.dp, contentDescription = "${w.template.markLabel}: ${w.title}")
-                    Spacer(Modifier.width(6.dp))
-                    Text(w.template.markLabel, style = MaterialTheme.typography.labelMedium, color = LocalHouseColors.current.vault.color, maxLines = 1, softWrap = false)
-                }
             }
         }
     }

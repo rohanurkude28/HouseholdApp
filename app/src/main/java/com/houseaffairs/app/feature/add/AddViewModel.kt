@@ -1045,6 +1045,10 @@ class AddViewModel @Inject constructor(
 
     fun backToPicker() = local.update { it.copy(form = null) }
 
+    /** Older list items saved the list's name ("WATCH"); the form's chips use the label ("Watch together"). */
+    private fun listLabel(values: FormValues): FormValues =
+        (values["template"] as? String)?.let { ListTemplate.of(it)?.label }?.let { mapOf("template" to it) } ?: emptyMap()
+
     /** Opens an existing entry in its form for editing. */
     fun openEdit(type: EntryType, id: String, adjust: (FormValues) -> FormValues = { it }) {
         val r = ctx ?: return
@@ -1059,7 +1063,7 @@ class AddViewModel @Inject constructor(
                 it.copy(
                     form = FormState(
                         type = type,
-                        values = adjust(type.defaults(r.user.uid, r.household.baseCurrency) + values),
+                        values = adjust(type.defaults(r.user.uid, r.household.baseCurrency) + values + listLabel(values)),
                         showMore = true,
                         whoCanSee = who,
                         visibleMembers = visibleTo.filter { v -> v != r.user.uid && v != Visibility.EVERYONE },
