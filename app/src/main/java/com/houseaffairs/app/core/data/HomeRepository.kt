@@ -46,6 +46,8 @@ data class TaskItem(
     val repeat: String? = null,
     /** People who take turns, in order; empty when it isn't a rota. */
     val rotation: List<String> = emptyList(),
+    /** "High", "Medium" or "Low" (also for older tasks with none, or "Normal" = Medium). */
+    val priority: String = "Low",
 )
 
 data class StockItem(val id: String, val title: String, val expiry: LocalDate?, val level: Int?)
@@ -65,7 +67,7 @@ data class Renewal(
     fun pending(today: LocalDate): Boolean = !next.isAfter(today)
 }
 
-data class EventItem(val id: String, val title: String, val kind: String, val next: LocalDate, val remindDays: Int? = null)
+data class EventItem(val id: String, val title: String, val kind: String, val next: LocalDate, val remindDays: Int? = null, val repeat: String? = null)
 
 /** The form's "Remind" choice as days before; NO_REMINDER switches it off; null = default. */
 const val NO_REMINDER = -1
@@ -152,9 +154,11 @@ class HomeRepository @Inject constructor(
                             it.id, it.titleOr("title"), it.localDate("due"), it.getString("assignee"), remindDaysOf(it.getString("remind")),
                             repeat = it.getString("repeat")?.takeIf { r -> r != "Never" },
                             rotation = (it.get("rotation") as? List<*>).orEmpty().filterIsInstance<String>(),
+                            priority = when (it.getString("priority")) { "High" -> "High"; "Medium", "Normal" -> "Medium"; else -> "Low" },
                         )
                     }
-                    .sortedWith(compareBy(nullsLast<LocalDate>()) { it.dueDate }),
+                    // Soonest first; on the same day, High before Medium before Low.
+                    .sortedWith(compareBy<TaskItem, LocalDate?>(nullsLast()) { it.dueDate }.thenBy { listOf("High", "Medium", "Low").indexOf(it.priority) }),
                 pantry = stockDocs.filter { it.getString("status") != "USED_UP" }.map(::stockItem),
                 medicines = medicineDocs.filter { it.getString("status") != "USED_UP" }.map(::stockItem),
                 renewals = recurringDocs.mapNotNull { doc ->
@@ -169,7 +173,7 @@ class HomeRepository @Inject constructor(
                 }.sortedBy { it.next },
                 events = eventDocs.mapNotNull { doc ->
                     val date = doc.localDate("date") ?: return@mapNotNull null
-                    EventItem(doc.id, doc.titleOr("title"), doc.getString("kind") ?: "Event", nextOccurrence(date, doc.getString("repeat"), today), remindDaysOf(doc.getString("remind")))
+                    EventItem(doc.id, doc.titleOr("title"), doc.getString("kind") ?: "Event", nextOccurrence(date, doc.getString("repeat"), today), remindDaysOf(doc.getString("remind")), doc.getString("repeat"))
                 }.filter { !it.next.isBefore(today) }.sortedBy { it.next },
                 recent = (
                     expenseDocs.map { it.toActivity(ActivityKind.EXPENSE, it.getString("merchant") ?: it.getString("category").orEmpty()) } +

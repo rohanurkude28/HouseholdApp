@@ -40,6 +40,8 @@ private val RESTOCK = listOf("Off", "When it's low", "Every week", "Every month"
 private val FLAVOURS = listOf("Sweet", "Spicy", "Tangy", "Crispy", "Savoury", "Healthy")
 private val RATING = listOf("👍 Liked it", "👎 Not great")
 private val PRIORITY = listOf("Low", "Normal", "High")
+/** Task priority, most urgent first; a task without one is Low. */
+val TASK_PRIORITIES = listOf("High", "Medium", "Low")
 
 val DREAM_KINDS = linkedMapOf(
     "Travel" to "✈️", "Car" to "🚗", "Home" to "🏡", "Gadget" to "📱",
@@ -168,7 +170,7 @@ enum class EntryType(
             TextSpec("title", "What needs doing", "Pay rent, call plumber…", required = true),
             MembersSpec("assignee", "Who", multi = false),
             DateSpec("due", "Due"),
-            ChoiceSpec("priority", "Priority", PRIORITY, essential = false),
+            ChoiceSpec("priority", "Priority", TASK_PRIORITIES),
             ChoiceSpec("repeat", "Repeat", listOf("Never", "Daily", "Weekly", "Monthly"), essential = false),
             // A chore rota: each time it's done, the next one goes to the next person.
             MembersSpec("rotation", "Take turns", essential = false, visibleWhen = { (it["repeat"] as? String).let { r -> r != null && r != "Never" } }),
@@ -193,9 +195,16 @@ enum class EntryType(
         listOf(
             ChoiceSpec("template", "List", ListTemplate.entries.map { it.label }, required = true),
             TextSpec("title", "What", "Dune 2, Bali, a new sofa…", required = true),
+            // Set by hand, it wins over anything looked up online, so no TMDB key is needed.
             ChoiceSpec(
-                "platform", "Where to watch", listOf("Theatre", "Netflix", "Prime Video", "Hotstar", "YouTube", "Other"),
+                "platform", "Where to watch", listOf("Netflix", "Prime Video", "Hotstar", "SonyLIV", "Zee5", "YouTube", "Theatre"),
+                allowCustom = true,
                 visibleWhen = { template(it) == ListTemplate.WATCH },
+            ),
+            ChoiceSpec(
+                "platform", "Listen on", listOf("YouTube Music", "Spotify", "JioSaavn", "Apple Music"),
+                allowCustom = true,
+                visibleWhen = { template(it) == ListTemplate.MUSIC },
             ),
             TextSpec(
                 "creator", "By", "Author or artist",
@@ -366,7 +375,10 @@ enum class EntryType(
                 put("remind", "1 day before")
             }
             GROCERY -> put("level", 100)
-            TASK -> put("assignee", listOf(myUid))
+            TASK -> {
+                put("assignee", listOf(myUid))
+                put("priority", "Low")
+            }
             EVENT -> {
                 put("kind", "Birthday")
                 put("repeat", "Yearly")

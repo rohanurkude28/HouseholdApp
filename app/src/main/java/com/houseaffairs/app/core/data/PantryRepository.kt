@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.tasks.await
+import java.time.LocalDate
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -25,6 +26,11 @@ data class Recipe(
     /** Per serving, as "protein · carbs · fat · fibre" in grams ("25g · 30g · 12g · 4g"); approximate for library dishes. */
     val macros: String? = null,
 )
+
+/** What ticking a shopping item off did: the pantry item it filled, and how to undo it. */
+class Bought(val stockId: String, val unit: String, val undo: () -> Unit) {
+    operator fun invoke() = undo()
+}
 
 data class ShoppingEntry(val id: String, val title: String, val amount: Double?, val unit: String?, val aisleChoice: String? = null) {
     val aisle: Aisle get() = Aisle.from(aisleChoice) ?: aisleOf(title)
@@ -61,7 +67,10 @@ class PantryRepository @Inject constructor(
     /** "Used one": a supply goes down by one unit; the last one moves it to the shopping list. */
     fun useOne(householdId: String, uid: String, stock: PantryStock, openShopping: List<String>) {
         val left = ((stock.amount ?: 1.0) - 1).coerceAtLeast(0.0)
-        if (left <= 0.0) return usedUp(householdId, uid, stock, openShopping)
+        if (left <= 0.0) {
+            usedUp(householdId, uid, stock, openShopping)
+            return
+        }
         collection(householdId, "stock").document(stock.id).update(
             mapOf(
                 "quantity" to mapOf("amount" to left, "unit" to stock.unit),
@@ -184,7 +193,7 @@ class PantryRepository @Inject constructor(
      * (say 50 g of paneer left), it's topped up by the usual pack size instead of duplicated.
      */
     /** Ticks a shopping item off into the pantry; the returned undo puts both back as they were. */
-    suspend fun markBought(householdId: String, uid: String, shoppingId: String): () -> Unit {
+    suspend fun markBought(householdId: String, uid: String, shoppingId: String): Bought {
         val ref = collection(householdId, "shopping").document(shoppingId)
         val item = toShopping(ref.get().await())
         val existing = visible(householdId, "stock", uid).get().await().documents
@@ -194,6 +203,8 @@ class PantryRepository @Inject constructor(
         val batch = db.batch()
         batch.update(ref, mapOf("done" to true, "boughtAt" to FieldValue.serverTimestamp()))
         var restore: (com.google.firebase.firestore.WriteBatch) -> Unit = {}
+        var stockId = existing?.id.orEmpty()
+        var unit = existing?.unit ?: item.unit ?: naturalUnit(item.title)
         if (existing != null) {
             val before = mapOf(
                 "quantity" to mapOf("amount" to existing.amount, "unit" to existing.unit),
@@ -201,7 +212,7 @@ class PantryRepository @Inject constructor(
                 "expiry" to existing.expiry?.let { com.google.firebase.Timestamp(java.util.Date.from(it.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant())) },
             )
             restore = { it.update(collection(householdId, "stock").document(existing.id), before) }
-            val added = item.amount?.let { convert(it, item.unit ?: existing.unit, existing.unit) } ?: existing.initialAmount ?: 1.0
+            val added = item.amount?.let { convertFor(item.title, it, item.unit ?: existing.unit, existing.unit) } ?: existing.initialAmount ?: 1.0
             val total = (existing.amount ?: 0.0) + added
             batch.update(
                 collection(householdId, "stock").document(existing.id),
@@ -215,21 +226,23 @@ class PantryRepository @Inject constructor(
             )
         } else {
             val added = collection(householdId, "stock").document()
+            stockId = added.id
             restore = { it.delete(added) }
             batch.set(
                 added,
                 common(uid, "shopping") + mapOf(
                     "type" to "GROCERY",
                     "title" to item.title,
-                    "quantity" to mapOf("amount" to (item.amount ?: 1.0), "unit" to (item.unit ?: "pcs")),
-                    "initialAmount" to (item.amount ?: 1.0),
+                    // No amount said: leave it unknown (the follow-up asks) rather than "1 pc" of paneer.
+                    "quantity" to mapOf("amount" to item.amount, "unit" to unit),
+                    "initialAmount" to item.amount,
                     "level" to 100,
                     "status" to "IN_STOCK",
                 ),
             )
         }
         batch.commit()
-        return {
+        return Bought(stockId, unit) {
             val undo = db.batch()
             undo.update(ref, mapOf("done" to false, "boughtAt" to FieldValue.delete()))
             restore(undo)
@@ -264,14 +277,31 @@ class PantryRepository @Inject constructor(
         return { ref.delete() }
     }
 
-    /** "It's finished": out of the pantry, onto the shopping list. */
-    fun usedUp(householdId: String, uid: String, stock: PantryStock, openShopping: List<String>) {
+    /**
+     * "It's finished": out of the pantry (or the medicine cabinet), onto the shopping list.
+     * Returns the shopping item it added, if any, so "don't buy again" can take it off.
+     */
+    fun usedUp(householdId: String, uid: String, stock: PantryStock, openShopping: List<String>, from: String = "stock"): String? {
         val batch = db.batch()
-        batch.update(collection(householdId, "stock").document(stock.id), mapOf("status" to "USED_UP", "level" to 0))
-        if (openShopping.none { sameIngredient(it, stock.title) }) {
-            batch.set(collection(householdId, "shopping").document(), common(uid, "pantry") + mapOf("title" to stock.title, "done" to false))
-        }
+        batch.update(collection(householdId, from).document(stock.id), mapOf("status" to "USED_UP", "level" to 0))
+        val added = if (openShopping.none { sameIngredient(it, stock.title) }) collection(householdId, "shopping").document() else null
+        added?.let { batch.set(it, common(uid, "pantry") + mapOf("title" to stock.title, "done" to false)) }
         batch.commit()
+        return added?.id
+    }
+
+    /** "Don't buy again" after finishing something: takes it back off the shopping list. */
+    fun removeFromShopping(householdId: String, shoppingId: String) {
+        collection(householdId, "shopping").document(shoppingId).delete()
+    }
+
+    /** The follow-up to "bought": how much came home and when it's best before. */
+    fun refineBought(householdId: String, stockId: String, amount: Double?, unit: String, expiry: LocalDate?) {
+        val changes = buildMap<String, Any?> {
+            amount?.let { put("quantity", mapOf("amount" to it, "unit" to unit)); put("initialAmount", it) }
+            expiry?.let { put("expiry", com.google.firebase.Timestamp(java.util.Date.from(it.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant()))) }
+        }
+        if (changes.isNotEmpty()) collection(householdId, "stock").document(stockId).update(changes)
     }
 
     private fun common(uid: String, source: String) = mapOf(

@@ -454,8 +454,11 @@ class HomeViewModel @Inject constructor(
         val r = session.state.value as? SessionState.Ready ?: return
         val title = state.value.data.shopping.firstOrNull { it.id == id }?.name ?: "Item"
         viewModelScope.launch {
-            runCatching { pantry.markBought(r.household.id, r.user.uid, id) }.getOrNull()?.let { undo ->
-                onDone(com.houseaffairs.app.feature.add.SavedEntry("$title · bought, now in the pantry") { undo() })
+            runCatching { pantry.markBought(r.household.id, r.user.uid, id) }.getOrNull()?.let { bought ->
+                onDone(com.houseaffairs.app.feature.add.SavedEntry("$title · bought, now in the pantry") { bought() })
+                com.houseaffairs.app.core.ui.FollowUps.show(
+                    com.houseaffairs.app.core.data.boughtFollowUp(title, bought.unit, LocalDate.now()) { a, u, e -> pantry.refineBought(r.household.id, bought.stockId, a, u, e) },
+                )
             }
         }
     }
@@ -467,6 +470,7 @@ class HomeViewModel @Inject constructor(
         // "Dune 2 · marked watched", so it's clear what the ✓ did.
         val what = item?.template?.markLabel?.replaceFirstChar { it.lowercase() }?.replace("mark ", "marked ") ?: "done"
         onDone(com.houseaffairs.app.feature.add.SavedEntry("${item?.title ?: "Item"} · $what") { undo() })
+        com.houseaffairs.app.core.ui.FollowUps.show(com.houseaffairs.app.core.data.ratedFollowUp(item?.title ?: "it") { liked -> watchRepo.rate(r.household.id, id, liked) })
     }
 
     fun toggleHideAmounts() {

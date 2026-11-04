@@ -14,6 +14,7 @@ import com.houseaffairs.app.core.model.Role
 import com.houseaffairs.app.core.model.RolePolicy
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import java.security.SecureRandom
@@ -38,8 +39,14 @@ class HouseholdRepository @Inject constructor(
     fun observeHousehold(id: String): Flow<Household?> =
         household(id).observeSnapshots().map { it.toObject(Household::class.java) }
 
+    /**
+     * Only once the server has the membership: right after creating or joining a home, the phone's
+     * own unsaved copy shows first, and every list queried then would be refused by the rules.
+     */
     fun observeMember(householdId: String, uid: String): Flow<Member?> =
-        members(householdId).document(uid).observeSnapshots().map { it.toObject(Member::class.java) }
+        members(householdId).document(uid).observeSnapshots()
+            .filter { !it.metadata.hasPendingWrites() }
+            .map { it.toObject(Member::class.java) }
 
     /** Emits an empty list once access is lost (signed out, removed) instead of failing the collector. */
     fun observeMembers(householdId: String): Flow<List<Member>> =
@@ -49,7 +56,8 @@ class HouseholdRepository @Inject constructor(
             }
             .catch { emit(emptyList()) }
 
-    suspend fun createHousehold(name: String, currency: String) {
+    /** Creates a household with the signed-in person as owner; returns its id. */
+    suspend fun createHousehold(name: String, currency: String): String {
         val user = requireUser()
         val ref = db.collection("households").document()
         db.batch().apply {
@@ -66,6 +74,7 @@ class HouseholdRepository @Inject constructor(
             set(members(ref.id).document(user.uid), memberFields(user, Role.OWNER, inviteCode = null))
             set(users.document(user.uid), mapOf("householdId" to ref.id), SetOptions.merge())
         }.commit().await()
+        return ref.id
     }
 
     /** Creates a 6-character code valid for 48 hours. */
@@ -103,6 +112,14 @@ class HouseholdRepository @Inject constructor(
             }
             throw e
         }
+    }
+
+    /** Sets (or clears, when blank) a family-wide service key such as "omdb". Owner only (rules). */
+    suspend fun setIntegration(householdId: String, name: String, key: String?) {
+        household(householdId).update(
+            com.google.firebase.firestore.FieldPath.of("integrations", name),
+            key?.trim()?.takeIf { it.isNotEmpty() } ?: com.google.firebase.firestore.FieldValue.delete(),
+        ).await()
     }
 
     /** Makes [topic] private to [uids], or public again when null. Owner only (rules). */

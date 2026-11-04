@@ -1,5 +1,6 @@
 package com.houseaffairs.app.feature.auth
 
+import androidx.compose.material3.TextButton
 import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -50,7 +51,11 @@ import javax.inject.Inject
 data class SignInUiState(val loading: Boolean = false, val error: String? = null)
 
 @HiltViewModel
-class SignInViewModel @Inject constructor(private val auth: AuthRepository) : ViewModel() {
+class SignInViewModel @Inject constructor(
+    private val auth: AuthRepository,
+    private val households: com.houseaffairs.app.core.data.HouseholdRepository,
+    private val demo: com.houseaffairs.app.core.data.DemoSeeder,
+) : ViewModel() {
     private val _state = MutableStateFlow(SignInUiState())
     val state = _state.asStateFlow()
 
@@ -68,6 +73,29 @@ class SignInViewModel @Inject constructor(private val auth: AuthRepository) : Vi
             _state.value = SignInUiState(loading = true)
             val error = auth.signInWithTestAccount(account).exceptionOrNull()
             _state.value = SignInUiState(error = error?.let(::messageFor))
+        }
+    }
+
+    /** No Google account: signs in anonymously and opens a demo home full of sample data. */
+    fun tryDemo() {
+        viewModelScope.launch {
+            _state.value = SignInUiState(loading = true)
+            val error = runCatching {
+                auth.signInDemo().getOrThrow()
+                val home = households.createHousehold("Demo home", "INR")
+                demo.seed(home, checkNotNull(com.google.firebase.auth.FirebaseAuth.getInstance().currentUser).uid)
+            }.exceptionOrNull()
+            _state.value = SignInUiState(
+                error = error?.let {
+                    val m = it.message.orEmpty()
+                    // The project hasn't switched on anonymous sign-in (Firebase → Authentication).
+                    if ("CONFIGURATION_NOT_FOUND" in m || "OPERATION_NOT_ALLOWED" in m || "ADMIN_ONLY" in m) {
+                        "The demo isn't switched on for this app yet. Try again in a little while."
+                    } else {
+                        "The demo couldn't start. Check your internet and try again."
+                    }
+                },
+            )
         }
     }
 
@@ -127,6 +155,7 @@ fun SignInScreen(viewModel: SignInViewModel = hiltViewModel()) {
                         modifier = Modifier.fillMaxWidth().height(52.dp),
                     ) { Text("Continue as ${account.name}") }
                 }
+                TextButton(onClick = viewModel::tryDemo, enabled = !state.loading) { Text("Try the demo, no account needed") }
             } else {
                 Button(
                     onClick = { viewModel.signIn(context) },
@@ -140,6 +169,8 @@ fun SignInScreen(viewModel: SignInViewModel = hiltViewModel()) {
                         Text("Continue with Google", style = MaterialTheme.typography.titleMedium)
                     }
                 }
+                // Try it without a Google account: a demo home with sample data.
+                TextButton(onClick = viewModel::tryDemo, enabled = !state.loading) { Text("Try the demo, no account needed") }
                 Text(
                     "No passwords. Your family's data stays private to your home.",
                     style = MaterialTheme.typography.bodySmall,

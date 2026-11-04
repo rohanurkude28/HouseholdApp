@@ -123,6 +123,12 @@ fun PlansScreen(
     viewModel: PlansViewModel = hiltViewModel(),
 ) {
     LaunchedEffect(requestedTab) {
+        // "GIFTS" opens Lists filtered to gift ideas (from an event's "🎁 gift ideas").
+        if (requestedTab == "GIFTS") {
+            viewModel.selectTab(PlansTab.LISTS)
+            viewModel.showList(ListTemplate.GIFTS)
+            onTabShown()
+        }
         PlansTab.entries.firstOrNull { it.name == requestedTab }?.let { viewModel.selectTab(it); onTabShown() }
     }
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -272,6 +278,7 @@ fun PlansScreen(
                         TickCircle(plans.color, onTick = { viewModel.completeTask(task)?.let(onSaved) }, contentDescription = "Done: ${task.title}")
                         Spacer(Modifier.width(4.dp))
                         Text(task.title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                        PriorityTag(task.priority)
                         task.dueDate?.let { Text(formatDate(it), style = MaterialTheme.typography.labelLarge, color = plans.color) }
                     }
                 }
@@ -352,6 +359,7 @@ fun PlansScreen(
                             onDone = { viewModel.markDone(w.id, w.title)?.let(onSaved) },
                             votes = w.votes, myUid = viewModel.myUid, status = w.status,
                             onVote = { on -> viewModel.vote(w.id, on) }, onPlan = { viewModel.togglePlanned(w.id, w.status) },
+                            listenUrl = w.youtubeUrl,
                         )
                     }
                     items(wishItems.sortedWith(compareBy({ it.status != "PLANNED" }, { -it.votes.size })), key = { "wish-" + it.id }) { wish ->
@@ -389,11 +397,15 @@ fun PlansScreen(
                         Column(Modifier.weight(1f)) {
                             Text(event.title, style = MaterialTheme.typography.titleSmall)
                             val gifts = state.wishes.count { it.event.equals(event.title, ignoreCase = true) }
-                            Text(
-                                listOfNotNull(event.kind, gifts.takeIf { it > 0 }?.let { "🎁 $it gift idea" + if (it > 1) "s" else "" }).joinToString(" · "),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            Text(event.kind, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (gifts > 0) {
+                                Text(
+                                    "🎁 $gifts gift idea${if (gifts > 1) "s" else ""} ›",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = LocalHouseColors.current.plans.color,
+                                    modifier = Modifier.clip(CircleShape).clickable { viewModel.selectTab(PlansTab.LISTS); viewModel.showList(ListTemplate.GIFTS) }.padding(vertical = 2.dp),
+                                )
+                            }
                         }
                         Text(formatDate(event.next), style = MaterialTheme.typography.labelLarge, color = LocalHouseColors.current.plans.color)
                     }
@@ -510,6 +522,8 @@ private fun WishRow(
     status: String = "IDEA",
     onVote: ((Boolean) -> Unit)? = null,
     onPlan: (() -> Unit)? = null,
+    /** Music: opens YouTube Music on this song or album. */
+    listenUrl: String? = null,
 ) {
     Row(Modifier.fillMaxWidth().opensEdit(onClick).padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         if (image != null) {
@@ -533,6 +547,15 @@ private fun WishRow(
                         style = MaterialTheme.typography.labelLarge,
                         modifier = Modifier.clip(CircleShape).clickable(onClickLabel = if (mine) "Remove your heart" else "Heart it") { onVote(!mine) }.padding(horizontal = 6.dp, vertical = 2.dp),
                     )
+                    listenUrl?.let { url ->
+                        val uri = androidx.compose.ui.platform.LocalUriHandler.current
+                        Text(
+                            "▶ YouTube",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.clip(CircleShape).clickable(onClickLabel = "Play on YouTube") { runCatching { uri.openUri(url) } }.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
                     val planned = status == "PLANNED"
                     Text(
                         if (planned) "📅 Planned" else "💡 Idea",
@@ -798,4 +821,20 @@ private fun GoalRow(goal: com.houseaffairs.app.core.data.Goal, onEdit: () -> Uni
             )
         }
     }
+}
+
+/** "High" in red, "Medium" in amber; Low (the default) shows nothing, so the list stays calm. */
+@Composable
+internal fun PriorityTag(priority: String) {
+    val color = when (priority) {
+        "High" -> MaterialTheme.colorScheme.error
+        "Medium" -> androidx.compose.ui.graphics.Color(0xFFD39B32)
+        else -> return
+    }
+    Text(
+        priority,
+        style = MaterialTheme.typography.labelSmall,
+        color = color,
+        modifier = Modifier.padding(end = 8.dp).clip(CircleShape).background(color.copy(alpha = 0.12f)).padding(horizontal = 8.dp, vertical = 2.dp),
+    )
 }

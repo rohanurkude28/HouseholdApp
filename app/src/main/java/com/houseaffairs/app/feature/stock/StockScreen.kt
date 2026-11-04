@@ -59,6 +59,7 @@ import com.houseaffairs.app.core.data.Flag
 import com.houseaffairs.app.core.data.ListRow
 import com.houseaffairs.app.core.data.stockFlag
 import com.houseaffairs.app.core.ui.CompactRow
+import com.houseaffairs.app.core.ui.DishSheet
 import com.houseaffairs.app.core.ui.AddRow
 import com.houseaffairs.app.core.ui.Empty
 import com.houseaffairs.app.core.ui.itemList
@@ -131,6 +132,9 @@ fun StockScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val colors = LocalHouseColors.current
     var cooking by remember { mutableStateOf<Recipe?>(null) }
+    // A dish opened from an idea or a search: ingredients with ✓/✗.
+    var viewing by remember { mutableStateOf<com.houseaffairs.app.core.data.DishIdea?>(null) }
+    val query by viewModel.query.collectAsStateWithLifecycle()
     val groups: ListGroupsViewModel = hiltViewModel()
     val today = LocalDate.now()
     val pantryControls = rememberListControls()
@@ -189,6 +193,33 @@ fun StockScreen(
                 CompactRow(row.title, stockDetail(row.item, row.flag), row.flag, onClick = { onEdit(EntryType.GROCERY, row.item.id) }, actions = listOf("Finished" to { viewModel.usedUp(row.item) }))
             }
             StockTab.RECIPES -> {
+                // Find any dish, yours or the library's, and see what you have for it.
+                item {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = query,
+                        onValueChange = { viewModel.query.value = it },
+                        placeholder = { Text("Search a dish or ingredient…") },
+                        singleLine = true,
+                        shape = CircleShape,
+                        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 12.dp),
+                    )
+                }
+                if (query.trim().length >= 2) {
+                    if (state.search.isEmpty()) item { Empty("No dish matches “$query”", "Save it as a recipe to see what you have for it.") }
+                    items(state.search, key = { "search-" + it.recipe.id }) { idea ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { viewing = idea }.padding(horizontal = 20.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(if (idea.fit.canCook) "✅" else "🛒", style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(idea.recipe.title + if (idea.saved) "" else " · idea", style = MaterialTheme.typography.titleSmall)
+                                Text(idea.fit.summary, style = MaterialTheme.typography.bodySmall, color = if (idea.fit.canCook) colors.stock.color else MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
                 item {
                     LazyRow(contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(MOODS) { mood ->
@@ -207,9 +238,7 @@ fun StockScreen(
                     item {
                         LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             items(state.useItUp.take(6)) { idea ->
-                                DishCard(idea, onClick = {
-                                    if (idea.saved) cooking = idea.recipe else onSaveIdea(idea.recipe)
-                                })
+                                DishCard(idea, onClick = { viewing = idea })
                             }
                         }
                     }
@@ -225,7 +254,7 @@ fun StockScreen(
                     item { Label("Ideas from what you have") }
                     item {
                         LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            items(state.ideas) { idea -> DishCard(idea, onClick = { onSaveIdea(idea.recipe) }) }
+                            items(state.ideas) { idea -> DishCard(idea, onClick = { viewing = idea }) }
                         }
                     }
                 }
@@ -247,6 +276,16 @@ fun StockScreen(
                 )
             }
         }
+    }
+
+    viewing?.let { idea ->
+        DishSheet(
+            idea, state.pantry,
+            onCook = if (idea.saved) ({ cooking = idea.recipe }) else null,
+            onSave = if (idea.saved) null else ({ onSaveIdea(idea.recipe) }),
+            onAddMissing = { names -> viewModel.addMissing(names, onCooked) },
+            onDismiss = { viewing = null },
+        )
     }
 
     cooking?.let { recipe ->
@@ -276,7 +315,7 @@ private fun RecipeCard(view: RecipeView, accent: Accent, lastMade: LocalDate?, o
                     when {
                         fit.total == 0 -> "Add ingredients to track the pantry"
                         fit.canCook -> "You have everything"
-                        else -> "You have ${fit.have} of ${fit.total} ingredients"
+                        else -> fit.summary
                     } + (com.houseaffairs.app.core.data.lastMadeText(lastMade, LocalDate.now())?.let { " · $it" } ?: ""),
                     style = MaterialTheme.typography.bodySmall,
                     color = if (fit.canCook) accent.color else MaterialTheme.colorScheme.onSurfaceVariant,

@@ -51,6 +51,8 @@ data class StockUiState(
     val mood: String? = null,
     val members: List<Member> = emptyList(),
     val lastCooked: Map<String, LocalDate> = emptyMap(),
+    /** Dishes matching the Cook tab's search, what you can make first. */
+    val search: List<DishIdea> = emptyList(),
     /** "Last time: Amul 👍" for shopping items, by their id. */
     val lastTime: Map<String, String> = emptyMap(),
     /** Dishes that rescue food about to expire. */
@@ -73,6 +75,8 @@ class StockViewModel @Inject constructor(
         .distinctUntilChanged()
     private val tab = MutableStateFlow(StockTab.RECIPES)
     private val mood = MutableStateFlow<String?>(null)
+    /** Search on the Cook tab: the family's recipes and the library, by name or ingredient. */
+    val query = MutableStateFlow("")
 
     private val data = scope.flatMapLatest { s ->
         combine(
@@ -97,9 +101,10 @@ class StockViewModel @Inject constructor(
 
     private val members = scope.map { it.householdId }.distinctUntilChanged().flatMapLatest { households.observeMembers(it) }
 
-    val state: StateFlow<StockUiState> = combine(data, tab, mood, members) { d, t, m, people ->
+    val state: StateFlow<StockUiState> = combine(data, tab, mood, members, query) { d, t, m, people, q ->
         val today = LocalDate.now()
         StockUiState(
+            search = searchDishes(q, d.pantry, d.recipes, today),
             lastTime = d.shopping.mapNotNull { item -> com.houseaffairs.app.core.data.lastTimeNote(item.title, d.memory)?.let { item.id to it } }.toMap(),
             tab = t,
             tabs = StockTab.entries,
@@ -128,6 +133,15 @@ class StockViewModel @Inject constructor(
         tab.value = value
     }
 
+    /** Puts a dish's missing ingredients on the shopping list (skipping ones already there). */
+    fun addMissing(names: List<String>, onDone: (CookResult) -> Unit) = withIds { hid, uid ->
+        val listed = state.value.shopping.map { it.title }
+        val adding = names.filter { n -> listed.none { com.houseaffairs.app.core.data.sameIngredient(it, n) } }
+        if (adding.isEmpty()) return@withIds
+        val undos = adding.map { pantryRepo.addToShopping(hid, uid, it) }
+        onDone(CookResult("${adding.joinToString()} · added to the shopping list") { undos.forEach { it() } })
+    }
+
     fun selectMood(value: String?) {
         mood.value = if (mood.value == value) null else value
     }
@@ -147,15 +161,36 @@ class StockViewModel @Inject constructor(
     fun markBought(id: String, onDone: (CookResult) -> Unit) = withIds { hid, uid ->
         val title = state.value.shopping.firstOrNull { it.id == id }?.title ?: "Item"
         viewModelScope.launch {
-            runCatching { pantryRepo.markBought(hid, uid, id) }.getOrNull()?.let { undo -> onDone(CookResult("$title · bought, now in the pantry") { undo() }) }
+            runCatching { pantryRepo.markBought(hid, uid, id) }.getOrNull()?.let { bought ->
+                onDone(CookResult("$title · bought, now in the pantry") { bought() })
+                com.houseaffairs.app.core.ui.FollowUps.show(
+                    com.houseaffairs.app.core.data.boughtFollowUp(title, bought.unit, LocalDate.now()) { a, u, e -> pantryRepo.refineBought(hid, bought.stockId, a, u, e) },
+                )
+            }
         }
     }
 
     fun useOne(stock: PantryStock) = withIds { hid, uid -> pantryRepo.useOne(hid, uid, stock, state.value.shopping.map { it.title }) }
 
-    fun usedUp(stock: PantryStock) = withIds { hid, uid -> pantryRepo.usedUp(hid, uid, stock, state.value.shopping.map { it.title }) }
+    /** Finished: off the list it's on ([from] is "stock" or "medicines"), onto the shopping list, with a "don't buy again". */
+    fun usedUp(stock: PantryStock, from: String = "stock") = withIds { hid, uid ->
+        val added = pantryRepo.usedUp(hid, uid, stock, state.value.shopping.map { it.title }, from) ?: return@withIds
+        com.houseaffairs.app.core.ui.FollowUps.show(com.houseaffairs.app.core.data.finishedFollowUp(stock.title) { pantryRepo.removeFromShopping(hid, added) })
+    }
 
     private fun withIds(block: (String, String) -> Unit) {
         (session.state.value as? SessionState.Ready)?.let { block(it.household.id, it.user.uid) }
     }
+}
+
+/** Dishes whose name or ingredients match [query], cookable first. Empty for a blank query. Pure, so it's tested. */
+fun searchDishes(query: String, pantry: List<PantryStock>, saved: List<Recipe>, today: LocalDate): List<DishIdea> {
+    val q = query.trim().lowercase()
+    if (q.length < 2) return emptyList()
+    val savedTitles = saved.map { it.title.lowercase() }.toSet()
+    return (saved.map { it to true } + com.houseaffairs.app.core.data.RECIPE_LIBRARY.filter { it.title.lowercase() !in savedTitles }.map { it to false })
+        .filter { (r, _) -> r.title.lowercase().contains(q) || r.ingredients.any { it.name.lowercase().contains(q) } }
+        .map { (r, isSaved) -> DishIdea(r, isSaved, recipeFit(r.ingredients, pantry, today), emptyList()) }
+        .sortedWith(compareByDescending<DishIdea> { it.fit.canCook }.thenBy { it.fit.missing.size }.thenByDescending { it.saved })
+        .take(10)
 }

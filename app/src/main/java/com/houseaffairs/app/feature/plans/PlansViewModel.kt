@@ -166,6 +166,7 @@ class PlansViewModel @Inject constructor(
     fun markDone(id: String, title: String): SavedEntry? {
         val r = session.state.value as? SessionState.Ready ?: return null
         val undo = watchRepo.markWatched(r.household.id, id)
+        com.houseaffairs.app.core.ui.FollowUps.show(com.houseaffairs.app.core.data.ratedFollowUp(title) { liked -> watchRepo.rate(r.household.id, id, liked) })
         return SavedEntry("$title · done") { undo() }
     }
 
@@ -190,6 +191,11 @@ class PlansViewModel @Inject constructor(
 
     fun selectPlaceKind(kind: String?) {
         placeKind.value = if (placeKind.value == kind) null else kind
+    }
+
+    /** Shows just one list (not a toggle), e.g. gift ideas from an event. */
+    fun showList(template: ListTemplate) {
+        listFilter.value = template
     }
 
     fun selectList(template: ListTemplate) {

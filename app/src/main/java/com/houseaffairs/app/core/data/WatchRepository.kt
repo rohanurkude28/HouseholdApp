@@ -41,6 +41,14 @@ data class WatchItem(
 ) {
     /** The best "where to watch" text: the family's pick, else what the lookup found. */
     val whereToWatch: String? get() = platform ?: providers.takeIf { it.isNotEmpty() }?.joinToString(", ")
+
+    /** Songs and albums open in YouTube Music (the app if installed); no key needed. */
+    val youtubeUrl: String?
+        get() = if (template == ListTemplate.MUSIC) {
+            "https://music.youtube.com/search?q=" + java.net.URLEncoder.encode(listOfNotNull(title, creator).joinToString(" "), "UTF-8")
+        } else {
+            null
+        }
 }
 
 /**
@@ -51,7 +59,26 @@ data class WatchItem(
 @Singleton
 class WatchRepository @Inject constructor(
     private val db: FirebaseFirestore,
+    private val session: SessionManager,
 ) {
+    /** The family's key from Connections (set by the owner), else the developer's local.properties one. */
+    private fun key(name: String, fallback: String): String =
+        (session.state.value as? SessionState.Ready)?.household?.integrations?.get(name)?.takeIf { it.isNotBlank() } ?: fallback
+
+    private val tmdbKey get() = key("tmdb", BuildConfig.TMDB_API_KEY)
+    private val omdbKey get() = key("omdb", BuildConfig.OMDB_API_KEY)
+
+    /** Checks a key before it's saved: true if the service accepts it. */
+    suspend fun testKey(service: String, key: String): Boolean = withContext(Dispatchers.IO) {
+        val k = java.net.URLEncoder.encode(key.trim(), "UTF-8")
+        runCatching {
+            when (service) {
+                "omdb" -> get("https://www.omdbapi.com/?apikey=$k&t=Inception")?.optString("Response") == "True"
+                "tmdb" -> get("https://api.themoviedb.org/3/configuration?api_key=$k") != null
+                else -> false
+            }
+        }.getOrDefault(false)
+    }
     private fun items(householdId: String) = db.collection("households").document(householdId).collection("listItems")
 
     fun observe(householdId: String, uid: String): Flow<List<WatchItem>> =
@@ -89,7 +116,7 @@ class WatchRepository @Inject constructor(
             val found = when (item.template) {
                 ListTemplate.BOOKS -> runCatching { openLibrary(item.title) }.getOrNull()
                 ListTemplate.MUSIC -> runCatching { itunes(item.title) }.getOrNull()
-                else -> runCatching { if (BuildConfig.TMDB_API_KEY.isNotBlank()) tmdb(item.title) else null }.getOrNull()
+                else -> runCatching { if (tmdbKey.isNotBlank()) tmdb(item.title) else null }.getOrNull()
                     ?: runCatching { tvmaze(item.title) }.getOrNull()
             }
             val fields = mutableMapOf<String, Any?>("lookedUp" to true)
@@ -105,7 +132,7 @@ class WatchRepository @Inject constructor(
             items(householdId).document(item.id).update(fields)
         }
         // IMDb and Rotten Tomatoes, once per movie or show, when there's an OMDb key.
-        if (BuildConfig.OMDB_API_KEY.isNotBlank()) {
+        if (omdbKey.isNotBlank()) {
             list.filter { it.template == ListTemplate.WATCH && it.imdb == null && it.rottenTomatoes == null }.take(8).forEach { item ->
                 val scores = runCatching { omdb(item.title, item.year) }.getOrNull() ?: return@forEach
                 items(householdId).document(item.id).update(scores)
@@ -116,10 +143,15 @@ class WatchRepository @Inject constructor(
     /** IMDb rating and Rotten Tomatoes score for a title; "N/A" ratings are left out. */
     private fun omdb(title: String, year: String?): Map<String, Any?>? {
         val q = java.net.URLEncoder.encode(title, "UTF-8")
-        val json = get("https://www.omdbapi.com/?apikey=${BuildConfig.OMDB_API_KEY}&t=$q" + (year?.let { "&y=$it" } ?: "")) ?: return null
+        val json = get("https://www.omdbapi.com/?apikey=$omdbKey&t=$q" + (year?.let { "&y=$it" } ?: "")) ?: return null
         if (json.optString("Response") != "True") return mapOf("imdbRating" to "", "rtScore" to "")
         val rt = json.optJSONArray("Ratings")?.let { a -> (0 until a.length()).map { a.getJSONObject(it) }.firstOrNull { it.optString("Source") == "Rotten Tomatoes" }?.optString("Value") }
         return mapOf("imdbRating" to json.optString("imdbRating").takeIf { it != "N/A" }.orEmpty(), "rtScore" to rt.orEmpty())
+    }
+
+    /** "How was it?" after watching, reading or listening. */
+    fun rate(householdId: String, id: String, liked: Boolean) {
+        items(householdId).document(id).update("rating", if (liked) "👍 Liked it" else "👎 Not great")
     }
 
     /** Returns an undo that puts the item back on its list. */
@@ -145,7 +177,7 @@ class WatchRepository @Inject constructor(
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
     private fun tmdb(title: String): Found? {
-        val key = BuildConfig.TMDB_API_KEY
+        val key = tmdbKey
         val hit = get("https://api.themoviedb.org/3/search/multi?api_key=$key&query=${enc(title)}&region=IN")
             ?.optJSONArray("results")?.let { arr -> (0 until arr.length()).map(arr::getJSONObject).firstOrNull { it.optString("media_type") in setOf("movie", "tv") } }
             ?: return null

@@ -1,5 +1,10 @@
 package com.houseaffairs.app.feature.settings
 
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.material.icons.outlined.Event
 import android.content.Intent
 import android.Manifest
 import android.content.pm.PackageManager
@@ -151,7 +156,10 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
             }
         }
 
-        item { SectionHeader("Smart help") }
+        // Connections: everything the family links to, in one place.
+        item { SectionHeader("Connections") }
+        item { ServiceKeysGroup(state, viewModel) }
+        item { SectionHeader("Connections · Gemini (each person)") }
         item {
             SettingsGroup {
                 ListItem(
@@ -174,6 +182,9 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
                 )
             }
         }
+
+        item { SectionHeader("Connections · Google Calendar (each person)") }
+        item { CalendarGroup(state, viewModel) }
 
         item { SectionHeader("Notifications") }
         item { NotificationsGroup(state.notifications, viewModel::setNotifications) }
@@ -497,6 +508,103 @@ private fun PrivateTopicsGroup(state: SettingsUiState, onChange: (String, List<S
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Two-way sync with a "HouseAffairs" calendar in the person's Google Calendar. The first switch-on
+ * shows Google's consent screen; the app can only touch calendars it created.
+ */
+@Composable
+private fun CalendarGroup(state: SettingsUiState, viewModel: SettingsViewModel) {
+    val consent by viewModel.calendarConsent.collectAsState()
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        viewModel.onCalendarConsent(result.resultCode == android.app.Activity.RESULT_OK)
+    }
+    LaunchedEffect(consent) {
+        consent?.let { launcher.launch(androidx.activity.result.IntentSenderRequest.Builder(it.intentSender).build()) }
+    }
+    val cal = state.calendar
+    SettingsGroup {
+        ListItem(
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            leadingContent = { IconBlob(Icons.Outlined.Event, LocalHouseColors.current.plans, size = 40.dp) },
+            headlineContent = { Text("Sync with Google Calendar", style = MaterialTheme.typography.titleSmall) },
+            supportingContent = {
+                Text("Your dated tasks and the family's events, in a separate “HouseAffairs” calendar. Changes there come back here. The app can't see your other calendars.")
+            },
+            trailingContent = { Switch(checked = cal.enabled, onCheckedChange = viewModel::setCalendarSync) },
+        )
+        if (cal.enabled || cal.error != null) {
+            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    cal.error ?: when {
+                        state.calendarSyncing -> "Syncing…"
+                        cal.lastSync != null -> "Last synced " + android.text.format.DateUtils.getRelativeTimeSpanString(cal.lastSync)
+                        else -> "Not synced yet"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (cal.error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                if (cal.enabled) TextButton(onClick = viewModel::syncCalendarNow, enabled = !state.calendarSyncing) { Text("Sync now") }
+            }
+        }
+    }
+}
+
+private data class Service(val id: String, val name: String, val gives: String, val getKey: String)
+
+private val SERVICES = listOf(
+    Service("omdb", "OMDb", "IMDb and Rotten Tomatoes scores on movies and shows", "omdbapi.com/apikey.aspx (free)"),
+    Service("tmdb", "TMDB", "Movie posters and where to watch in India", "themoviedb.org → Settings → API (free)"),
+)
+
+/**
+ * Family-wide service keys. The owner connects each once and everyone's app uses it; others see
+ * whether it's connected. Keys are checked with the service before they're saved.
+ */
+@Composable
+private fun ServiceKeysGroup(state: SettingsUiState, viewModel: SettingsViewModel) {
+    SettingsGroup {
+        SERVICES.forEach { svc ->
+            val connected = state.integrations[svc.id]?.isNotBlank() == true
+            var editing by remember(svc.id) { mutableStateOf(false) }
+            var key by remember(svc.id) { mutableStateOf("") }
+            ListItem(
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                headlineContent = { Text(svc.name, style = MaterialTheme.typography.titleSmall) },
+                supportingContent = {
+                    Text(
+                        svc.gives + "\n" + when {
+                            connected -> "✅ Connected for the whole family"
+                            state.isOwner -> "Not connected · get a key at ${svc.getKey}"
+                            else -> "Not connected · ask the owner to add it"
+                        },
+                    )
+                },
+                trailingContent = {
+                    if (state.isOwner) {
+                        TextButton(onClick = { if (connected) viewModel.removeKey(svc.id) else editing = !editing }) { Text(if (connected) "Remove" else "Connect") }
+                    }
+                },
+            )
+            if (editing && !connected) {
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(value = key, onValueChange = { key = it }, singleLine = true, placeholder = { Text("Paste the key") }, modifier = Modifier.weight(1f))
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = { viewModel.saveKey(svc.id, key) }, enabled = key.isNotBlank(), shape = CircleShape) { Text("Test & save") }
+                }
+            }
+            state.keyStatus[svc.id]?.takeIf { !connected }?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (it == "Connected" || it == "Checking…") MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+                )
             }
         }
     }

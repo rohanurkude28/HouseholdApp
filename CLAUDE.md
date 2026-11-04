@@ -89,6 +89,15 @@ firebase emulators:start --project demo-houseaffairs --only auth,firestore   # U
 - **Private topics:** these live on the household doc (`privateTopics`). `AddViewModel.persist` narrows `visibleTo` for new entries on them.
 - **Teens and medicines:** teens only see medicines where they're in `forWhom`. This is enforced by `canUseItem` in `firestore.rules`, and every medicine query must use `RolePolicy.ownMedicinesOnly`.
 - **Share sheet:** shared text and links arrive through `MainActivity` → `SharedInbox` → the Add sheet. Routing is in `Shared.kt`.
+- **Google Calendar sync** (`core/calendar`):
+  - It's per person, opt-in from Settings. It uses the `calendar.app.created` scope, so it can only see the "HouseAffairs" calendar it creates.
+  - `planSync()` is the pure two-way rule set: the app wins when both sides changed; deleting in Google only stops syncing that item.
+  - `CalendarSyncer` applies the plan. `CalendarStore` keeps the agreed state per phone, and `CalendarWorker` runs every 6 hours.
+  - It needs a real Firebase/Google Cloud project with the Calendar API enabled and the scope on the OAuth consent screen. It can't run against the emulator's demo project.
+- **Family service keys:** OMDb and TMDB keys are set by the owner in Settings → Connections and stored on the household doc (`integrations`). `WatchRepository` uses them, falling back to `local.properties`.
+- **Follow-ups:** after "bought", "watched" or "finished", a quick-options sheet appears (`FollowUps.show(...)`, hosted in `MainScaffold`). The builders are pure functions in `core/data/FollowUps.kt`.
+- **Recipe fit:** `RecipeFit.missing` and `short` drive what's shown: "Missing: …" and "need more …", never "2 of 4". Ideas only list dishes you can cook, or ones that rescue expiring food.
+- **Demo mode:** "Try the demo" signs in anonymously, creates "Demo home" and seeds it (`DemoSeeder`). It needs Anonymous sign-in enabled in the Firebase project.
 - **Optional keys** in `local.properties`: `tmdb.apiKey` and `omdb.apiKey` (IMDb and Rotten Tomatoes).
 
 **Notifications.** `notify/DigestWorker` sends one daily digest via WorkManager. `HouseAffairsApp` reschedules it whenever the notification settings change. The digest content comes from the pure `Digest.kt`.

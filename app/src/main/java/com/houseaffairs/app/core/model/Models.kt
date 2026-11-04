@@ -23,6 +23,8 @@ data class Household(
     val createdAt: Timestamp? = null,
     /** Private topic → who may see new entries on it (see PrivateTopics.kt). Owner-set. */
     val privateTopics: Map<String, List<String>> = emptyMap(),
+    /** Service keys the owner set for the whole family ("omdb", "tmdb"); readable by members. */
+    val integrations: Map<String, String> = emptyMap(),
 )
 
 data class Member(

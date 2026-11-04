@@ -210,6 +210,9 @@ fun MainScaffold(session: SessionState.Ready) {
         shared?.let { addRequest = it; com.houseaffairs.app.feature.add.SharedInbox.pending.value = null }
     }
 
+    // Quick options after marking something done (how much? use by? how was it?).
+    com.houseaffairs.app.core.ui.FollowUpHost()
+
     addRequest?.let { request ->
         AddSheet(
             request = request,

@@ -158,7 +158,8 @@ fun cookIdeas(pantry: List<PantryStock>, saved: List<Recipe>, today: LocalDate, 
     return (saved.map { it to true } + RECIPE_LIBRARY.filter { it.title.lowercase() !in savedTitles }.map { it to false })
         .filter { (recipe, _) -> mood == null || mood in recipe.mood }
         .map { (recipe, isSaved) -> DishIdea(recipe, isSaved, recipeFit(recipe.ingredients, pantry, today), expiringSoon[recipe.title]?.rescues.orEmpty()) }
-        .filter { it.fit.total > 0 && it.fit.have * 2 >= it.fit.total }
+        // Only dishes you can actually make, or that use up something about to expire.
+        .filter { it.fit.canCook || it.rescues.isNotEmpty() }
         .sortedWith(
             compareByDescending<DishIdea> { it.rescues.size }
                 .thenByDescending { it.fit.have.toDouble() / it.fit.total }

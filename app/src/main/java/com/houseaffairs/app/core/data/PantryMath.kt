@@ -41,6 +41,51 @@ fun convert(amount: Double, from: String, to: String): Double? {
     return amount * a.toBase / b.toBase
 }
 
+/** Rough grams per piece, so "200 g onion" can come off "3 onions" and the other way round. */
+private val PIECE_GRAMS = mapOf(
+    "onion" to 150.0, "tomato" to 100.0, "potato" to 150.0, "egg" to 50.0, "lemon" to 50.0, "lime" to 40.0,
+    "garlic" to 5.0, "green chilli" to 5.0, "chilli" to 5.0, "carrot" to 80.0, "capsicum" to 150.0, "cucumber" to 200.0,
+    "banana" to 120.0, "apple" to 180.0, "orange" to 150.0, "brinjal" to 200.0, "beetroot" to 150.0, "radish" to 150.0,
+    "coriander" to 100.0, "mint" to 50.0, "spinach" to 250.0, "methi" to 150.0, "ginger" to 30.0, "drumstick" to 60.0,
+    "coconut" to 400.0, "bread" to 400.0, "paneer block" to 200.0,
+)
+
+private val LIQUIDS = listOf("milk", "oil", "juice", "buttermilk", "chaas", "water", "vinegar", "soy sauce", "syrup", "lassi", "cream", "coconut milk")
+private val COUNTED = listOf("egg", "bread", "banana", "lemon", "lime", "coconut", "papad", "bun", "pav", "tortilla", "roti", "avocado", "kiwi")
+
+/** How an item is usually measured: "ml" for liquids, "pcs" for things you count, "g" for everything else. */
+fun naturalUnit(title: String): String {
+    val t = title.lowercase()
+    fun has(words: List<String>) = words.any { Regex("\\b${Regex.escape(it)}(?:s|es)?\\b").containsMatchIn(t) }
+    return when {
+        has(LIQUIDS) -> "ml"
+        has(COUNTED) -> "pcs"
+        else -> "g"
+    }
+}
+
+/** Grams in one piece of [name], when known. */
+fun pieceGrams(name: String): Double? {
+    val n = normalize(name)
+    return PIECE_GRAMS.entries.firstOrNull { (k, _) -> n == k || n.contains(k) }?.value
+}
+
+/**
+ * Like [convert], but also between pieces and weight for things with a typical piece weight:
+ * 200 g of onion is about 1.3 onions. Null when they still don't mix.
+ */
+fun convertFor(name: String, amount: Double, from: String, to: String): Double? {
+    convert(amount, from, to)?.let { return it }
+    val grams = pieceGrams(name) ?: return null
+    val a = UNITS[from.lowercase()] ?: return null
+    val b = UNITS[to.lowercase()] ?: return null
+    return when {
+        a.dimension == Dimension.COUNT && b.dimension == Dimension.MASS -> amount * a.toBase * grams / b.toBase
+        a.dimension == Dimension.MASS && b.dimension == Dimension.COUNT -> amount * a.toBase / grams / b.toBase
+        else -> null
+    }
+}
+
 private fun normalize(name: String) = name.lowercase().trim().removeSuffix("es").removeSuffix("s")
 
 /** "Paneer" matches "Malai paneer"; "tomatoes" matches "Tomato". */
@@ -80,16 +125,52 @@ fun planCooking(ingredients: List<Ingredient>, scale: Double, pantry: List<Pantr
             missing += ingredient
             return@forEach
         }
-        val need = ingredient.amount?.times(scale)?.let { amount -> convert(amount, ingredient.unit, stock.unit) }
+        // Across units too: "200 g onion" against "3 pcs" in the pantry.
+        val need = ingredient.amount?.times(scale)?.let { amount -> convertFor(ingredient.name, amount, ingredient.unit, stock.unit) }
         val after = if (need != null && stock.amount != null) (stock.amount - need).coerceAtLeast(0.0) else null
         deductions += Deduction(stock, need, after)
     }
     return CookPlan(deductions, missing)
 }
 
-data class RecipeFit(val have: Int, val total: Int, val usesExpiring: List<String>) {
+data class RecipeFit(
+    val have: Int,
+    val total: Int,
+    val usesExpiring: List<String>,
+    /** Ingredients not in the pantry, or not enough of them. */
+    val missing: List<String> = emptyList(),
+    /** The ones in [missing] that are in the pantry, just not enough. */
+    val short: List<String> = emptyList(),
+) {
     val canCook: Boolean get() = total > 0 && have == total
+
+    /** "You have everything", or "Missing: peas, cream" (never "2 of 4": that isn't a dish you can make). */
+    val summary: String get() = when {
+        total == 0 -> "Add ingredients to check the pantry"
+        canCook -> "You have everything"
+        else -> {
+            val absent = missing - short.toSet()
+            listOfNotNull(
+                absent.takeIf { it.isNotEmpty() }?.let { "Missing: " + it.take(3).joinToString().lowercase() + if (it.size > 3) " +${it.size - 3}" else "" },
+                short.takeIf { it.isNotEmpty() }?.let { "need more " + it.joinToString().lowercase() },
+            ).joinToString(" · ").replaceFirstChar { it.uppercaseChar() }
+        }
+    }
 }
+
+/** One ingredient of a dish against the pantry: have it (enough), or not. */
+data class IngredientCheck(val name: String, val need: String?, val have: Boolean, val inPantry: String?)
+
+/** Every ingredient of a dish with ✓ or ✗, for the dish's detail. Pure, so it's tested. */
+fun checkIngredients(ingredients: List<Ingredient>, pantry: List<PantryStock>): List<IngredientCheck> =
+    ingredients.filter { it.name.isNotBlank() }.map { ing ->
+        val plan = planCooking(listOf(ing), 1.0, pantry)
+        val d = plan.deductions.firstOrNull()
+        val enough = d != null && (d.need == null || d.stock.amount == null || d.stock.amount >= d.need)
+        val needText = ing.amount?.let { a -> (if (a % 1.0 == 0.0) a.toLong().toString() else a.toString()) + " " + ing.unit }
+        val haveText = d?.stock?.let { s -> s.amount?.let { a -> (if (a % 1.0 == 0.0) a.toLong().toString() else "%.1f".format(a)) + " " + s.unit } ?: "some" }
+        IngredientCheck(ing.name, needText, enough, haveText)
+    }
 
 /** How well the pantry covers a recipe, and which soon-to-expire items it would use up. */
 fun recipeFit(ingredients: List<Ingredient>, pantry: List<PantryStock>, today: LocalDate): RecipeFit {
@@ -99,5 +180,8 @@ fun recipeFit(ingredients: List<Ingredient>, pantry: List<PantryStock>, today: L
     val expiring = plan.deductions
         .filter { d -> d.stock.expiry?.let { ChronoUnit.DAYS.between(today, it) in 0..3 } == true }
         .map { it.stock.title }
-    return RecipeFit(enough, named.size, expiring)
+    val short = plan.deductions.filter { d -> !(d.need == null || d.stock.amount == null || d.stock.amount >= d.need) }
+    val missingNames = plan.missing.map { it.name } + short.map { d -> named.firstOrNull { sameIngredient(d.stock.title, it.name) }?.name ?: d.stock.title }
+    val shortNames = short.map { d -> named.firstOrNull { sameIngredient(d.stock.title, it.name) }?.name ?: d.stock.title }
+    return RecipeFit(enough, named.size, expiring, missingNames, shortNames)
 }

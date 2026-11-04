@@ -51,14 +51,15 @@ fun rightNow(
     val hour = now.hour
     val weekend = now.dayOfWeek == DayOfWeek.SATURDAY || now.dayOfWeek == DayOfWeek.SUNDAY
     // Dishes that rescue expiring food already have their own Home section.
-    fun food(meal: String, n: Int) = withHistory(mealIdeas(meal, pantry, recipes, today), lastCooked, today).filter { it.rescues.isEmpty() }.take(n).map { idea ->
+    // Only dishes you can make now; ones that rescue expiring food have their own Home tab.
+    fun food(meal: String, n: Int) = withHistory(mealIdeas(meal, pantry, recipes, today), lastCooked, today).filter { it.rescues.isEmpty() && it.fit.canCook }.take(n).map { idea ->
         NowSuggestion(
             SuggestionKind.FOOD, idea.recipe.title,
             when {
                 idea.rescues.isNotEmpty() -> "Uses ${idea.rescues.first()} before it expires"
                 lastMadeText(idea.lastMade, today)?.startsWith("Not made") == true -> lastMadeText(idea.lastMade, today)!!
                 idea.fit.canCook -> "You have everything"
-                idea.fit.total > 0 -> "You have ${idea.fit.have} of ${idea.fit.total}"
+                idea.fit.total > 0 -> idea.fit.summary
                 else -> meal
             },
             dish = idea,

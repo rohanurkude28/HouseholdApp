@@ -17,3 +17,6 @@
 
 # Kotlin compiler caches
 .kotlin/
+
+# Built APKs shared for testing
+*.apk

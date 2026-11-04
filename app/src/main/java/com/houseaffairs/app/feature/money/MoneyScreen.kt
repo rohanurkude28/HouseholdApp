@@ -406,18 +406,21 @@ private fun UpcomingCard(
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(u.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    // Not paid yet: say when, and whether the budget can carry it. No tick, which read as "paid".
                     Text(
-                        listOfNotNull(
-                            if (u.planned) u.category ?: "Planned" else "Subscription",
-                            formatDate(u.date),
-                            when (f.fit) {
-                                Fit.FITS -> "fits the budget ✓"
-                                Fit.EATS_SAVINGS -> "dips into savings"
-                                Fit.OVER -> "over budget"
-                            },
-                        ).joinToString(" · "),
+                        listOfNotNull(u.category.takeIf { u.planned }, (if (u.planned) "Planned for " else "Renews ") + formatDate(u.date)).joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (f.fit == Fit.FITS) MaterialTheme.colorScheme.onSurfaceVariant else rowColor,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        when (f.fit) {
+                            Fit.FITS -> "Within budget"
+                            Fit.EATS_SAVINGS -> "Dips into savings"
+                            Fit.OVER -> "Over budget"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = rowColor,
+                        modifier = Modifier.padding(top = 3.dp).clip(CircleShape).background(rowColor.copy(alpha = 0.12f)).padding(horizontal = 8.dp, vertical = 2.dp),
                     )
                     f.envelopeShortMinor?.let {
                         Text("${money(it)} more than the ${u.category} envelope has", style = MaterialTheme.typography.bodySmall, color = coral)

@@ -943,7 +943,7 @@ class AddViewModel @Inject constructor(
                 if (entry.type == EntryType.SHOPPING) {
                     // Ticking off a shopping item also restocks the pantry.
                     var undoBought: (() -> Unit)? = null
-                    viewModelScope.launch { undoBought = runCatching { pantry.markBought(hid, r.user.uid, entry.id) }.getOrNull() }
+                    viewModelScope.launch { undoBought = runCatching { pantry.markBought(hid, r.user.uid, entry.id) }.getOrNull()?.undo }
                     SavedEntry("${entry.title} · bought, now in the pantry") { undoBought?.invoke() ?: entries.patch(hid, entry, mapOf("done" to false)) }
                 } else {
                     SavedEntry("${entry.title} · done", entries.patch(hid, entry, changes))
@@ -1044,6 +1044,9 @@ class AddViewModel @Inject constructor(
     }
 
     fun backToPicker() = local.update { it.copy(form = null) }
+
+    /** The unit chip a shopping or grocery form starts on: g, ml or pcs (forms say "L" for litres). */
+    private fun formUnit(title: String) = com.houseaffairs.app.core.data.naturalUnit(title)
 
     /** Older list items saved the list's name ("WATCH"); the form's chips use the label ("Watch together"). */
     private fun listLabel(values: FormValues): FormValues =
@@ -1219,9 +1222,10 @@ class AddViewModel @Inject constructor(
             )
             is QuickAddDraft.Shopping -> EntryType.SHOPPING to mapOf(
                 "title" to draft.item,
-                "quantity" to draft.quantity?.split(" ")?.let { QuantityValue(it[0], it.getOrElse(1) { "pcs" }) },
+                // No quantity said: preselect how it's usually measured (g for paneer, ml for milk).
+                "quantity" to (draft.quantity?.split(" ")?.let { QuantityValue(it[0], it.getOrElse(1) { "pcs" }) } ?: QuantityValue("", formUnit(draft.item))),
             )
-            is QuickAddDraft.Task -> EntryType.TASK to mapOf("title" to draft.title, "due" to draft.due, "repeat" to draft.repeat)
+            is QuickAddDraft.Task -> EntryType.TASK to mapOf("title" to draft.title, "due" to draft.due, "repeat" to draft.repeat, "priority" to (draft.priority ?: "Low"))
             is QuickAddDraft.Event -> EntryType.EVENT to mapOf(
                 "title" to draft.title,
                 "kind" to draft.kind,
@@ -1239,7 +1243,7 @@ class AddViewModel @Inject constructor(
             }
             is QuickAddDraft.Grocery -> EntryType.GROCERY to mapOf(
                 "title" to draft.title,
-                "quantity" to draft.quantity?.split(" ")?.let { QuantityValue(it[0], it.getOrElse(1) { "pcs" }) },
+                "quantity" to (draft.quantity?.split(" ")?.let { QuantityValue(it[0], it.getOrElse(1) { "pcs" }) } ?: QuantityValue("", formUnit(draft.title))),
                 "expiry" to draft.expiry,
             )
             is QuickAddDraft.ListItem -> EntryType.WISH to mapOf("template" to draft.template.label, "title" to draft.title)

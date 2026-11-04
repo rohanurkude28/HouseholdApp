@@ -75,7 +75,7 @@ sealed interface QuickAddDraft {
     /** [quantity] is "500 g", "2 pcs"…, or null when none was said. */
     data class Shopping(val item: String, val quantity: String? = null) : QuickAddDraft
     /** [repeat] is "Daily", "Weekly" or "Monthly" for "water plants every week", else null. */
-    data class Task(val title: String, val due: LocalDate?, val repeat: String? = null) : QuickAddDraft
+    data class Task(val title: String, val due: LocalDate?, val repeat: String? = null, val priority: String? = null) : QuickAddDraft
     data class Event(val title: String, val kind: String, val date: LocalDate?) : QuickAddDraft
     data class Medicine(val title: String, val forName: String?, val expiry: LocalDate?) : QuickAddDraft
     data class Grocery(val title: String, val quantity: String?, val expiry: LocalDate?) : QuickAddDraft
@@ -656,10 +656,15 @@ class QuickAddParser(private val today: () -> LocalDate = LocalDate::now) {
                 else -> "Weekly"
             }
         }
+        // "urgent", "asap", "high priority" make it High; "medium priority" Medium.
+        val priority = TASK_PRIORITY.find(rest)?.let { m ->
+            rest = rest.removeRange(m.range).trim()
+            if (m.value.lowercase().startsWith("medium")) "Medium" else "High"
+        }
         val words = rest.split(" ").filter { it.isNotEmpty() }.toMutableList()
         val due = extractDate(words)
-        val title = words.joinToString(" ").trim().capitalized()
-        return QuickAddDraft.Task(title.ifEmpty { text }, due, repeat)
+        val title = words.joinToString(" ").trim().trimEnd(',', '-').capitalized()
+        return QuickAddDraft.Task(title.ifEmpty { text }, due, repeat, priority)
     }
 
     // -----------------------------------------------------------------------------------------
@@ -944,6 +949,7 @@ class QuickAddParser(private val today: () -> LocalDate = LocalDate::now) {
             "\\s+(?:today|tonight|now|for (?:breakfast|lunch|dinner|everyone)|for (\\d+)(?: people)?)$",
             RegexOption.IGNORE_CASE,
         )
+        val TASK_PRIORITY = Regex("\\b(?:urgent(?:ly)?|asap|important|high priority|top priority|medium priority)\\b", RegexOption.IGNORE_CASE)
         val TASK_REPEAT = Regex(
             "\\b(?:every\\s+(day|week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(daily|weekly|monthly|everyday))\\b",
             RegexOption.IGNORE_CASE,

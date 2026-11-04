@@ -539,7 +539,7 @@ private fun AnswerCard(answer: Answer, onMove: (MoveAction) -> Unit, onLocationG
                     Text(
                         listOfNotNull(
                             idea.rescues.takeIf { it.isNotEmpty() }?.let { "uses ${it.joinToString()} before it expires" },
-                            if (idea.fit.canCook) "you have everything" else "you have ${idea.fit.have} of ${idea.fit.total}",
+                            idea.fit.summary.replaceFirstChar { it.lowercase() },
                         ).joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

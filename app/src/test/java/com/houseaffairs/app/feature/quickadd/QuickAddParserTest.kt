@@ -349,4 +349,13 @@ class QuickAddParserTest {
         assertEquals(QuickAddDraft.Question.CRAVING, (parser.parse("something tangy for dinner") as QuickAddDraft.Ask).question)
         assertEquals(QuickAddDraft.Question.SYMPTOM, (parser.parse("I'm feeling feverish") as QuickAddDraft.Ask).question)
     }
+
+    @Test
+    fun `task priority from the words`() {
+        val urgent = parser.parse("urgent call the bank tomorrow") as QuickAddDraft.Task
+        assertEquals("High", urgent.priority)
+        assertEquals("Call the bank", urgent.title)
+        assertEquals("Medium", (parser.parse("book car service medium priority") as QuickAddDraft.Task).priority)
+        assertEquals(null, (parser.parse("call the plumber") as QuickAddDraft.Task).priority)
+    }
 }

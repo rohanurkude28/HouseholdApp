@@ -334,6 +334,7 @@ private fun TodaySection(state: HomeUiState, onQuickAdd: () -> Unit, onBillPaid:
                             area = Area.PLANS,
                             title = task.title,
                             detail = listOfNotNull(
+                                task.priority.takeIf { it != "Low" }?.let { "$it priority" },
                                 task.dueDate?.let { dueLabel(it).first },
                                 task.assignee?.takeIf { it != state.myUid }?.let { "for ${state.nameOf(it)}" },
                             ).joinToString(" · ").ifEmpty { "No date" },
@@ -412,7 +413,7 @@ private fun AttentionRow(
     }
 }
 
-private data class ComingUpRow(val id: String, val area: Area, val title: String, val detail: String, val date: LocalDate)
+private data class ComingUpRow(val id: String, val area: Area, val title: String, val detail: String, val date: LocalDate, val gifts: Int = 0)
 
 /** Birthdays, renewals and payments in the next 30 days, soonest first, minus what Today shows. */
 private fun comingUp(state: HomeUiState): List<ComingUpRow> {
@@ -421,7 +422,7 @@ private fun comingUp(state: HomeUiState): List<ComingUpRow> {
     val events = if (state.canPlans && state.shows(Area.PLANS)) {
         state.data.events.filter { !it.next.isAfter(horizon) }.map { e ->
             val gifts = state.giftsFor[e.title.lowercase()]
-            ComingUpRow(e.id, Area.PLANS, e.title, listOfNotNull(e.kind, gifts?.let { "🎁 $it gift idea" + if (it > 1) "s" else "" }).joinToString(" · "), e.next)
+            ComingUpRow(e.id, Area.PLANS, e.title, e.kind, e.next, gifts ?: 0)
         }
     } else {
         emptyList()
@@ -1000,6 +1001,15 @@ private fun ComingUpSection(state: HomeUiState) {
                         color = areaAccent(row.area).color,
                     )
                 }
+                // Its own tap target: the row edits the event, this opens its gift ideas.
+                if (row.gifts > 0) {
+                    Text(
+                        "🎁 ${row.gifts} gift idea${if (row.gifts > 1) "s" else ""} ›",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = areaAccent(row.area).color,
+                        modifier = Modifier.padding(start = 62.dp, top = 2.dp).clip(CircleShape).clickable { nav.open("plans/GIFTS") }.padding(horizontal = 6.dp, vertical = 4.dp),
+                    )
+                }
             }
         }
     }
@@ -1165,12 +1175,14 @@ private fun WatchRow(watch: List<WatchItem>, why: Map<String, String>, onWatched
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 // Always one line, so the cards are the same height across posters.
+                val uri = androidx.compose.ui.platform.LocalUriHandler.current
                 Text(
-                    w.whereToWatch?.let { "▶ $it" } ?: " ",
+                    if (w.youtubeUrl != null) "▶ Play on YouTube" else w.whereToWatch?.let { "▶ $it" } ?: " ",
                     style = MaterialTheme.typography.labelMedium,
                     color = LocalHouseColors.current.vault.color,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = if (w.youtubeUrl != null) Modifier.clickable { runCatching { uri.openUri(w.youtubeUrl!!) } } else Modifier,
                 )
             }
         }

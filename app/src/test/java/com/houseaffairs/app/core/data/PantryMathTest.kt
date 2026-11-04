@@ -62,4 +62,48 @@ class PantryMathTest {
         assertFalse(fit.canCook)
         assertEquals(listOf("Paneer"), fit.usesExpiring)
     }
+
+    @Test
+    fun `a dish says what's missing, not how many you have`() {
+        val dish = listOf(Ingredient("Paneer", 200.0, "g"), Ingredient("Peas", 100.0, "g"), Ingredient("Tomatoes", 2.0, "pcs"))
+        val fit = recipeFit(dish, pantry, today)
+        assertEquals(listOf("Peas"), fit.missing)
+        assertEquals("Missing: peas", fit.summary)
+        assertEquals("You have everything", recipeFit(listOf(Ingredient("Rice", 200.0, "g")), pantry, today).summary)
+    }
+
+    @Test
+    fun `each ingredient is checked against the pantry`() {
+        val checks = checkIngredients(listOf(Ingredient("Paneer", 400.0, "g"), Ingredient("Rice", 1.0, "kg"), Ingredient("Peas", 100.0, "g")), pantry)
+        assertEquals(listOf(false, true, false), checks.map { it.have })
+        assertEquals("250 g", checks[0].inPantry)
+        assertEquals(null, checks[2].inPantry)
+    }
+
+    @Test
+    fun `not enough reads as need more, not missing`() {
+        val fit = recipeFit(listOf(Ingredient("Paneer", 400.0, "g"), Ingredient("Peas", 100.0, "g")), pantry, today)
+        assertEquals("Missing: peas · need more paneer", fit.summary)
+        assertEquals("Need more paneer", recipeFit(listOf(Ingredient("Paneer", 400.0, "g")), pantry, today).summary)
+    }
+
+    @Test
+    fun `things are measured the way people buy them`() {
+        assertEquals("g", naturalUnit("Paneer"))
+        assertEquals("g", naturalUnit("Coriander"))
+        assertEquals("ml", naturalUnit("Milk"))
+        assertEquals("ml", naturalUnit("Mustard oil"))
+        assertEquals("pcs", naturalUnit("Eggs"))
+        assertEquals("pcs", naturalUnit("Bread"))
+    }
+
+    @Test
+    fun `cooking takes grams off pieces and pieces off grams`() {
+        assertEquals(2.0, convertFor("Onion", 300.0, "g", "pcs")!!, 1e-9)
+        assertEquals(200.0, convertFor("Tomatoes", 2.0, "pcs", "g")!!, 1e-9)
+        assertNull(convertFor("Paneer", 2.0, "pcs", "g"))
+        val stock = listOf(PantryStock("o", "Onions", 3.0, "pcs", 3.0))
+        val plan = planCooking(listOf(Ingredient("Onion", 150.0, "g")), 1.0, stock)
+        assertEquals(2.0, plan.deductions.single().after!!, 1e-9)
+    }
 }
