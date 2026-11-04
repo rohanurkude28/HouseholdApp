@@ -13,6 +13,10 @@ data class MediaHit(
     val poster: String?,
     val creator: String? = null,
     val imdbId: String? = null,
+    /** Out of 10 (books are rated out of 5, so doubled). */
+    val rating: Double? = null,
+    /** How many people rated it; popular editions first when titles tie. */
+    val ratingCount: Int? = null,
 )
 
 /** Words people mishear or misspell in titles, and what they usually mean. */
@@ -45,11 +49,36 @@ fun rankHits(query: String, hits: List<MediaHit>): List<MediaHit> {
         .map { it.value }
 }
 
-/** Open Library first; a missing cover is filled from Google Books' same title, then Google-only titles follow. */
+/**
+ * Open Library and Google Books together (Goodreads closed its API in 2020). The same title is
+ * shown once: a missing cover, author or rating is filled from the other, and ratings are pooled
+ * by how many people gave them. Most-rated first, so the edition people know comes up before
+ * reprints; [rankHits] then puts the closest titles on top and keeps this order for ties.
+ */
 fun mergeBooks(openLibrary: List<MediaHit>, google: List<MediaHit>): List<MediaHit> {
     fun key(h: MediaHit) = h.title.lowercase().filter { it.isLetterOrDigit() }
-    val covers = google.filter { it.poster != null }.associateBy(::key)
-    val filled = openLibrary.map { if (it.poster == null) it.copy(poster = covers[key(it)]?.poster) else it }
+    val byKey = google.groupBy(::key)
+    val filled = openLibrary.map { ol ->
+        val g = byKey[key(ol)].orEmpty()
+        ol.copy(
+            poster = ol.poster ?: g.firstNotNullOfOrNull { it.poster },
+            creator = ol.creator ?: g.firstNotNullOfOrNull { it.creator },
+            rating = pooledRating(listOf(ol) + g),
+            ratingCount = (listOf(ol) + g).sumOf { it.ratingCount ?: 0 }.takeIf { it > 0 },
+        )
+    }
     val seen = filled.map(::key).toSet()
-    return filled + google.filter { key(it) !in seen }
+    val all = filled + google.filter { key(it) !in seen }.distinctBy(::key)
+    return all.withIndex()
+        .sortedWith(compareByDescending<IndexedValue<MediaHit>> { it.value.ratingCount ?: 0 }.thenBy { it.index })
+        .map { it.value }
+}
+
+/** Ratings weighted by how many people gave each; a rating with no count counts as one. */
+fun pooledRating(hits: List<MediaHit>): Double? {
+    val rated = hits.filter { it.rating != null }
+    if (rated.isEmpty()) return null
+    val weights = rated.map { (it.ratingCount ?: 1).coerceAtLeast(1).toDouble() }
+    val total = rated.indices.sumOf { rated[it].rating!! * weights[it] } / weights.sum()
+    return kotlin.math.round(total * 10) / 10
 }

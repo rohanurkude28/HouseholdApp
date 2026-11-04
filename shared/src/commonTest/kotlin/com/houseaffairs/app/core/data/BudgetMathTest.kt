@@ -126,4 +126,32 @@ class BudgetMathTest {
         )
         assertEquals(Pace.AHEAD, summary.categories.first { it.name == "Dining" }.pace)
     }
+
+    @Test
+    fun `the family's own categories sit before Other`() {
+        val budget = Budget(1000, "INR", categories = mapOf("Maid" to 3000, "Groceries" to 500), customCategories = listOf("Cook", "cook", "Insurance", "other"))
+        val all = expenseCategories(budget)
+        assertEquals("Other", all.last())
+        assertEquals(listOf("Cook", "Insurance", "Maid"), all.dropLast(1).takeLast(3))
+        assertEquals(1, all.count { it == "Groceries" })
+        assertEquals(com.houseaffairs.app.feature.quickadd.EXPENSE_CATEGORIES.size, expenseCategories(null).size)
+    }
+
+    @Test
+    fun `a new category is one the family hasn't got yet`() {
+        val budget = Budget(1000, "INR", customCategories = listOf("Cook"))
+        assertTrue(isNewCategory("Driver", budget))
+        assertTrue(!isNewCategory("cook", budget))
+        assertTrue(!isNewCategory("Bills", budget))
+        assertTrue(!isNewCategory(" ", budget))
+    }
+
+    @Test
+    fun `a line naming the family's own category uses it`() {
+        val budget = Budget(1000, "INR", customCategories = listOf("Insurance", "Car insurance", "Cook"))
+        assertEquals("Cook", customCategoryIn("paid cook 6000", budget))
+        assertEquals("Car insurance", customCategoryIn("car insurance 12000", budget))
+        assertEquals(null, customCategoryIn("cooked dal", budget))
+        assertEquals(null, customCategoryIn("cook 5000", null))
+    }
 }

@@ -2,15 +2,24 @@ package com.houseaffairs.app
 
 import android.app.Application
 import com.houseaffairs.app.core.data.SettingsRepository
+import com.houseaffairs.app.core.data.SessionState
 import com.houseaffairs.app.notify.DigestWorker
+import com.houseaffairs.app.notify.Reminders
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class, kotlinx.coroutines.FlowPreview::class)
 @HiltAndroidApp
 class HouseAffairsApp : Application() {
 
@@ -19,6 +28,8 @@ class HouseAffairsApp : Application() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     @Inject lateinit var calendar: com.houseaffairs.app.core.calendar.CalendarStore
+    @Inject lateinit var session: com.houseaffairs.app.core.data.SessionManager
+    @Inject lateinit var home: com.houseaffairs.app.core.data.HomeRepository
 
     override fun onCreate() {
         super.onCreate()
@@ -29,6 +40,22 @@ class HouseAffairsApp : Application() {
             }
         }
         DigestWorker.createChannel(this)
+        Reminders.createChannel(this)
+        Reminders.schedulePeriodic(this)
+        // While the app runs, a new or changed task re-plans this phone's reminders straight away.
+        scope.launch {
+            session.state
+                .flatMapLatest { s ->
+                    when (s) {
+                        is SessionState.Ready -> home.observe(s.household.id, s.me, s.household.baseCurrency).filter { it.loaded }.map { it to s.me.uid }
+                        // Signed out: nothing should ring. Still loading (an alarm woke the app): leave them be.
+                        SessionState.SignedOut -> flowOf(null)
+                        else -> emptyFlow()
+                    }
+                }
+                .debounce(1_500)
+                .collect { pair -> if (pair != null) Reminders.sync(this@HouseAffairsApp, pair.first, pair.second) else Reminders.schedule(this@HouseAffairsApp, emptyList()) }
+        }
         // Keep the daily digest scheduled at the chosen hour (or off).
         scope.launch {
             settings.notificationPrefs.distinctUntilChanged { a, b -> a.enabled == b.enabled && a.hour == b.hour }.collect { prefs ->

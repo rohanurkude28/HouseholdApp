@@ -19,7 +19,32 @@ data class Budget(
     val paidBills: Set<String> = emptySet(),
     /** Monthly take-home income, if the family shared it; only used to suggest the budget. */
     val incomeMinor: Long = 0,
+    /** The family's own categories ("Cook", "Maid", "Insurance"), with or without a limit. */
+    val customCategories: List<String> = emptyList(),
 )
+
+/** Every category to pick from: the fixed ones, then the family's own, with "Other" last. */
+fun expenseCategories(budget: Budget?): List<String> {
+    val fixed = com.houseaffairs.app.feature.quickadd.EXPENSE_CATEGORIES - "Other"
+    val own = (budget?.customCategories.orEmpty() + budget?.categories?.keys.orEmpty())
+        .map { it.trim() }
+        .filter { c -> c.isNotEmpty() && !c.equals("Other", ignoreCase = true) && fixed.none { it.equals(c, ignoreCase = true) } }
+        .distinctBy { it.lowercase() }
+    return fixed + own + "Other"
+}
+
+/** True when [name] isn't one of the fixed categories, so saving it makes it the family's own. */
+fun isNewCategory(name: String, budget: Budget?): Boolean =
+    name.isNotBlank() && expenseCategories(budget).none { it.equals(name.trim(), ignoreCase = true) }
+
+/** The family's own category named in a line: "cook 5000" → "Cook" once they've added Cook. */
+fun customCategoryIn(text: String, budget: Budget?): String? {
+    val own = expenseCategories(budget).drop(com.houseaffairs.app.feature.quickadd.EXPENSE_CATEGORIES.size - 1).dropLast(1)
+    // Longest first, so "Car insurance" wins over "Insurance".
+    return own.sortedByDescending { it.length }.firstOrNull { c ->
+        Regex("\\b${Regex.escape(c)}s?\\b", RegexOption.IGNORE_CASE).containsMatchIn(text)
+    }
+}
 
 data class Txn(
     val id: String,

@@ -34,4 +34,25 @@ class MediaSearchTest {
         assertEquals(listOf("The White Tiger", "Atomic Habits", "Ikigai"), merged.map { it.title })
         assertEquals(listOf("g1.jpg", "ol.jpg", "g2.jpg"), merged.map { it.poster })
     }
+
+    @Test
+    fun `book ratings are pooled and the most rated come first`() {
+        val ol = listOf(
+            MediaHit("Atomic Habits (summary)", "2020", "Book", null, rating = 6.0, ratingCount = 3),
+            MediaHit("Atomic Habits", "2018", "Book", null, rating = 8.0, ratingCount = 100),
+        )
+        val g = listOf(MediaHit("Atomic habits", "2018", "Book", "g.jpg", creator = "James Clear", rating = 9.0, ratingCount = 100))
+        val merged = mergeBooks(ol, g)
+        assertEquals("Atomic Habits", merged.first().title)
+        assertEquals(8.5, merged.first().rating)
+        assertEquals(200, merged.first().ratingCount)
+        assertEquals("James Clear", merged.first().creator)
+        assertEquals("g.jpg", merged.first().poster)
+    }
+
+    @Test
+    fun `a rating without a count still counts`() {
+        assertEquals(7.0, pooledRating(listOf(MediaHit("A", null, "Book", null, rating = 7.0))))
+        assertEquals(null, pooledRating(listOf(MediaHit("A", null, "Book", null))))
+    }
 }

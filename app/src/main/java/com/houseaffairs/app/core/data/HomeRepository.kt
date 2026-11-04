@@ -82,6 +82,7 @@ class HomeRepository @Inject constructor(
                             priority = when (it.getString("priority")) { "High" -> "High"; "Medium", "Normal" -> "Medium"; else -> "Low" },
                             reach = it.getString("reach"),
                             phone = it.getString("phone")?.takeIf { p -> p.isNotBlank() },
+                            time = it.getString("time")?.takeIf { t -> t.isNotBlank() },
                         )
                     }
                     // Soonest first; on the same day, High before Medium before Low.

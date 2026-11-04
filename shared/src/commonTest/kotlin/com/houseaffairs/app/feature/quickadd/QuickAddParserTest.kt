@@ -100,7 +100,7 @@ class QuickAddParserTest {
     @Test
     fun `time of day is not an amount`() {
         assertEquals(
-            QuickAddDraft.Task("Riya dentist 5pm", localDate(2026, 11, 6)),
+            QuickAddDraft.Task("Riya dentist", localDate(2026, 11, 6), time = "5:00 pm"),
             parser.parse("Riya dentist Friday 5pm"),
         )
     }
@@ -420,5 +420,93 @@ class QuickAddParserTest {
         assertEquals("919876543210", com.houseaffairs.app.core.util.whatsAppNumber("098765-43210"))
         assertEquals("447700900123", com.houseaffairs.app.core.util.whatsAppNumber("+44 7700 900123"))
         assertEquals("919876543210", com.houseaffairs.app.core.util.whatsAppNumber("0091 98765 43210"))
+    }
+
+    private val pickBooks = QuickAddDraft.Ask(QuickAddDraft.Question.PICK, "BOOKS")
+
+    @Test
+    fun `wanting to read goes to books - never the gullak`() {
+        assertEquals(pickBooks, parser.parse("want to read a book"))
+        assertEquals(pickBooks, parser.parse("I want to read a book."))
+        assertEquals(pickBooks, parser.parse("i want to read"))
+        assertEquals(pickBooks, parser.parse("I'd like to read a book"))
+        assertEquals(pickBooks, parser.parse("I want to start reading a book"))
+        assertEquals(pickBooks, parser.parse("want to read more books"))
+        assertEquals(pickBooks, parser.parse("I want to finish this book"))
+        assertEquals(QuickAddDraft.ListItem(ListTemplate.BOOKS, "Sapiens"), parser.parse("reading list Sapiens"))
+        assertEquals(QuickAddDraft.ListItem(ListTemplate.WATCH, "Dune"), parser.parse("watchlist: Dune"))
+        assertEquals(QuickAddDraft.ListItem(ListTemplate.WATCH, "Dune"), parser.parse("I'd love to watch Dune"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.PICK, "WATCH"), parser.parse("want to watch"))
+    }
+
+    @Test
+    fun `plain wishes are tasks - not dreams`() {
+        val call = parser.parse("I want to call mom") as QuickAddDraft.Task
+        assertEquals("Call mom", call.title)
+        assertEquals("Call", call.reach)
+        assertEquals("Pay rent", (parser.parse("want to pay rent") as QuickAddDraft.Task).title)
+        assertEquals("Start yoga", (parser.parse("want to start yoga") as QuickAddDraft.Task).title)
+        assertEquals("Cook biryani", (parser.parse("want to cook biryani") as QuickAddDraft.Task).title)
+        assertEquals("Get fit", (parser.parse("want to get fit") as QuickAddDraft.Task).title)
+        assertEquals("Visit grandma", (parser.parse("want to visit grandma") as QuickAddDraft.Task).title)
+        assertEquals("Try yoga", (parser.parse("want to try yoga") as QuickAddDraft.Task).title)
+    }
+
+    @Test
+    fun `saving up is still a dream`() {
+        val car = parser.parse("want to buy a car 5 lakh") as QuickAddDraft.Dream
+        assertEquals("Buy a car", car.title)
+        assertAmount("500000", car.amount!!)
+        assertTrue(parser.parse("want to save for a house") is QuickAddDraft.Dream)
+        assertTrue(parser.parse("want to go on a holiday") is QuickAddDraft.Dream)
+    }
+
+    @Test
+    fun `wishes land on the right list`() {
+        assertEquals(QuickAddDraft.ListItem(ListTemplate.TRAVEL, "Ladakh"), parser.parse("we want to go to Ladakh next year"))
+        assertEquals(QuickAddDraft.ListItem(ListTemplate.BUY, "A book"), parser.parse("want to buy a book"))
+        assertEquals(QuickAddDraft.ListItem(ListTemplate.BUY, "A new phone"), parser.parse("want to get a new phone"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.PICK, "EAT_OUT"), parser.parse("want to try a new restaurant"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.PICK, "MUSIC"), parser.parse("want to listen to a podcast"))
+        // A wish with no title isn't a book called "I need".
+        assertTrue(parser.parse("I need to read") is QuickAddDraft.Task)
+    }
+
+    @Test
+    fun `household help - insurance and fees have categories`() {
+        val cook = expense("cook 5000")
+        assertEquals("Home", cook.category)
+        assertEquals("Help", cook.subcategory)
+        assertEquals("Cash", expense("paid maid 3000 cash").paidWith)
+        assertEquals("Insurance", expense("insurance premium 12000").subcategory)
+        assertEquals("Education", expense("school fees 25000").subcategory)
+        val book = expense("bought a novel 399 on card")
+        assertEquals("Shopping", book.category)
+        assertEquals("Card", book.paidWith)
+        assertTrue(parser.parse("cooked dal for 4") is QuickAddDraft.Cooked)
+    }
+
+    @Test
+    fun `lakh and crore are amounts`() {
+        assertAmount("150000", expense("1.5 lakh for car service").amount)
+        assertAmount("20000000", (parser.parse("dream house 2 crore") as QuickAddDraft.Dream).amount!!)
+    }
+
+    @Test
+    fun `a time said with a task is kept for its reminder`() {
+        val call = parser.parse("remind me to call mom at 5:30 pm") as QuickAddDraft.Task
+        assertEquals("Call mom", call.title)
+        assertEquals("5:30 pm", call.time)
+        assertEquals(localDate(2026, 11, 2), call.due)
+        val rent = parser.parse("pay rent tomorrow 9am") as QuickAddDraft.Task
+        assertEquals("Pay rent", rent.title)
+        assertEquals("9:00 am", rent.time)
+        assertEquals(localDate(2026, 11, 3), rent.due)
+        assertEquals("8:00 pm", (parser.parse("call Ravi tonight") as QuickAddDraft.Task).time)
+        assertEquals("6:00 pm", (parser.parse("call the bank at 18:00") as QuickAddDraft.Task).time)
+        // Gone already today, so tomorrow.
+        val late = QuickAddParser(today = { localDate(2026, 11, 2) }, nowMinute = { 11 * 60 })
+        assertEquals(localDate(2026, 11, 3), (late.parse("call mom at 9 am") as QuickAddDraft.Task).due)
+        assertNull((parser.parse("call 2 plumbers") as QuickAddDraft.Task).time)
     }
 }

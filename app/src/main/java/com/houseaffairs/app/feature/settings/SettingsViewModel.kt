@@ -192,7 +192,15 @@ class SettingsViewModel @Inject constructor(
 
     /** Owner only: wipes the family's entries, keeping the home and its members. */
     fun resetEverything(onDone: (Int) -> Unit) {
-        withHousehold { hid -> onDone(households.resetHousehold(hid)) }
+        withHousehold { hid ->
+            onDone(households.resetHousehold(hid))
+            // A fresh start gets the tour again, to set things up one at a time.
+            settings.restartTour()
+        }
+    }
+
+    fun showTour() {
+        viewModelScope.launch { settings.restartTour() }
     }
 
     fun signOut() {

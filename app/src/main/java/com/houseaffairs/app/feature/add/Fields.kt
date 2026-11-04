@@ -61,6 +61,8 @@ data class ChoiceSpec(
     val replacedByDynamic: String? = null,
     val multi: Boolean = false,
     val allowCustom: Boolean = false,
+    /** A clock time ("5:30 pm"): "Other" opens a time picker instead of a text box. */
+    val isTime: Boolean = false,
     override val required: Boolean = false,
     override val essential: Boolean = true,
     override val visibleWhen: (FormValues) -> Boolean = { true },

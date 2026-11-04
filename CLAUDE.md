@@ -113,6 +113,8 @@ firebase emulators:start --project demo-houseaffairs --only auth,firestore   # U
 - **Optional keys** in `local.properties`: `tmdb.apiKey` and `omdb.apiKey` (IMDb and Rotten Tomatoes).
 
 **Notifications.** `notify/DigestWorker` sends one daily digest via WorkManager. `HouseAffairsApp` reschedules it whenever the notification settings change. The digest content comes from the pure `Digest.kt`.
+- Timed reminders ("call mom at 5:30") are separate: the pure `plannedReminders()` (`:shared` `Reminders.kt`) picks them from Home data, and `notify/Reminders` sets AlarmManager alarms. `HouseAffairsApp` re-plans whenever Home data changes; `ReminderWorker` every 4 hours and `ReminderBootReceiver` after a restart. A task's time is the `time` field ("5:30 pm").
+- `POST_NOTIFICATIONS` is asked in the first-run tour (`ui/TourScreen`, steps from `core/data/Tour.kt`, progress in `SettingsRepository.tourStep`). The tour shows after first sign-in, after "Reset everything", and from Settings.
 
 ## Conventions
 

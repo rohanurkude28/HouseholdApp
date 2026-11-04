@@ -36,6 +36,8 @@ data class TaskItem(
     /** "Call", "WhatsApp" or "SMS" for "call mom" / "message Ravi"; the row then opens that app. */
     val reach: String? = null,
     val phone: String? = null,
+    /** "5:30 pm" when the task has a time; it then reminds at that time on its due date. */
+    val time: String? = null,
 )
 
 data class StockItem(val id: String, val title: String, val expiry: LocalDate?, val level: Int?)

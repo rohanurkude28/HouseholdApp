@@ -1,8 +1,11 @@
 package com.houseaffairs.app.feature.quickadd
 
+import com.houseaffairs.app.core.data.formatClock
+import com.houseaffairs.app.core.data.minuteOfDay
 import com.houseaffairs.app.core.time.*
 import com.houseaffairs.app.core.util.Decimal
 import com.houseaffairs.app.core.util.decimalOf
+import com.houseaffairs.app.core.util.plainString
 import com.houseaffairs.app.core.util.times
 import kotlinx.datetime.DayOfWeek
 
@@ -78,7 +81,15 @@ sealed interface QuickAddDraft {
     /** [quantity] is "500 g", "2 pcs"…, or null when none was said. */
     data class Shopping(val item: String, val quantity: String? = null) : QuickAddDraft
     /** [repeat] is "Daily", "Weekly" or "Monthly" for "water plants every week", else null. */
-    data class Task(val title: String, val due: LocalDate?, val repeat: String? = null, val priority: String? = null, val reach: String? = null) : QuickAddDraft
+    data class Task(
+        val title: String,
+        val due: LocalDate?,
+        val repeat: String? = null,
+        val priority: String? = null,
+        val reach: String? = null,
+        /** "5:30 pm" when a time was said; the task then reminds at that time. */
+        val time: String? = null,
+    ) : QuickAddDraft
     data class Event(val title: String, val kind: String, val date: LocalDate?) : QuickAddDraft
     data class Medicine(val title: String, val forName: String?, val expiry: LocalDate?) : QuickAddDraft
     data class Grocery(val title: String, val quantity: String?, val expiry: LocalDate?) : QuickAddDraft
@@ -154,10 +165,14 @@ sealed interface QuickAddDraft {
  *
  * Rule-based and on-device for the beta. Drafts only pre-fill a form; nothing is saved unseen.
  */
-class QuickAddParser(private val today: () -> LocalDate = ::systemToday) {
+class QuickAddParser(
+    private val today: () -> LocalDate = ::systemToday,
+    /** Minutes after midnight now, so "at 9 am" said at 10 means tomorrow; null when unknown. */
+    private val nowMinute: () -> Int? = { null },
+) {
 
     fun parse(input: String): QuickAddDraft? {
-        val text = input.trim().replace(WHITESPACE, " ")
+        val text = withLakhs(input.trim().replace(WHITESPACE, " "))
         if (text.isEmpty()) return null
         return parseWant(text)
             ?: parseAsk(text)
@@ -175,7 +190,7 @@ class QuickAddParser(private val today: () -> LocalDate = ::systemToday) {
         val text = input.trim().replace(WHITESPACE, " ")
         val draft = parse(text) as? QuickAddDraft.Task ?: return false
         if (draft.due != null || TASK_PREFIX.containsMatchIn(text)) return false
-        return text.split(" ").first().normalizedWord() !in TASK_VERBS
+        return WANT_PREFIX.replace(text, "").split(" ").first().normalizedWord() !in TASK_VERBS
     }
 
     /** [input] read as [kind], for when the family (or a guess) says what it really is. */
@@ -195,7 +210,14 @@ class QuickAddParser(private val today: () -> LocalDate = ::systemToday) {
     }
 
     /** [input] as something new to save, ignoring change commands ("update passport" as a task). */
-    fun parseAsNew(input: String): QuickAddDraft? = parseSingle(input.trim().replace(WHITESPACE, " "))
+    fun parseAsNew(input: String): QuickAddDraft? = parseSingle(withLakhs(input.trim().replace(WHITESPACE, " ")))
+
+    /** "5 lakh" → "500000", "1.2 crore" → "12000000": said that way, but every amount rule reads digits. */
+    private fun withLakhs(text: String): String = LAKH.replace(text) { m ->
+        val n = decimalOf(m.groupValues[1]) ?: return@replace m.value
+        val unit = if (m.groupValues[2].lowercase().startsWith("c")) 10_000_000L else 100_000L
+        (n * decimalOf(unit)).plainString().replace(Regex("\\.0+$"), "")
+    }
 
     /** Everything but questions, changes and batches; also used for each part of a batch. */
     private fun parseSingle(text: String): QuickAddDraft? {
@@ -489,14 +511,23 @@ class QuickAddParser(private val today: () -> LocalDate = ::systemToday) {
     }
 
     /**
-     * "Want to watch Oppenheimer" goes on the watch list; "want to watch a movie" (nothing named)
+     * "Want to watch Oppenheimer" goes on the watch list; "want to read a book" (nothing named)
      * asks for picks from it. Before dreams, so "want to …" with a list verb isn't a savings goal.
      * With an amount ("want to buy a car 5 lakh") it's left to dreams.
      */
     private fun parseWant(text: String): QuickAddDraft? {
+        val t = text.trim().trimEnd('?', '.', '!')
+        // "Reading list: Sapiens", "watchlist Dune".
+        LIST_PREFIX.matchEntire(t)?.let { m ->
+            val template = if (m.groupValues[1].lowercase().contains("watch")) ListTemplate.WATCH else ListTemplate.BOOKS
+            return QuickAddDraft.ListItem(template, cleanWantTitle(m.groupValues[2]))
+        }
+        WANT.matchEntire(t)?.let { m -> wantDraft(m.groupValues[1].lowercase().replace(WHITESPACE, " "), m.groupValues[2].trim())?.let { return it } }
         // "Batman dark night to watch together", "Atomic Habits to read".
-        TO_DO_LATER.matchEntire(text.trim().trimEnd('?', '.', '!'))?.let { m ->
-            val template = when (m.groupValues[2].lowercase().replace(Regex("\\s+"), " ")) {
+        TO_DO_LATER.matchEntire(t)?.let { m ->
+            // "I need to read" is a wish without a title, not a book called "I need".
+            if (m.groupValues[1].lowercase().split(" ").last() in WISH_VERBS) return null
+            val template = when (m.groupValues[2].lowercase().replace(WHITESPACE, " ")) {
                 "watch", "see" -> ListTemplate.WATCH
                 "read" -> ListTemplate.BOOKS
                 "learn", "study" -> ListTemplate.STUDY
@@ -504,32 +535,59 @@ class QuickAddParser(private val today: () -> LocalDate = ::systemToday) {
             }
             return QuickAddDraft.ListItem(template, m.groupValues[1].trim().capitalized())
         }
-        val m = WANT.matchEntire(text.trim().trimEnd('?', '.', '!')) ?: return null
-        val verb = m.groupValues[1].lowercase().replace(Regex("\\s+"), " ")
-        val what = m.groupValues[2].trim()
-        val template = when (verb) {
-            "watch", "see" -> ListTemplate.WATCH
-            "read" -> ListTemplate.BOOKS
-            "listen to", "hear" -> ListTemplate.MUSIC
-            "visit", "go to", "travel to", "go on a trip to" -> ListTemplate.TRAVEL
-            "eat at", "try out", "go out to" -> ListTemplate.EAT_OUT
-            "buy", "get" -> ListTemplate.BUY
-            "gift" -> ListTemplate.GIFTS
-            "learn", "study" -> ListTemplate.STUDY
+        return null
+    }
+
+    /** The list a "want to [verb] [what]" belongs on, or null when it's a plain wish (a task or a dream). */
+    private fun wantDraft(verb: String, what: String): QuickAddDraft? {
+        val lowerWhat = what.lowercase()
+        val first = lowerWhat.substringBefore(' ')
+        val template = when {
+            "read" in verb -> ListTemplate.BOOKS
+            "watch" in verb || "binge" in verb || verb == "see" -> ListTemplate.WATCH
+            "listen" in verb || verb == "hear" -> ListTemplate.MUSIC
+            verb in setOf("learn", "study") -> ListTemplate.STUDY
+            verb == "gift" -> ListTemplate.GIFTS
+            // "Finish this book", "start a new series": only about something to read or watch.
+            verb in setOf("finish", "start", "continue", "begin") -> when {
+                words(lowerWhat).any { it in setOf("book", "books", "novel", "novels") } -> ListTemplate.BOOKS
+                words(lowerWhat).any { it in setOf("movie", "movies", "film", "series", "show", "shows", "season") } -> ListTemplate.WATCH
+                else -> return null
+            }
+            verb in setOf("eat at", "try out", "go out to") -> ListTemplate.EAT_OUT
+            // "Try a new restaurant" is eating out; "try yoga" isn't.
+            verb == "try" -> if (words(lowerWhat).any { it in PLACE_NOUNS }) ListTemplate.EAT_OUT else return null
+            // "Visit grandma" is a plan with family, not a travel wish.
+            verb in setOf("visit", "go to", "travel to", "go on a trip to") -> if (first in PEOPLE_WORDS || words(lowerWhat).any { it in PEOPLE_WORDS }) return null else ListTemplate.TRAVEL
+            // "Get fit", "get married": not shopping.
+            verb == "buy" || verb == "get" -> if (verb == "get" && (first in GET_NOT_BUY || first.isEmpty())) return null else ListTemplate.BUY
             else -> return null
         }
         // "want to buy a new car 8 lakh" is saving up for something: a dream, not a wish.
         if (template == ListTemplate.BUY && WANT_AMOUNT.containsMatchIn(what)) return null
-        // "a movie", "something", "some music", "a good book": nothing named, so suggest from the list.
-        if (what.lowercase().split(Regex("[^\\p{L}]+")).filter { it.isNotEmpty() }.all { it in GENERIC_WANT_WORDS }) {
-            return QuickAddDraft.Ask(QuickAddDraft.Question.PICK, template.name)
+        // "a movie", "something", "some music", "a good book", or nothing at all: suggest from the list.
+        val said = words(lowerWhat).filter { it.isNotEmpty() }
+        val nounsOk = when {
+            template.isMedia -> MEDIA_NOUNS
+            template == ListTemplate.TRAVEL || template == ListTemplate.EAT_OUT -> PLACE_NOUNS
+            else -> emptySet()
         }
-        val title = what.removePrefix("the ").removePrefix("The ").trim().capitalized()
+        if (said.all { it in GENERIC_WANT_WORDS || it in nounsOk }) {
+            return if (template.isMedia || nounsOk.isNotEmpty() || said.isNotEmpty()) QuickAddDraft.Ask(QuickAddDraft.Question.PICK, template.name) else null
+        }
+        val title = cleanWantTitle(what.removePrefix("the ").removePrefix("The "))
         return QuickAddDraft.ListItem(template, title)
     }
 
+    /** "Ladakh next year" → "Ladakh": when is for the list, not the title. */
+    private fun cleanWantTitle(raw: String): String =
+        raw.replace(WANT_WHEN_TAIL, "").trim().trim(*PUNCTUATION).capitalized()
+
     private fun parseDream(text: String): QuickAddDraft.Dream? {
-        val body = (DREAM_PREFIX.matchEntire(text) ?: return null).groupValues[1]
+        val match = DREAM_PREFIX.matchEntire(text) ?: return null
+        val body = match.groupValues[1]
+        // "Want to call mom" or "want to start reading" is a to-do; only saving up for something is a dream.
+        if (WANT_PREFIX.containsMatchIn(text) && !WANT_AMOUNT.containsMatchIn(body) && !SAVING_UP.containsMatchIn(body)) return null
         val words = body.split(" ").toMutableList()
         val date = extractDate(words, endOfMonth = true)
         var rest = words.joinToString(" ")
@@ -559,7 +617,7 @@ class QuickAddParser(private val today: () -> LocalDate = ::systemToday) {
             tail.groupValues[1].toIntOrNull()?.let { servings = it }
             dish = dish.removeRange(tail.range).trim()
         }
-        if (dish.isEmpty()) return null
+        if (dish.isEmpty() || hasBareAmount(dish)) return null
         return QuickAddDraft.Cooked(dish.capitalized(), servings)
     }
 
@@ -657,7 +715,8 @@ class QuickAddParser(private val today: () -> LocalDate = ::systemToday) {
             normalized.firstOrNull() in SPEND_VERBS ||
             normalized.any { it in MONEY_WORDS } ||
             category != null ||
-            frequency != null
+            frequency != null ||
+            paidWith != null
         if (!looksLikeMoney) return null
 
         val currency = currencyToken?.let(::currencyCode)
@@ -692,7 +751,7 @@ class QuickAddParser(private val today: () -> LocalDate = ::systemToday) {
     }
 
     private fun parseTask(text: String): QuickAddDraft.Task {
-        var rest = TASK_PREFIX.replace(text, "")
+        var rest = WANT_PREFIX.replace(TASK_PREFIX.replace(text, ""), "")
         // "every sunday" repeats weekly from the coming Sunday; "daily", "every month"… just repeat.
         val repeat = TASK_REPEAT.find(rest)?.let { m ->
             val unit = m.groupValues[1].ifEmpty { m.groupValues[2] }.lowercase()
@@ -708,12 +767,20 @@ class QuickAddParser(private val today: () -> LocalDate = ::systemToday) {
             rest = rest.removeRange(m.range).trim()
             if (m.value.lowercase().startsWith("medium")) "Medium" else "High"
         }
+        // "at 5:30 pm", "17:30", "noon": a time to be reminded at.
+        var minute = TASK_TIME.find(rest)?.let { m ->
+            minuteOfDay(m.groupValues[1].replace(".", ":"))?.also { rest = rest.removeRange(m.range).trim() }
+        }
+        val tonight = Regex("\\btonight\\b", RegexOption.IGNORE_CASE).containsMatchIn(rest)
         val words = rest.split(" ").filter { it.isNotEmpty() }.toMutableList()
         val due = extractDate(words)
+        if (minute == null && tonight) minute = 20 * 60
         val title = words.joinToString(" ").trim().trimEnd(',', '-').capitalized()
         // "Call mom", "message Ravi": the task opens the dialer or WhatsApp, and is due today unless a day was said.
         val reach = reachOf(title)
-        return QuickAddDraft.Task(title.ifEmpty { text }, due ?: if (reach != null) today() else null, repeat, priority, reach)
+        // A time with no day is the next one: today, or tomorrow once it has passed.
+        val timedDue = minute?.let { at -> if ((nowMinute() ?: -1) >= at) today().plusDays(1) else today() }
+        return QuickAddDraft.Task(title.ifEmpty { text }, due ?: timedDue ?: if (reach != null) today() else null, repeat, priority, reach, minute?.let(::formatClock))
     }
 
     // -----------------------------------------------------------------------------------------
@@ -917,6 +984,11 @@ class QuickAddParser(private val today: () -> LocalDate = ::systemToday) {
             "electricity" to ("Bills" to "Electricity"), "wifi" to ("Bills" to "Internet"), "internet" to ("Bills" to "Internet"),
             "vegetables" to ("Groceries" to "Vegetables"), "fruits" to ("Groceries" to "Fruits"), "milk" to ("Groceries" to "Dairy"),
             "doctor" to ("Health" to "Doctor"), "pharmacy" to ("Health" to "Medicines"), "gym" to ("Health" to "Gym"),
+            "cook" to ("Home" to "Help"), "maid" to ("Home" to "Help"), "driver" to ("Home" to "Help"), "nanny" to ("Home" to "Help"),
+            "gardener" to ("Home" to "Help"), "watchman" to ("Home" to "Help"), "dhobi" to ("Home" to "Laundry"), "ironing" to ("Home" to "Laundry"),
+            "insurance" to ("Bills" to "Insurance"), "premium" to ("Bills" to "Insurance"), "lic" to ("Bills" to "Insurance"),
+            "fees" to ("Bills" to "Education"), "tuition" to ("Bills" to "Education"), "school" to ("Bills" to "Education"),
+            "books" to ("Shopping" to "Books"), "novel" to ("Shopping" to "Books"), "stationery" to ("Shopping" to "Stationery"),
         )
         val GOING_TO = Regex(
             "^(?:(?:i am|i'm|im|we are|we're|am|we|i)\\s+)?(?:going|heading|off|driving|walking|on (?:my|our) way)\\s+(?:to|towards|near|around)\\s+(?:the\\s+)?(.+)$",
@@ -970,19 +1042,41 @@ class QuickAddParser(private val today: () -> LocalDate = ::systemToday) {
             "^(?:add\\s+)?(.+?)\\s+to\\s+(watch|see|read|listen to|learn|study)(?:\\s+(?:together|later|sometime|someday|this weekend|with family))?$",
             RegexOption.IGNORE_CASE,
         )
+        const val WISH = "(?:i\\s+|we\\s+|i(?=['’])|we(?=['’]))?(?:really\\s+|also\\s+|just\\s+)?" +
+            "(?:want to|wanna|would like to|would love to|['’]d like to|['’]d love to|love to|wish to|hope to|feel like|in the mood to|plan to|planning to)"
+        /** "I want to", "I'd like to": stripped from wishes that end up as tasks. */
+        val WANT_PREFIX = Regex("^$WISH\\s+", RegexOption.IGNORE_CASE)
+        // Longer verbs first so "start reading" isn't read as "start".
         val WANT = Regex(
-            "^(?:i |we )?(?:really )?(?:want to|wanna|would like to|'d like to|feel like|in the mood to|plan to|planning to)\\s+" +
-                "(watch|see|read|listen to|hear|learn|study|visit|go to|travel to|go on a trip to|eat at|try out|go out to|buy|get|gift)\\s+(.+)$",
+            "^$WISH\\s+" +
+                "(start reading|finish reading|continue reading|read more|re-?read|read|start watching|finish watching|binge watch|binge|re-?watch|watch|see|" +
+                "listen to|hear|learn|study|visit|go to|travel to|go on a trip to|eat at|try out|go out to|try|buy|get|gift|finish|start|continue|begin)(?:\\s+(.+))?$",
             RegexOption.IGNORE_CASE,
         )
+        val LAKH = Regex("(\\d+(?:\\.\\d+)?)\\s?(lakhs?|lacs?|crores?|cr)\\b", RegexOption.IGNORE_CASE)
+        val LIST_PREFIX = Regex("^(reading list|to-?read list|book list|books list|watch ?list|watch later)\\s*[:\\-]?\\s+(.+)$", RegexOption.IGNORE_CASE)
+        /** Last words before "to read" that mean a wish, not a title: "I need to read". */
+        val WISH_VERBS = setOf("want", "wanna", "need", "have", "like", "love", "plan", "going", "got", "gotta", "trying", "try", "hope", "wish")
+        val WANT_WHEN_TAIL = Regex("\\s+(?:next|this|coming)\\s+(?:year|month|week|weekend|summer|winter)$|\\s+(?:someday|sometime|one day|soon|later|together|with family|tonight)$", RegexOption.IGNORE_CASE)
+        /** "Want to save for a house", "want to go on a holiday": saving up, so a dream. */
+        val SAVING_UP = Regex("^(?:save|save up|buy|own|build|afford|purchase)\\b|\\b(?:trip|holiday|vacation|wedding)\\b", RegexOption.IGNORE_CASE)
+        val MEDIA_NOUNS = setOf(
+            "movie", "movies", "film", "films", "show", "shows", "series", "book", "books", "novel", "novels",
+            "song", "songs", "music", "album", "albums", "podcast", "podcasts",
+        )
+        val PLACE_NOUNS = setOf("place", "places", "somewhere", "restaurant", "restaurants", "cafe", "cafes", "spot")
+        val PEOPLE_WORDS = setOf(
+            "mom", "mum", "mummy", "dad", "papa", "grandma", "grandpa", "nani", "dadi", "nana", "dada", "uncle", "aunt", "aunty",
+            "parents", "in-laws", "inlaws", "friends", "friend", "doctor", "dentist", "relatives", "cousin", "cousins",
+        )
+        val GET_NOT_BUY = setOf("fit", "better", "healthy", "up", "ready", "married", "rid", "back", "started", "well", "promoted", "stronger", "organised", "organized", "in", "some", "sleep", "rest", "out")
         val WANT_AMOUNT = Regex("\\d+(?:\\.\\d+)?\\s?(?:lakh|lac|lakhs|crore|cr|k)\\b|[₹$]|\\brs\\.?\\s?\\d|\\d{3,}", RegexOption.IGNORE_CASE)
         /** Words that don't name anything: "a good movie", "something funny", "some music tonight". */
         val GENERIC_WANT_WORDS = setOf(
             "a", "an", "some", "something", "anything", "one", "good", "nice", "new", "fun", "light", "funny", "short", "long",
             "hindi", "english", "interesting", "romantic", "comedy", "action", "horror", "thriller", "relaxing", "chill",
-            "movie", "movies", "film", "films", "show", "shows", "series", "book", "books", "novel", "song", "songs", "music",
-            "album", "place", "somewhere", "restaurant", "tonight", "today", "now", "this", "weekend", "together", "with",
-            "the", "family", "kids", "to", "for",
+            "tonight", "today", "now", "this", "that", "weekend", "together", "with", "more", "few", "couple", "of", "next",
+            "the", "family", "kids", "to", "for", "my", "our", "again", "later", "sometime", "someday", "before", "bed", "bedtime",
         )
         val DREAM_PREFIX = Regex(
             "^(?:(?:start|create|make|open|new)\\s+(?:a\\s+)?gullak(?:\\s+for)?|gullak\\s+for|dream|goal|vision|bucket list|we want to|i want to|want to|plan to|planning to|save up for|save for|saving for)\\s*[:\\-]?\\s+(.+)$",
@@ -1028,6 +1122,7 @@ class QuickAddParser(private val today: () -> LocalDate = ::systemToday) {
             "apply", "finish", "complete", "meet", "remind", "collect", "deposit", "register", "print", "reply", "text",
             "message", "ask", "tell", "do", "make", "change", "replace", "install", "sort", "organise", "organize", "plan",
         )
+        val TASK_TIME = Regex("(?:\\s|^)(?:at|@|by|around)?\\s*(\\d{1,2}(?:[:.]\\d{2})?\\s?(?:am|pm|a\\.m\\.|p\\.m\\.)|\\d{1,2}:\\d{2}|noon)(?=\\s|$|[,.!?])", RegexOption.IGNORE_CASE)
         val TASK_PREFIX = Regex("^(?:remind me to|remind me|todo:?|to-do:?|task:?)\\s+", RegexOption.IGNORE_CASE)
 
         val SHOPPING_ALIASES = setOf("shopping", "grocery", "groceries", "cart")
@@ -1131,12 +1226,12 @@ class QuickAddParser(private val today: () -> LocalDate = ::systemToday) {
             "Groceries" to listOf("grocery", "groceries", "vegetables", "veggies", "fruits", "milk", "supermarket"),
             "Dining" to listOf("dinner", "lunch", "breakfast", "restaurant", "cafe", "coffee", "food", "snacks"),
             "Transport" to listOf("taxi", "cab", "auto", "fuel", "petrol", "diesel", "metro", "bus", "train", "parking", "toll"),
-            "Bills" to listOf("electricity", "water", "gas", "internet", "wifi", "broadband", "mobile", "recharge", "bill"),
+            "Bills" to listOf("electricity", "water", "gas", "internet", "wifi", "broadband", "mobile", "recharge", "bill", "insurance", "premium", "lic", "fees", "tuition"),
             "Rent" to listOf("rent", "emi", "maintenance"),
             "Health" to listOf("medicine", "medicines", "pharmacy", "doctor", "hospital", "clinic", "lab", "dentist", "gym"),
-            "Shopping" to listOf("clothes", "shoes", "shopping"),
+            "Shopping" to listOf("clothes", "shoes", "shopping", "books", "novel", "stationery"),
             "Entertainment" to listOf("movie", "movies", "concert", "tickets"),
-            "Home" to listOf("furniture", "repair", "plumber", "electrician", "maid", "cleaning"),
+            "Home" to listOf("furniture", "repair", "plumber", "electrician", "maid", "cleaning", "cook", "driver", "nanny", "gardener", "watchman", "dhobi"),
             "Travel" to listOf("flight", "hotel", "trip", "travel", "visa"),
             "Gifts" to listOf("gift", "gifts", "present"),
         )

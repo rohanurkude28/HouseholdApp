@@ -3,6 +3,7 @@ package com.houseaffairs.app.feature.settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material.icons.outlined.DeleteForever
+import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.material.icons.outlined.Event
@@ -233,6 +234,7 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
         item { SectionHeader("Account") }
         item {
             SettingsGroup {
+                SettingsRow(Icons.Outlined.Explore, colors.plans, "Show the app tour", "Every feature, one at a time", onClick = viewModel::showTour)
                 val danger = Accent(MaterialTheme.colorScheme.error, MaterialTheme.colorScheme.error.copy(alpha = 0.12f))
                 if (state.isOwner) {
                     SettingsRow(Icons.Outlined.DeleteForever, danger, "Reset everything", resetNote ?: "Start fresh: clears all lists and entries for the family") {

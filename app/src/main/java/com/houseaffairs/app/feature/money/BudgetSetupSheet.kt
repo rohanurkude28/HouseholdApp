@@ -79,6 +79,9 @@ fun BudgetSetupSheet(existing: Budget?, currency: String, onSave: (Budget) -> Un
             existing?.categories?.forEach { (k, v) -> put(k, wholeUnits(v, currency)) }
         }
     }
+    // The family's own categories (cook, maid, insurance…); they stay until removed here.
+    val custom = remember { mutableStateListOf<String>().apply { existing?.customCategories?.let(::addAll) } }
+    var askCategory by remember { mutableStateOf(false) }
     val limitMinor = parseMinor(limit, currency)
     val savingsMinor = parseMinor(savings, currency) ?: 0
     val assigned = split.values.sumOf { parseMinor(it, currency) ?: 0 }
@@ -212,7 +215,7 @@ fun BudgetSetupSheet(existing: Budget?, currency: String, onSave: (Budget) -> Un
                     IconBlob(categoryIcon(category), money, size = 36.dp)
                     Spacer(Modifier.width(12.dp))
                     Text(category, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-                    IconButton(onClick = { split.remove(category) }) { Icon(Icons.Outlined.Close, contentDescription = "Remove $category", modifier = Modifier.size(18.dp)) }
+                    IconButton(onClick = { split.remove(category); custom.remove(category) }) { Icon(Icons.Outlined.Close, contentDescription = "Remove $category", modifier = Modifier.size(18.dp)) }
                     OutlinedTextField(
                         value = split[category] ?: "",
                         onValueChange = { v -> split[category] = v.filter { c -> c.isDigit() || c == '.' } },
@@ -225,14 +228,40 @@ fun BudgetSetupSheet(existing: Budget?, currency: String, onSave: (Budget) -> Un
                 }
             }
 
-            val unused = (SUGGESTED_SPLIT.keys + com.houseaffairs.app.feature.quickadd.EXPENSE_CATEGORIES).distinct().filter { it !in split.keys }
-            if (unused.isNotEmpty()) {
-                Text(if (split.isEmpty()) "Add a category" else "Add another", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    unused.forEach { c ->
-                        FilterChip(selected = false, onClick = { split[c] = "" }, label = { Text("+ $c") }, shape = CircleShape)
-                    }
+            val unused = (SUGGESTED_SPLIT.keys + com.houseaffairs.app.feature.quickadd.EXPENSE_CATEGORIES + custom).distinct().filter { it !in split.keys }
+            Text(if (split.isEmpty()) "Add a category" else "Add another", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                unused.forEach { c ->
+                    FilterChip(selected = false, onClick = { split[c] = "" }, label = { Text("+ $c") }, shape = CircleShape)
                 }
+                FilterChip(selected = false, onClick = { askCategory = true }, label = { Text("+ Your own…") }, shape = CircleShape, colors = chipColors)
+            }
+            if (askCategory) {
+                var name by remember { mutableStateOf("") }
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { askCategory = false },
+                    title = { Text("New category") },
+                    text = {
+                        OutlinedTextField(
+                            value = name, onValueChange = { name = it }, singleLine = true,
+                            placeholder = { Text("Cook, maid, insurance…") },
+                            shape = MaterialTheme.shapes.medium,
+                            keyboardOptions = KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Words),
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            val n = name.trim().replaceFirstChar { it.uppercaseChar() }
+                            val known = (com.houseaffairs.app.feature.quickadd.EXPENSE_CATEGORIES + custom).firstOrNull { it.equals(n, ignoreCase = true) }
+                            if (n.isNotEmpty()) {
+                                if (known == null) custom.add(n)
+                                if (split[known ?: n] == null) split[known ?: n] = ""
+                            }
+                            askCategory = false
+                        }) { Text("Add") }
+                    },
+                    dismissButton = { TextButton(onClick = { askCategory = false }) { Text("Cancel") } },
+                )
             }
 
             // Credit cards: each has its own statement cycle, separate from the salary month.
@@ -285,6 +314,7 @@ fun BudgetSetupSheet(existing: Budget?, currency: String, onSave: (Budget) -> Un
                             categories = split.mapNotNull { (k, v) -> parseMinor(v, currency)?.takeIf { it > 0 }?.let { k to it } }.toMap(),
                             cards = cards.filter { it.name.isNotBlank() },
                             paidBills = existing?.paidBills.orEmpty(),
+                            customCategories = custom.toList(),
                         ),
                     )
                 },

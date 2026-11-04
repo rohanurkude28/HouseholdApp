@@ -43,6 +43,7 @@ import com.houseaffairs.app.core.data.PantryStock
 import com.houseaffairs.app.core.data.Recipe
 import com.houseaffairs.app.core.data.planCooking
 import com.houseaffairs.app.core.data.sameIngredient
+import com.houseaffairs.app.core.data.Ingredient
 import com.houseaffairs.app.core.model.AppModule
 import com.houseaffairs.app.core.model.RolePolicy
 import kotlinx.coroutines.flow.flowOf
@@ -95,6 +96,8 @@ data class Suggestion(
     val summary: String,
     val missing: List<String>,
     val source: SuggestionSource = SuggestionSource.RULES,
+    /** Keys of the required fields still empty; the first, if a choice, is offered as chips on the card. */
+    val missingKeys: List<String> = emptyList(),
     /** The kind picked for an unsure line; the card offers the others to switch to. */
     val kind: LineKind? = null,
     /** "Jeera is in the spice box" about an item already saved: saving sets its place. */
@@ -115,6 +118,8 @@ data class FormState(
     val editId: String? = null,
     val original: FormValues? = null,
     val originalVisibleTo: List<String>? = null,
+    /** A saved recipe this one repeats (id, title): saving is held back and opening it is offered. */
+    val duplicateOf: Pair<String, String>? = null,
 ) {
     val missing: List<FieldSpec> get() = type.fields.filter { it.required && it.visibleWhen(values) && !it.isFilled(values[it.key]) }
 }
@@ -245,7 +250,7 @@ class AddViewModel @Inject constructor(
     private val assistant: Assistant,
     private val watchRepo: com.houseaffairs.app.core.data.WatchRepository,
 ) : ViewModel() {
-    private val parser = QuickAddParser()
+    private val parser = QuickAddParser(nowMinute = { java.time.LocalTime.now().let { it.hour * 60 + it.minute } })
     private val local = MutableStateFlow(LocalState())
     private val ready = session.state.filterIsInstance<SessionState.Ready>()
     private val members = ready.map { it.household.id }.distinctUntilChanged().flatMapLatest { households.observeMembers(it) }
@@ -359,6 +364,8 @@ class AddViewModel @Inject constructor(
             dynamicOptions = mapOf(
                 "dreams" to money?.dreams?.map { it.dream.title }.orEmpty(),
                 "cards" to money?.budget?.cards?.map { it.name }.orEmpty(),
+                // The family's own categories (cook, maid…); the fixed ones are already in the form.
+                "categories" to com.houseaffairs.app.core.data.expenseCategories(money?.budget).filter { it !in com.houseaffairs.app.feature.quickadd.EXPENSE_CATEGORIES },
                 // Ongoing and upcoming trips; finished ones drop off after a week.
                 "trips" to money?.trips?.map { it.trip }
                     ?.filter { !(it.end ?: it.start).isBefore(LocalDate.now().minusDays(7)) }
@@ -595,7 +602,7 @@ class AddViewModel @Inject constructor(
             val kind = when (name.lowercase()) { "fd" -> "Fixed deposit"; "mf", "sip" -> "Mutual fund"; "rd" -> "Recurring deposit"; else -> null }
             m.investments.firstOrNull { it.investment.kind.equals(kind ?: name, ignoreCase = true) }?.let { return Pocket.Investment(it.investment.id) to it.investment.title }
         }
-        EXPENSE_CATEGORIES.firstOrNull { it.equals(name, ignoreCase = true) }?.let { return Pocket.Category(it) to it }
+        com.houseaffairs.app.core.data.expenseCategories(m?.budget).firstOrNull { it.equals(name, ignoreCase = true) }?.let { return Pocket.Category(it) to it }
         return null
     }
 
@@ -1143,7 +1150,7 @@ class AddViewModel @Inject constructor(
     // ---------------------------------------------------------------------------------------
     // Form
 
-    fun update(key: String, value: Any?) = updateForm { it.copy(values = it.values + (key to value)) }
+    fun update(key: String, value: Any?) = updateForm { it.copy(values = it.values + (key to value), duplicateOf = null) }
 
     fun toggleMore() = updateForm { it.copy(showMore = !it.showMore) }
 
@@ -1195,6 +1202,14 @@ class AddViewModel @Inject constructor(
             WhoCanSee.CHOSEN -> (listOf(uid) + form.visibleMembers).distinct()
         }
         val title = titleOf(form.type, form.values)
+        // The same dish with the same ingredients is already saved: open that one instead of a copy.
+        if (form.type == EntryType.RECIPE) {
+            val ingredients = (form.values["ingredients"] as? List<*>).orEmpty().filterIsInstance<Ingredient>().map { it.name }
+            com.houseaffairs.app.core.data.duplicateRecipe(title, ingredients, kitchen.value.recipes, form.editId)?.let { same ->
+                local.update { it.copy(form = form.copy(duplicateOf = same.id to same.title)) }
+                return null
+            }
+        }
         // A new entry on a topic the owner made private is only seen by the chosen people.
         val topic = if (form.editId == null && form.whoCanSee == WhoCanSee.EVERYONE) {
             privateTopicOf(form.type.collection, title, (form.values["category"] ?: form.values["supplyType"] ?: form.values["aisle"]) as? String)
@@ -1211,6 +1226,11 @@ class AddViewModel @Inject constructor(
             return SavedEntry("$title · changes saved") {
                 if (before != null) entries.update(r.household.id, form.type, form.editId, before, beforeVisible)
             }
+        }
+        // "Other → Cook" typed in the form: Cook becomes one of the family's categories.
+        if (form.type == EntryType.EXPENSE || form.type == EntryType.SUBSCRIPTION) {
+            (form.values["category"] as? String)?.takeIf { money.value?.budget != null && com.houseaffairs.app.core.data.isNewCategory(it, money.value?.budget) }
+                ?.let { moneyRepo.addCustomCategory(r.household.id, it) }
         }
         val hit = local.value.chosenHit
         val ref = entries.save(r.household.id, uid, form.type, form.values, shownTo, form.source)
@@ -1241,7 +1261,16 @@ class AddViewModel @Inject constructor(
             title = titleOf(type, form.values),
             summary = summaryOf(type, form.values),
             missing = form.missing.map { it.label },
+            missingKeys = form.missing.map { it.key },
         )
+    }
+
+    /** One tap on the card fills a required choice ("Paid with: Cash") without opening the form. */
+    fun fillSuggestion(key: String, value: String) = local.update { s ->
+        val sug = s.suggestion ?: return@update s
+        val values = sug.values + (key to value)
+        val form = newForm(sug.type, values, "voice")
+        s.copy(suggestion = sug.copy(values = values, summary = summaryOf(sug.type, form.values), missing = form.missing.map { it.label }, missingKeys = form.missing.map { it.key }))
     }
 
     private fun titleOf(type: EntryType, values: FormValues): String {
@@ -1265,8 +1294,9 @@ class AddViewModel @Inject constructor(
         return when (draft) {
             is QuickAddDraft.Expense -> EntryType.EXPENSE to mapOf(
                 "amount" to MoneyValue(draft.amount.toPlainString(), draft.currency ?: currency),
-                "category" to draft.category,
-                "subcategory" to draft.subcategory,
+                // "Cook 5000" goes under the family's own Cook rather than the built-in Home.
+                "category" to (com.houseaffairs.app.core.data.customCategoryIn(draft.note, money.value?.budget) ?: draft.category),
+                "subcategory" to draft.subcategory.takeIf { com.houseaffairs.app.core.data.customCategoryIn(draft.note, money.value?.budget) == null },
                 "merchant" to draft.merchant,
                 // "On HDFC card" → the saved card called HDFC Regalia; "by card" with one card → that card.
                 "paymentMethod" to run {
@@ -1289,7 +1319,7 @@ class AddViewModel @Inject constructor(
                 // No quantity said: preselect how it's usually measured (g for paneer, ml for milk).
                 "quantity" to (draft.quantity?.split(" ")?.let { QuantityValue(it[0], it.getOrElse(1) { "pcs" }) } ?: QuantityValue("", formUnit(draft.item))),
             )
-            is QuickAddDraft.Task -> EntryType.TASK to mapOf("title" to draft.title, "due" to draft.due, "repeat" to draft.repeat, "priority" to (draft.priority ?: "Low"), "reach" to draft.reach)
+            is QuickAddDraft.Task -> EntryType.TASK to mapOf("title" to draft.title, "due" to draft.due, "repeat" to draft.repeat, "priority" to (draft.priority ?: "Low"), "reach" to draft.reach, "time" to draft.time)
             is QuickAddDraft.Event -> EntryType.EVENT to mapOf(
                 "title" to draft.title,
                 "kind" to draft.kind,

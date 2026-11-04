@@ -85,6 +85,7 @@ class MoneyRepository @Inject constructor(
                     },
                     paidBills = (doc.get("paidBills") as? List<*>).orEmpty().filterIsInstance<String>().toSet(),
                     incomeMinor = doc.getLong("incomeMinor") ?: 0,
+                    customCategories = (doc.get("customCategories") as? List<*>).orEmpty().filterIsInstance<String>(),
                 )
                 // Rollover counts from the budget month the family started tracking.
                 val started = doc.localDate("startedOn") ?: doc.localDate("createdAt") ?: LocalDate.now()
@@ -102,6 +103,7 @@ class MoneyRepository @Inject constructor(
             "savingsGoalMinor" to budget.savingsGoalMinor,
             "incomeMinor" to budget.incomeMinor,
             "categories" to budget.categories,
+            "customCategories" to budget.customCategories,
             "cards" to budget.cards.map { mapOf("name" to it.name.trim(), "statementDay" to it.statementDay, "dueDay" to it.dueDay) },
             "updatedAt" to FieldValue.serverTimestamp(),
         )
@@ -312,6 +314,11 @@ class MoneyRepository @Inject constructor(
     }
 
     /** Turns a planned spend into a real one dated today. */
+    /** A category typed in a form ("Cook") joins the family's own, so it's offered next time. */
+    fun addCustomCategory(householdId: String, name: String) {
+        budgetDoc(householdId).update("customCategories", FieldValue.arrayUnion(name.trim()))
+    }
+
     /** Marks a card bill paid (or not), remembered on the budget. */
     fun setBillPaid(householdId: String, key: String, paid: Boolean) {
         budgetDoc(householdId).update("paidBills", if (paid) FieldValue.arrayUnion(key) else FieldValue.arrayRemove(key))

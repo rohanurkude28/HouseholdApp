@@ -88,6 +88,18 @@ fun convertFor(name: String, amount: Double, from: String, to: String): Double? 
 
 private fun normalize(name: String) = name.lowercase().trim().removeSuffix("es").removeSuffix("s")
 
+/**
+ * A saved recipe that [title] with [ingredients] would repeat: the same dish name and the same
+ * ingredients, whatever the quantities or order. A different take on a dish (other ingredients)
+ * is its own recipe. [exceptId] is the recipe being edited.
+ */
+fun duplicateRecipe(title: String, ingredients: List<String>, saved: List<Recipe>, exceptId: String? = null): Recipe? {
+    fun dish(t: String) = normalize(t.replace(Regex("\\s+"), " "))
+    fun names(list: List<String>) = list.map(::normalize).filter { it.isNotEmpty() }.toSet()
+    val mine = names(ingredients)
+    return saved.firstOrNull { r -> r.id != exceptId && dish(r.title) == dish(title) && names(r.ingredients.map { it.name }) == mine }
+}
+
 /** "Paneer" matches "Malai paneer"; "tomatoes" matches "Tomato". */
 fun sameIngredient(a: String, b: String): Boolean {
     val x = normalize(a)

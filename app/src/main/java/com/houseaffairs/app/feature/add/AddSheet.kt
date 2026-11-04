@@ -267,6 +267,11 @@ private fun Picker(
                 onAskAi = { viewModel.askAssistant() },
                 onEdit = viewModel::editSuggestion,
                 onSave = onSave,
+                quickChoice = (suggestion.type.fields.firstOrNull { it.key == suggestion.missingKeys.firstOrNull() } as? ChoiceSpec)?.takeIf { !it.multi }?.let { spec ->
+                    val extra = spec.dynamicOptions?.let { state.dynamicOptions[it] }.orEmpty()
+                    spec to ((if (extra.isNotEmpty() && spec.replacedByDynamic != null) spec.options - spec.replacedByDynamic else spec.options) + extra).distinct()
+                },
+                onQuickChoice = viewModel::fillSuggestion,
             )
         }
 
@@ -320,6 +325,8 @@ private fun SuggestionCard(
     onAskAi: () -> Unit,
     onEdit: () -> Unit,
     onSave: () -> Unit,
+    quickChoice: Pair<ChoiceSpec, List<String>>? = null,
+    onQuickChoice: (String, String) -> Unit = { _, _ -> },
 ) {
     val accent = suggestion.type.accent(LocalHouseColors.current)
     Column(
@@ -375,7 +382,20 @@ private fun SuggestionCard(
                         }
                         Text(h.title, style = MaterialTheme.typography.labelMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(listOfNotNull(h.year, h.kind).joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        h.creator?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        h.rating?.let { Text("★ %.1f".format(it) + (h.ratingCount?.let { n -> " ($n)" } ?: ""), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     }
+                }
+            }
+        }
+        // A must-have the line didn't say (how it was paid): pick it right here.
+        if (quickChoice != null && !blocked) {
+            val (spec, options) = quickChoice
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(spec.label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                options.filter { it != "Other" }.forEach { option ->
+                    FilterChip(selected = false, onClick = { onQuickChoice(spec.key, option) }, label = { Text(option) }, shape = CircleShape)
                 }
             }
         }
@@ -743,6 +763,16 @@ private fun EntryForm(form: FormState, state: AddUiState, viewModel: AddViewMode
             )
         }
 
+        form.duplicateOf?.let { (id, title) ->
+            Column(
+                Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).background(accent.container).padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text("You already have $title with these ingredients", style = MaterialTheme.typography.titleSmall)
+                Text("Change the name or ingredients to save a new version.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedButton(onClick = { viewModel.openEdit(EntryType.RECIPE, id) }, shape = CircleShape) { Text("Open $title") }
+            }
+        }
         Button(onClick = onSave, shape = CircleShape, modifier = Modifier.fillMaxWidth().height(56.dp)) {
             Text(if (form.editId != null) "Save changes" else "Save", style = MaterialTheme.typography.titleMedium)
         }

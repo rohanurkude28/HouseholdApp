@@ -115,6 +115,27 @@ class SettingsRepository @Inject constructor(
         dataStore.edit { it[THEME_MODE] = mode.name }
     }
 
+    /**
+     * The first-run tour on this phone: the step to show, or null once it's finished or skipped.
+     * Owner's "Reset everything" and Settings → "Show the tour" start it again.
+     */
+    val tourStep: Flow<Int?> = dataStore.data.map { if (it[TOUR_DONE] == true) null else it[TOUR_STEP] ?: 0 }
+
+    suspend fun setTourStep(step: Int) {
+        dataStore.edit { it[TOUR_STEP] = step }
+    }
+
+    suspend fun finishTour() {
+        dataStore.edit { it[TOUR_DONE] = true }
+    }
+
+    suspend fun restartTour() {
+        dataStore.edit {
+            it[TOUR_DONE] = false
+            it[TOUR_STEP] = 0
+        }
+    }
+
     suspend fun markQuickAddTried() {
         dataStore.edit { it[QUICK_ADD_TRIED] = true }
     }
@@ -132,5 +153,7 @@ class SettingsRepository @Inject constructor(
         val NUDGE_DISMISSED = stringPreferencesKey("nudge_dismissed_day")
         val DIGEST_HOUR = intPreferencesKey("digest_hour")
         val DIGEST_AREAS_OFF = stringSetPreferencesKey("digest_areas_off")
+        val TOUR_STEP = intPreferencesKey("tour_step")
+        val TOUR_DONE = booleanPreferencesKey("tour_done")
     }
 }

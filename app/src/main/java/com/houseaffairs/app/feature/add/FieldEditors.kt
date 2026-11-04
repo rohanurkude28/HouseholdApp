@@ -82,7 +82,8 @@ fun FieldEditor(
             is ChoiceSpec -> {
                 val extra = spec.dynamicOptions?.let { dynamicOptions[it] }.orEmpty()
                 val base = if (extra.isNotEmpty() && spec.replacedByDynamic != null) spec.options - spec.replacedByDynamic else spec.options
-                ChoiceEditor(spec.copy(options = base + extra), value, onChange, accent)
+                // "Other" stays last, after the family's own options.
+                ChoiceEditor(spec.copy(options = (base + extra).distinct().sortedBy { it == "Other" }), value, onChange, accent)
             }
             is DateSpec -> DateEditor(spec, value as? LocalDate, onChange, accent)
             is QuantitySpec -> QuantityEditor(spec, value as? QuantityValue ?: QuantityValue("", spec.units.first()), onChange, accent)
@@ -148,6 +149,8 @@ private fun MoneyEditor(spec: MoneySpec, value: MoneyValue, onChange: (Any?) -> 
     }
 }
 
+private const val OTHER = "Other"
+
 @Composable
 private fun chipColors(accent: Accent) = FilterChipDefaults.filterChipColors(
     selectedContainerColor = accent.container,
@@ -155,7 +158,7 @@ private fun chipColors(accent: Accent) = FilterChipDefaults.filterChipColors(
     selectedLeadingIconColor = accent.color,
 )
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun ChoiceEditor(spec: ChoiceSpec, value: Any?, onChange: (Any?) -> Unit, accent: Accent) {
     val selected: List<String> = when (value) {
@@ -171,6 +174,11 @@ private fun ChoiceEditor(spec: ChoiceSpec, value: Any?, onChange: (Any?) -> Unit
             FilterChip(
                 selected = on,
                 onClick = {
+                    // "Other" alone says little: ask what it is ("Cook", "Pooja"), keeping "Other" if left blank.
+                    if (option == OTHER && !on) {
+                        askCustom = true
+                        return@FilterChip
+                    }
                     onChange(
                         when {
                             spec.multi -> if (on) selected - option else selected + option
@@ -184,7 +192,7 @@ private fun ChoiceEditor(spec: ChoiceSpec, value: Any?, onChange: (Any?) -> Unit
                 colors = chipColors(accent),
             )
         }
-        if (spec.allowCustom) {
+        if (spec.allowCustom && OTHER !in options) {
             AssistChip(
                 onClick = { askCustom = true },
                 label = { Text("Other") },
@@ -193,15 +201,31 @@ private fun ChoiceEditor(spec: ChoiceSpec, value: Any?, onChange: (Any?) -> Unit
             )
         }
     }
-    if (askCustom) {
-        var text by remember { mutableStateOf("") }
+    if (askCustom && spec.isTime) {
+        val now = java.time.LocalTime.now()
+        val state = androidx.compose.material3.rememberTimePickerState(initialHour = (now.hour + 1) % 24, initialMinute = 0, is24Hour = false)
         AlertDialog(
             onDismissRequest = { askCustom = false },
             title = { Text(spec.label) },
+            text = { androidx.compose.material3.TimePicker(state = state) },
+            confirmButton = {
+                TextButton(onClick = {
+                    onChange(com.houseaffairs.app.core.data.formatClock(state.hour * 60 + state.minute))
+                    askCustom = false
+                }) { Text("Set") }
+            },
+            dismissButton = { TextButton(onClick = { askCustom = false }) { Text("Cancel") } },
+        )
+    } else if (askCustom) {
+        var text by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { askCustom = false },
+            title = { Text(if (OTHER in options) "What is it?" else spec.label) },
             text = {
                 OutlinedTextField(
                     value = text,
                     onValueChange = { text = it },
+                    placeholder = if (OTHER in options) ({ Text("Leave empty to keep “Other”") }) else null,
                     singleLine = true,
                     shape = MaterialTheme.shapes.medium,
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
@@ -209,8 +233,8 @@ private fun ChoiceEditor(spec: ChoiceSpec, value: Any?, onChange: (Any?) -> Unit
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val custom = text.trim()
-                    if (custom.isNotEmpty()) onChange(if (spec.multi) selected + custom else custom)
+                    val custom = text.trim().ifEmpty { if (OTHER in options) OTHER else "" }
+                    if (custom.isNotEmpty()) onChange(if (spec.multi) (selected - OTHER) + custom else custom)
                     askCustom = false
                 }) { Text("Add") }
             },
