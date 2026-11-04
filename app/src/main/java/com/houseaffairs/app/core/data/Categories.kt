@@ -36,7 +36,7 @@ fun keptKindOf(title: String): String? {
 }
 
 /** A kept thing's kind for grouping: its own, or a guess from its name. */
-fun keptCategory(item: KeptItem): String = item.kind?.takeIf { it in KEPT_KINDS } ?: keptKindOf(item.title) ?: "Other"
+fun keptCategory(item: KeptItem): String = item.kind?.trim()?.takeIf { it.isNotEmpty() } ?: keptKindOf(item.title) ?: "Other"
 
 /** Supply types, in the order the list shows them. */
 val SUPPLY_TYPES = listOf(

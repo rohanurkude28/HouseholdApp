@@ -29,6 +29,18 @@ firebase emulators:start --project demo-houseaffairs --only auth,firestore   # U
 - `adb` is at `/opt/homebrew/share/android-commandlinetools/platform-tools/adb`.
 - Optional `tmdb.apiKey=…` in `local.properties` enables movie lookups; TVMaze, Open Library and iTunes need no key.
 
+## iOS and the shared module
+
+- `:shared` is Kotlin Multiplatform (Android + iOS) and holds pure rules moved out of `app/` in the same packages, so Android imports didn't change. So far: `QuickAddParser` (with `ListTemplate`, `QuickAddDraft`) and `KindClassifier`, Attention, BudgetMath, Cards, Renewals, Repeats, Aisles, PrivateTopics, FirstAid, MediaSearch, `whatsAppNumber` (`core/util/Phone.kt`), the Home models (`HomeModels.kt`), Role/AppModule/Visibility (`Roles.kt`) and RolePolicy. No Firebase in it. Its tests (`shared/src/commonTest`, kotlin.test) run with `testLocalUnitTest`.
+- Dates in shared code are `com.houseaffairs.app.core.time.LocalDate`: java.time.LocalDate on Android, kotlinx-datetime on iOS. Use the helpers in `core/time/Dates.kt` (`daysBetween`, `plusDays`, `isBefore`, `format("EEE d MMM")`…), never `java.time` or `LocalDate.now()`. Sort dates with `toEpochDay()`, since the shared type isn't `Comparable`. Amounts are `core/util/Decimal` (BigDecimal on Android; `decimalOf`, `compareValue`). Kotlin/Native rejects `,` in backticked test names.
+- `:composeApp` is the iOS app's UI in Compose Multiplatform, with Firestore and Auth through GitLive's firebase-kotlin-sdk. It writes documents in the same shape as Android's `EntryRepository`.
+- `iosApp/` is the Xcode shell: `cd iosApp && xcodegen` generates the project (Firebase iOS SDK comes from SPM). It needs `iosApp/iosApp/GoogleService-Info.plist` (git-ignored) for bundle id `com.houseaffairs.app` in Firebase project houseaffairs-98d6a.
+
+```bash
+./gradlew :shared:iosSimulatorArm64Test           # shared tests on the iOS simulator (needs Xcode)
+./gradlew :composeApp:compileKotlinIosSimulatorArm64
+```
+
 ## Architecture
 
 **Session and permissions.**
@@ -101,6 +113,8 @@ firebase emulators:start --project demo-houseaffairs --only auth,firestore   # U
 - **Optional keys** in `local.properties`: `tmdb.apiKey` and `omdb.apiKey` (IMDb and Rotten Tomatoes).
 
 **Notifications.** `notify/DigestWorker` sends one daily digest via WorkManager. `HouseAffairsApp` reschedules it whenever the notification settings change. The digest content comes from the pure `Digest.kt`.
+- Timed reminders ("call mom at 5:30") are separate: the pure `plannedReminders()` (`:shared` `Reminders.kt`) picks them from Home data, and `notify/Reminders` sets AlarmManager alarms. `HouseAffairsApp` re-plans whenever Home data changes; `ReminderWorker` every 4 hours and `ReminderBootReceiver` after a restart. A task's time is the `time` field ("5:30 pm").
+- `POST_NOTIFICATIONS` is asked in the first-run tour (`ui/TourScreen`, steps from `core/data/Tour.kt`, progress in `SettingsRepository.tourStep`). The tour shows after first sign-in, after "Reset everything", and from Settings.
 
 ## Conventions
 

@@ -340,6 +340,7 @@ private fun TodaySection(state: HomeUiState, onQuickAdd: () -> Unit, onBillPaid:
                             ).joinToString(" · ").ifEmpty { "No date" },
                             onClick = { nav.edit(EntryType.TASK, task.id) },
                         ) {
+                            task.reach?.let { com.houseaffairs.app.core.ui.ReachButton(it, task.phone, task.title) }
                             TickCircle(LocalHouseColors.current.plans.color, onTick = { onComplete(task.id) }, contentDescription = "Done: ${task.title}")
                         }
                     }
@@ -358,13 +359,14 @@ private fun TodaySection(state: HomeUiState, onQuickAdd: () -> Unit, onBillPaid:
                         ) {
                             // Card bills are marked paid right here; Money no longer has a card box.
                             val bill = item.id.removePrefix(BILL_PREFIX).takeIf { item.id.startsWith(BILL_PREFIX) }
+                            val restock = item.restock
                             val renewal = item.id.removePrefix(RENEWAL_PREFIX).takeIf { item.id.startsWith(RENEWAL_PREFIX) }
                             if (bill != null) {
                                 TextButton(onClick = { onBillPaid(bill) }) { Text("Paid") }
                             } else if (renewal != null) {
                                 TextButton(onClick = { onLogRenewal(renewal) }) { Text("Log it") }
-                            } else if (item.restock != null && state.data.shopping.none { com.houseaffairs.app.core.data.itemKey(it.name) == com.houseaffairs.app.core.data.itemKey(item.restock) }) {
-                                TextButton(onClick = { onRestock(item.restock) }) { Text("+ List") }
+                            } else if (restock != null && state.data.shopping.none { com.houseaffairs.app.core.data.itemKey(it.name) == com.houseaffairs.app.core.data.itemKey(restock) }) {
+                                TextButton(onClick = { onRestock(restock) }) { Text("+ List") }
                             } else {
                                 Text(item.priority.label, style = MaterialTheme.typography.labelMedium, color = priorityColor(item.priority))
                             }
@@ -605,7 +607,7 @@ private fun summaryLine(state: HomeUiState): String {
     val parts = buildList {
         if (state.canMoney && data.monthSpentMinor > 0 && !state.hideAmounts) add("${formatMinor(data.monthSpentMinor, state.baseCurrency)} spent this month")
         if (state.canStock && data.shopping.isNotEmpty()) add("${data.shopping.size} to buy")
-        val dueToday = data.tasks.count { it.dueDate != null && !it.dueDate.isAfter(LocalDate.now()) }
+        val dueToday = data.tasks.count { task -> task.dueDate?.let { !it.isAfter(LocalDate.now()) } == true }
         if (dueToday > 0) {
             add("$dueToday due today")
         } else if (data.tasks.isNotEmpty()) {

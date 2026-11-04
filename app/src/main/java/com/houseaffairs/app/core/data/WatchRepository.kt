@@ -36,6 +36,8 @@ data class WatchItem(
     val rottenTomatoes: String? = null,
     val status: String = "IDEA",
     val votes: List<String> = emptyList(),
+    /** Set when picked from search results, so ratings come from exactly that title. */
+    val imdbId: String? = null,
     /** Author or artist, for books and music. */
     val creator: String? = null,
 ) {
@@ -104,6 +106,7 @@ class WatchRepository @Inject constructor(
                             rottenTomatoes = d.getString("rtScore"),
                             status = d.getString("status") ?: "IDEA",
                             votes = (d.get("votes") as? List<*>).orEmpty().filterIsInstance<String>(),
+                            imdbId = d.getString("imdbId"),
                         )
                     }
                     .sortedByDescending { it.rating ?: 0.0 }
@@ -134,19 +137,105 @@ class WatchRepository @Inject constructor(
         // IMDb and Rotten Tomatoes, once per movie or show, when there's an OMDb key.
         if (omdbKey.isNotBlank()) {
             list.filter { it.template == ListTemplate.WATCH && it.imdb == null && it.rottenTomatoes == null }.take(8).forEach { item ->
-                val scores = runCatching { omdb(item.title, item.year) }.getOrNull() ?: return@forEach
+                val scores = runCatching { omdb(item.title, item.year, item.imdbId) }.getOrNull() ?: return@forEach
                 items(householdId).document(item.id).update(scores)
             }
         }
     }
 
     /** IMDb rating and Rotten Tomatoes score for a title; "N/A" ratings are left out. */
-    private fun omdb(title: String, year: String?): Map<String, Any?>? {
+    private fun omdb(title: String, year: String?, imdbId: String? = null): Map<String, Any?>? {
         val q = java.net.URLEncoder.encode(title, "UTF-8")
-        val json = get("https://www.omdbapi.com/?apikey=$omdbKey&t=$q" + (year?.let { "&y=$it" } ?: "")) ?: return null
+        val json = get("https://www.omdbapi.com/?apikey=$omdbKey&" + if (imdbId != null) "i=$imdbId" else "t=$q" + (year?.let { "&y=$it" } ?: "")) ?: return null
         if (json.optString("Response") != "True") return mapOf("imdbRating" to "", "rtScore" to "")
         val rt = json.optJSONArray("Ratings")?.let { a -> (0 until a.length()).map { a.getJSONObject(it) }.firstOrNull { it.optString("Source") == "Rotten Tomatoes" }?.optString("Value") }
         return mapOf("imdbRating" to json.optString("imdbRating").takeIf { it != "N/A" }.orEmpty(), "rtScore" to rt.orEmpty())
+    }
+
+    /**
+     * Movies, shows, books or songs matching what was typed, best first: OMDb (with a key) and
+     * TVMaze for watching, Open Library for books, iTunes for music. Empty when offline.
+     */
+    suspend fun search(template: ListTemplate, query: String): List<MediaHit> = withContext(Dispatchers.IO) {
+        if (query.isBlank()) return@withContext emptyList()
+        val hits = when (template) {
+            ListTemplate.BOOKS -> mergeBooks(
+                runCatching { searchBooks(query) }.getOrDefault(emptyList()),
+                runCatching { searchGoogleBooks(query) }.getOrDefault(emptyList()),
+            )
+            ListTemplate.MUSIC -> runCatching { searchSongs(query) }.getOrDefault(emptyList())
+            else -> {
+                val fromOmdb = if (omdbKey.isBlank()) emptyList() else searchVariants(query).take(5).flatMap { q -> runCatching { searchOmdb(q) }.getOrDefault(emptyList()) }
+                fromOmdb + runCatching { searchShows(query) }.getOrDefault(emptyList())
+            }
+        }
+        rankHits(query, hits).take(6)
+    }
+
+    private fun searchOmdb(query: String): List<MediaHit> {
+        val arr = get("https://www.omdbapi.com/?apikey=$omdbKey&s=${enc(query)}")?.optJSONArray("Search") ?: return emptyList()
+        return (0 until arr.length()).map(arr::getJSONObject).filter { it.optString("Type") in setOf("movie", "series") }.map {
+            MediaHit(
+                it.optString("Title"), it.optString("Year").take(4).ifBlank { null },
+                if (it.optString("Type") == "series") "Show" else "Movie",
+                it.optString("Poster").takeIf { p -> p.startsWith("http") }, imdbId = it.optString("imdbID").ifBlank { null },
+            )
+        }
+    }
+
+    private fun searchShows(query: String): List<MediaHit> {
+        val arr = getArray("https://api.tvmaze.com/search/shows?q=${enc(query)}") ?: return emptyList()
+        return (0 until minOf(arr.length(), 4)).map { arr.getJSONObject(it).getJSONObject("show") }.map {
+            MediaHit(it.optString("name"), it.optString("premiered").take(4).ifBlank { null }, "Show", it.optJSONObject("image")?.optString("medium"), imdbId = it.optJSONObject("externals")?.optString("imdb")?.ifBlank { null })
+        }
+    }
+
+    private fun searchBooks(query: String): List<MediaHit> {
+        val docs = get("https://openlibrary.org/search.json?q=${enc(query)}&limit=8&fields=title,author_name,first_publish_year,cover_i,ratings_average,ratings_count")?.optJSONArray("docs") ?: return emptyList()
+        return (0 until docs.length()).map(docs::getJSONObject).map {
+            MediaHit(
+                it.optString("title"), it.optInt("first_publish_year", 0).takeIf { y -> y > 0 }?.toString(), "Book",
+                it.optInt("cover_i", 0).takeIf { c -> c > 0 }?.let { c -> "https://covers.openlibrary.org/b/id/$c-M.jpg" },
+                creator = it.optJSONArray("author_name")?.optString(0),
+                rating = it.optDouble("ratings_average").takeIf { r -> !r.isNaN() && r > 0 }?.let { r -> r * 2 },
+                ratingCount = it.optInt("ratings_count", 0).takeIf { n -> n > 0 },
+            )
+        }
+    }
+
+    // Goodreads closed its API in 2020; Google Books (no key needed) has covers and ratings Open
+    // Library often lacks, especially for Indian editions.
+    private fun searchGoogleBooks(query: String, max: Int = 8): List<MediaHit> {
+        val arr = get("https://www.googleapis.com/books/v1/volumes?q=${enc(query)}&maxResults=$max&printType=books&orderBy=relevance")?.optJSONArray("items") ?: return emptyList()
+        return (0 until arr.length()).map { arr.getJSONObject(it).getJSONObject("volumeInfo") }.map {
+            MediaHit(
+                it.optString("title"), it.optString("publishedDate").take(4).ifBlank { null }, "Book",
+                it.optJSONObject("imageLinks")?.let { l -> l.optString("thumbnail").ifBlank { l.optString("smallThumbnail") } }?.ifBlank { null }?.replace("http://", "https://")?.replace("&edge=curl", ""),
+                creator = it.optJSONArray("authors")?.optString(0),
+                rating = it.optDouble("averageRating").takeIf { r -> !r.isNaN() && r > 0 }?.let { r -> r * 2 },
+                ratingCount = it.optInt("ratingsCount", 0).takeIf { n -> n > 0 },
+            )
+        }
+    }
+
+    private fun searchSongs(query: String): List<MediaHit> {
+        val arr = get("https://itunes.apple.com/search?term=${enc(query)}&entity=song&country=in&limit=6")?.optJSONArray("results") ?: return emptyList()
+        return (0 until arr.length()).map(arr::getJSONObject).map {
+            MediaHit(it.optString("trackName"), it.optString("releaseDate").take(4).ifBlank { null }, "Song", it.optString("artworkUrl100").replace("100x100", "300x300").ifBlank { null }, creator = it.optString("artistName").ifBlank { null })
+        }
+    }
+
+    /** Saves the picked search result onto the list item: exact title, poster, year; ratings follow. */
+    fun applyHit(householdId: String, id: String, hit: MediaHit) {
+        items(householdId).document(id).update(
+            mapOf(
+                "title" to hit.title, "poster" to hit.poster, "year" to hit.year, "kind" to hit.kind,
+                "creator" to hit.creator, "imdbId" to hit.imdbId, "lookedUp" to true,
+                "rating" to hit.rating, "ratingSource" to hit.rating?.let { if (hit.kind == "Book") "Books" else null },
+                // Cleared so the next look-up fetches IMDb and Rotten Tomatoes for exactly this title.
+                "imdbRating" to com.google.firebase.firestore.FieldValue.delete(), "rtScore" to com.google.firebase.firestore.FieldValue.delete(),
+            ),
+        )
     }
 
     /** "How was it?" after watching, reading or listening. */
@@ -169,6 +258,18 @@ class WatchRepository @Inject constructor(
         c.readTimeout = 6_000
         return try {
             if (c.responseCode != 200) null else JSONObject(c.inputStream.bufferedReader().readText())
+        } finally {
+            c.disconnect()
+        }
+    }
+
+    /** Like [get], for endpoints that answer with a JSON list. */
+    private fun getArray(url: String): org.json.JSONArray? {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 6_000
+        c.readTimeout = 6_000
+        return try {
+            if (c.responseCode != 200) null else org.json.JSONArray(c.inputStream.bufferedReader().readText())
         } finally {
             c.disconnect()
         }
@@ -211,17 +312,20 @@ class WatchRepository @Inject constructor(
         )
     }
 
+    /** The best match from Open Library and Google Books together, so a cover or rating either lacks is filled. */
     private fun openLibrary(title: String): Found? {
-        val doc = get("https://openlibrary.org/search.json?q=${enc(title)}&limit=1&fields=title,author_name,first_publish_year,cover_i,ratings_average")
-            ?.optJSONArray("docs")?.optJSONObject(0) ?: return null
+        val hit = rankHits(title, mergeBooks(
+            runCatching { searchBooks(title) }.getOrDefault(emptyList()),
+            runCatching { searchGoogleBooks(title, 5) }.getOrDefault(emptyList()),
+        )).firstOrNull() ?: return null
         return Found(
-            rating = doc.optDouble("ratings_average").takeIf { !it.isNaN() }?.let { it * 2 },
-            source = "Open Library",
-            poster = doc.optInt("cover_i", 0).takeIf { it > 0 }?.let { "https://covers.openlibrary.org/b/id/$it-M.jpg" },
+            rating = hit.rating,
+            source = "Open Library · Google Books",
+            poster = hit.poster,
             providers = emptyList(),
             kind = "Book",
-            year = doc.optInt("first_publish_year", 0).takeIf { it > 0 }?.toString(),
-            creator = doc.optJSONArray("author_name")?.optString(0)?.takeIf { it.isNotBlank() },
+            year = hit.year,
+            creator = hit.creator?.takeIf { it.isNotBlank() },
         )
     }
 

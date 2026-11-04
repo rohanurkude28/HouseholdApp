@@ -49,7 +49,7 @@ val DREAM_KINDS = linkedMapOf(
     // Savings goals that aren't a purchase: an emergency fund, festivals, a rainy day.
     "Savings" to "🐷", "Emergency" to "🛟", "Festival" to "🪔", "Other" to "⭐",
 )
-val ACTIVITY_KINDS = listOf("Walk", "Run", "Cycling", "Yoga", "Gym", "Sports", "Swim", "Dance", "Gardening", "Housework")
+val ACTIVITY_KINDS = listOf("Walk", "Run", "Cycling", "Yoga", "Gym", "Sports", "Swim", "Dance", "Gardening", "Housework", "Study")
 val PLACE_KINDS = listOf("Restaurant", "Café", "Grocery", "Pharmacy", "Doctor", "Hospital", "Market", "Mall", "Salon", "Service", "Other")
 val INVESTMENT_KINDS = listOf("Fixed deposit", "Mutual fund", "Recurring deposit", "Savings account", "Gold", "Stocks", "PPF", "Other")
 val CREDIT_KINDS = listOf("Gift card", "Card points", "Coupon", "Cashback", "Voucher")
@@ -74,20 +74,22 @@ enum class EntryType(
 ) {
     EXPENSE(
         "Expense", "New expense", Icons.Outlined.Receipt, { it.money }, AppModule.MONEY, "transactions", "merchant",
+        // The must-haves first: how much, how it was paid, what for, when.
         listOf(
             MoneySpec(),
-            ChoiceSpec("category", "Category", EXPENSE_CATEGORIES, required = true),
+            // One choice: UPI, cash, bank, or the exact credit card (each card listed by name, no
+            // separate "which card" question). Without cards set up, it's just "Card". Card bills
+            // and cash-in-hand depend on it, so it's asked every time; a planned spend isn't paid yet.
+            ChoiceSpec("paymentMethod", "Paid with", PAYMENT_METHODS, dynamicOptions = "cards", replacedByDynamic = "Card", required = true, visibleWhen = { it["status"] != "Planned" }),
+            ChoiceSpec("category", "Category", EXPENSE_CATEGORIES, dynamicOptions = "categories", required = true),
+            DateSpec("date", "When", required = true),
+            TextSpec("merchant", "Where or who", "DMart, Uber, plumber…"),
             *SUBCATEGORIES.map { (cat, subs) ->
                 ChoiceSpec("subcategory", "Type of ${cat.lowercase()}", subs, allowCustom = true, visibleWhen = { it["category"] == cat })
             }.toTypedArray(),
-            TextSpec("merchant", "Where or who", "DMart, Uber, plumber…"),
-            ChoiceSpec("trip", "Part of a trip or outing", listOf("None"), dynamicOptions = "trips", hideWithoutDynamic = true),
             // Planned spends reserve budget now ("Goa trip next month") and become real when paid.
             ChoiceSpec("status", "Status", listOf("Paid", "Planned"), required = true),
-            DateSpec("date", "When", required = true),
-            // One choice: UPI, cash, bank, or the exact credit card (each card listed by name, no
-            // separate "which card" question). Without cards set up, it's just "Card".
-            ChoiceSpec("paymentMethod", "Paid with", PAYMENT_METHODS, dynamicOptions = "cards", replacedByDynamic = "Card"),
+            ChoiceSpec("trip", "Part of a trip or outing", listOf("None"), dynamicOptions = "trips", hideWithoutDynamic = true),
             MembersSpec("paidBy", "Paid by", multi = false, essential = false),
             // Lightweight, not a bill split: who it was for ("Riya's school shoes").
             MembersSpec("forWhom", "For whom", essential = false),
@@ -102,9 +104,9 @@ enum class EntryType(
             MoneySpec(),
             ChoiceSpec("frequency", "How often", FREQUENCIES, required = true),
             DateSpec("nextDate", "Next payment", required = true),
-            ChoiceSpec("category", "Category", EXPENSE_CATEGORIES, essential = false),
-            ChoiceSpec("paymentMethod", "Paid with", PAYMENT_METHODS, essential = false),
-            ChoiceSpec("remind", "Remind me", REMINDERS, essential = false),
+            ChoiceSpec("paymentMethod", "Paid with", PAYMENT_METHODS, dynamicOptions = "cards", replacedByDynamic = "Card", required = true),
+            ChoiceSpec("remind", "Remind me", REMINDERS),
+            ChoiceSpec("category", "Category", EXPENSE_CATEGORIES, dynamicOptions = "categories", essential = false),
             // "Ask me": Today shows a "Log it" button on the day. Otherwise it's logged as spent by itself.
             ChoiceSpec("onRenew", "When it renews", listOf("Ask me", "Log it automatically"), essential = false),
             // "Rarely" or "Not using" gets a "cancel before it renews?" heads-up a week ahead.
@@ -126,8 +128,9 @@ enum class EntryType(
             MoneySpec("cost", "Cost (adds to budget)", required = false, essential = false),
             TextSpec("store", "Bought at", essential = false),
             LevelSpec("level", "How much is left", "% left"),
-            ChoiceSpec("flavours", "Taste", FLAVOURS, multi = true, allowCustom = true, essential = false),
-            ChoiceSpec("rating", "Was it good?", RATING, essential = false),
+            // Feeds "what to cook" moods and the shopping list's "Last time: Amul 👍".
+            ChoiceSpec("flavours", "Taste (for snacks and treats)", FLAVOURS, multi = true, allowCustom = true, essential = false),
+            ChoiceSpec("rating", "Was this brand good?", RATING, essential = false),
             ChoiceSpec("restock", "Remind to restock", RESTOCK, essential = false),
         ),
     ),
@@ -135,14 +138,15 @@ enum class EntryType(
         "Medicine", "Add medicine", Icons.Outlined.LocalHospital, { it.vault }, AppModule.MEDICINE, "medicines", "title",
         listOf(
             TextSpec("title", "Medicine", "Crocin, cough syrup…", required = true),
+            // Expiry and who it's for come first: an expired or wrong-person medicine is the risk.
+            DateSpec("expiry", "Expires"),
+            MembersSpec("forWhom", "For"),
             // Tags match the assistant's "I'm feeling…" care list, so it can suggest what's at home.
             ChoiceSpec(
                 "usedFor", "Used for",
                 listOf("Fever", "Headache", "Pain", "Cold & cough", "Sore throat", "Allergy", "Acidity", "Stomach", "Loose motions", "Cuts & wounds", "Burns", "Sprain", "Insect bite", "Vitamins"),
                 multi = true, allowCustom = true,
             ),
-            MembersSpec("forWhom", "For"),
-            DateSpec("expiry", "Expires"),
             TextSpec("keptAt", "Kept at", "Medicine box, bedroom drawer…", essential = false),
             QuantitySpec(units = listOf("tablets", "strips", "ml", "bottles", "pcs"), essential = false),
             ChoiceSpec("form", "Form", listOf("Tablet", "Syrup", "Capsule", "Ointment", "Drops", "Inhaler", "Other"), essential = false),
@@ -168,13 +172,18 @@ enum class EntryType(
         "Task", "New task", Icons.Outlined.TaskAlt, { it.plans }, AppModule.PLANS, "tasks", "title",
         listOf(
             TextSpec("title", "What needs doing", "Pay rent, call plumber…", required = true),
-            MembersSpec("assignee", "Who", multi = false),
             DateSpec("due", "Due"),
+            // A time makes it ring then, on this person's phone ("call mom at 5:30").
+            ChoiceSpec("time", "At", com.houseaffairs.app.core.data.TIME_CHOICES, allowCustom = true, isTime = true, visibleWhen = { it["due"] != null }),
+            MembersSpec("assignee", "Who", multi = false),
             ChoiceSpec("priority", "Priority", TASK_PRIORITIES),
+            // "Call mom" / "message Ravi": the task row opens the dialer, WhatsApp or SMS with this number.
+            ChoiceSpec("reach", "Reach them by", listOf("Call", "WhatsApp", "SMS"), visibleWhen = { it["reach"] != null || com.houseaffairs.app.feature.quickadd.reachOf(it["title"] as? String ?: "") != null }),
+            TextSpec("phone", "Their number", "Pick a contact or type it", isPhone = true, visibleWhen = { it["reach"] != null }),
             ChoiceSpec("repeat", "Repeat", listOf("Never", "Daily", "Weekly", "Monthly"), essential = false),
             // A chore rota: each time it's done, the next one goes to the next person.
             MembersSpec("rotation", "Take turns", essential = false, visibleWhen = { (it["repeat"] as? String).let { r -> r != null && r != "Never" } }),
-            ChoiceSpec("remind", "Remind", REMINDERS, essential = false),
+            ChoiceSpec("remind", "Remind", REMINDERS, essential = false, visibleWhen = { it["due"] != null }),
             TextSpec("note", "Note", multiline = true, essential = false),
         ),
     ),
@@ -184,9 +193,9 @@ enum class EntryType(
             TextSpec("title", "What", "Riya's birthday, car insurance…", required = true),
             ChoiceSpec("kind", "Kind", listOf("Birthday", "Anniversary", "Renewal", "Appointment", "Other"), required = true),
             DateSpec("date", "On", required = true),
+            ChoiceSpec("remind", "Remind", REMINDERS),
             MembersSpec("people", "Who it's for"),
             ChoiceSpec("repeat", "Repeat", listOf("Never", "Monthly", "Yearly"), essential = false),
-            ChoiceSpec("remind", "Remind", REMINDERS, essential = false),
             TextSpec("note", "Note", multiline = true, essential = false),
         ),
     ),
@@ -342,8 +351,9 @@ enum class EntryType(
             TextSpec("title", "Name", "Amazon gift card, HDFC points…", required = true),
             ChoiceSpec("kind", "Kind", CREDIT_KINDS, required = true),
             MoneySpec(label = "Worth"),
-            ChoiceSpec("earmark", "Save it for", listOf("Anything") + EXPENSE_CATEGORIES.filter { it != "Rent" }, dynamicOptions = "dreams"),
+            // Unused gift cards lapse, so the date sits with the value.
             DateSpec("expiry", "Expires"),
+            ChoiceSpec("earmark", "Save it for", listOf("Anything") + EXPENSE_CATEGORIES.filter { it != "Rent" }, dynamicOptions = "dreams"),
             TextSpec("code", "Code or card number", essential = false),
             TextSpec("note", "Note", essential = false),
         ),

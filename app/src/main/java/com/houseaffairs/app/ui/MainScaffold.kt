@@ -220,4 +220,18 @@ fun MainScaffold(session: SessionState.Ready) {
             onSaved = { saved -> showUndo(saved.message) { saved.undo() } },
         )
     }
+
+    // First sign-in or a fresh start: the tour, one feature at a time, over everything else.
+    val main: MainViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+    val tourStep by main.tourStep.collectAsState()
+    tourStep?.takeIf { it >= 0 }?.let { saved ->
+        val steps = remember(session.me) { com.houseaffairs.app.core.data.tourSteps { session.me.canAccess(it) } }
+        TourScreen(
+            steps = steps,
+            start = com.houseaffairs.app.core.data.tourResumeAt(saved, steps.size),
+            onStep = main::setTourStep,
+            onFinish = main::finishTour,
+            onOpen = { route -> if (tabs.any { it.route == route }) openTab(route) },
+        )
+    }
 }

@@ -260,10 +260,18 @@ private fun Picker(
                 suggestion, blocked,
                 thinking = state.thinking,
                 canAskAi = state.canAskAi,
+                hits = state.mediaHits,
+                chosen = state.chosenHit,
+                onPick = viewModel::pickHit,
                 onKind = viewModel::changeKind,
                 onAskAi = { viewModel.askAssistant() },
                 onEdit = viewModel::editSuggestion,
                 onSave = onSave,
+                quickChoice = (suggestion.type.fields.firstOrNull { it.key == suggestion.missingKeys.firstOrNull() } as? ChoiceSpec)?.takeIf { !it.multi }?.let { spec ->
+                    val extra = spec.dynamicOptions?.let { state.dynamicOptions[it] }.orEmpty()
+                    spec to ((if (extra.isNotEmpty() && spec.replacedByDynamic != null) spec.options - spec.replacedByDynamic else spec.options) + extra).distinct()
+                },
+                onQuickChoice = viewModel::fillSuggestion,
             )
         }
 
@@ -310,10 +318,15 @@ private fun SuggestionCard(
     blocked: Boolean,
     thinking: Boolean,
     canAskAi: Boolean,
+    hits: List<com.houseaffairs.app.core.data.MediaHit> = emptyList(),
+    chosen: com.houseaffairs.app.core.data.MediaHit? = null,
+    onPick: (com.houseaffairs.app.core.data.MediaHit) -> Unit = {},
     onKind: (LineKind) -> Unit,
     onAskAi: () -> Unit,
     onEdit: () -> Unit,
     onSave: () -> Unit,
+    quickChoice: Pair<ChoiceSpec, List<String>>? = null,
+    onQuickChoice: (String, String) -> Unit = { _, _ -> },
 ) {
     val accent = suggestion.type.accent(LocalHouseColors.current)
     Column(
@@ -340,6 +353,50 @@ private fun SuggestionCard(
                     suggestion.unsure -> "Not sure what this is"
                     else -> null
                 }?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = accent.color) }
+            }
+        }
+        // Movies, books and songs: the exact title with its poster, from what was typed or said.
+        if (hits.isNotEmpty() && !blocked) {
+            Spacer(Modifier.height(10.dp))
+            Text(if (chosen == null) "Did you mean…?" else "Picked · tap again to undo", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(6.dp))
+            androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(hits.size) { i ->
+                    val h = hits[i]
+                    val on = chosen == h
+                    Column(
+                        Modifier
+                            .width(84.dp)
+                            .clip(MaterialTheme.shapes.small)
+                            .then(if (on) Modifier.background(accent.color.copy(alpha = 0.18f)) else Modifier)
+                            .clickable(onClickLabel = "Pick ${h.title}") { onPick(h) }
+                            .padding(4.dp),
+                    ) {
+                        Box(Modifier.size(width = 76.dp, height = 108.dp).clip(MaterialTheme.shapes.small).background(MaterialTheme.colorScheme.surfaceContainerHighest)) {
+                            if (h.poster != null) {
+                                coil.compose.AsyncImage(model = h.poster, contentDescription = h.title, contentScale = androidx.compose.ui.layout.ContentScale.Crop, modifier = Modifier.matchParentSize())
+                            } else {
+                                Text(h.kind.take(1), style = MaterialTheme.typography.titleLarge, modifier = Modifier.align(Alignment.Center))
+                            }
+                            if (on) Text("✓", color = Color.White, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).clip(CircleShape).background(accent.color).padding(horizontal = 6.dp))
+                        }
+                        Text(h.title, style = MaterialTheme.typography.labelMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(listOfNotNull(h.year, h.kind).joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        h.creator?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        h.rating?.let { Text("★ %.1f".format(it) + (h.ratingCount?.let { n -> " ($n)" } ?: ""), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    }
+                }
+            }
+        }
+        // A must-have the line didn't say (how it was paid): pick it right here.
+        if (quickChoice != null && !blocked) {
+            val (spec, options) = quickChoice
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(spec.label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                options.filter { it != "Other" }.forEach { option ->
+                    FilterChip(selected = false, onClick = { onQuickChoice(spec.key, option) }, label = { Text(option) }, shape = CircleShape)
+                }
             }
         }
         // An unsure line: one tap to say what it really is. The whole family's quick add learns it.
@@ -706,6 +763,16 @@ private fun EntryForm(form: FormState, state: AddUiState, viewModel: AddViewMode
             )
         }
 
+        form.duplicateOf?.let { (id, title) ->
+            Column(
+                Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).background(accent.container).padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text("You already have $title with these ingredients", style = MaterialTheme.typography.titleSmall)
+                Text("Change the name or ingredients to save a new version.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedButton(onClick = { viewModel.openEdit(EntryType.RECIPE, id) }, shape = CircleShape) { Text("Open $title") }
+            }
+        }
         Button(onClick = onSave, shape = CircleShape, modifier = Modifier.fillMaxWidth().height(56.dp)) {
             Text(if (form.editId != null) "Save changes" else "Save", style = MaterialTheme.typography.titleMedium)
         }

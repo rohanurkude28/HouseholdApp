@@ -166,6 +166,7 @@ fun WellPlanSheet(onDismiss: () -> Unit, onSaved: () -> Unit = {}, viewModel: We
             Text("Tap a number to type it. The app counts these from what you log.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Stepper("Walking (min)", plan.walkMinutes, 30) { plan = plan.copy(walkMinutes = it.coerceIn(10, 2000)) }
             Stepper("Workout, yoga or sport (min)", plan.workoutMinutes, 15) { plan = plan.copy(workoutMinutes = it.coerceIn(10, 2000)) }
+            Stepper("Study or learning (min)", plan.studyMinutes, 15) { plan = plan.copy(studyMinutes = it.coerceIn(0, 2000)) }
             Stepper("Meals cooked at home", plan.homeMeals, 1) { plan = plan.copy(homeMeals = it.coerceIn(1, 21)) }
             Stepper("Meals eaten together", plan.familyMeals, 1) { plan = plan.copy(familyMeals = it.coerceIn(1, 21)) }
             // Daily targets for "Today's plate"; the defaults suit most adults.

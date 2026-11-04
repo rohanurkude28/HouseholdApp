@@ -15,3 +15,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "HouseAffairs"
 include(":app")
+include(":shared")
+include(":composeApp")
+

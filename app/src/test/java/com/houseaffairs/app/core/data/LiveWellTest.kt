@@ -43,4 +43,16 @@ class LiveWellTest {
         assertFalse(isPlantBased(listOf(Ingredient("Eggs", 2.0, "pcs"))))
         assertTrue(isPlantBased(listOf(Ingredient("Paneer", 200.0, "g"), Ingredient("Peas", 100.0, "g"))))
     }
+
+    @Test
+    fun `keep learning counts only once someone studies`() {
+        assertNull(liveWell(WeekData()).habits.first { it.name == "Keep learning" }.score)
+        val studied = liveWell(WeekData(activities = listOf(ActivityLog("Study", 30, 1))))
+        assertEquals(1f, studied.habits.first { it.name == "Keep learning" }.score)
+        // Studying isn't a workout.
+        assertEquals(0f, studied.habits.first { it.name == "Workout" }.score)
+        val target = liveWell(WeekData(activities = listOf(ActivityLog("Study", 60, 1))), WellPlan(studyMinutes = 120))
+        assertEquals(0.5f, target.habits.first { it.name == "Keep learning" }.score!!, 0.001f)
+        assertEquals(1f, liveWell(WeekData(learned = 1), WellPlan(studyMinutes = 120)).habits.first { it.name == "Keep learning" }.score)
+    }
 }

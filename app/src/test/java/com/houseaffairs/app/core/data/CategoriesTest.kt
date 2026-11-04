@@ -40,6 +40,8 @@ class CategoriesTest {
         assertEquals("Documents", keptCategory(KeptItem("3", "Passports", "Drawer", null, null, null)))
         assertEquals("Keys", keptCategory(KeptItem("4", "Spare scooter key", "Hook", "Keys", null, null)))
         assertEquals("Other", keptCategory(KeptItem("5", "Old photo album", "Loft", null, null, null)))
+        // "Other → Memories" typed in the form makes its own group.
+        assertEquals("Memories", keptCategory(KeptItem("6", "Old photo album", "Loft", "Memories", null, null)))
     }
 
     @Test

@@ -21,6 +21,8 @@ data class WellPlan(
     val workoutMinutes: Int = 90,
     val homeMeals: Int = 7,
     val familyMeals: Int = 5,
+    /** 0 = not tracked: "Keep learning" only scores once someone studies or sets a target. */
+    val studyMinutes: Int = 0,
     /** The person's own weekly targets ("sleep by 11 · 5 nights"), ticked off in the weekly story. */
     val custom: List<CustomTarget> = emptyList(),
     /** Daily protein, carbs, fat and fibre targets for "Today's plate". */
@@ -86,6 +88,8 @@ data class WeekData(
     val days: Int = 7,
     /** Days with a diary line written: counts toward gratitude. */
     val diaryDays: Int = 0,
+    /** Things on the Study list finished this week. */
+    val learned: Int = 0,
 )
 
 data class Habit(
@@ -109,6 +113,7 @@ private fun ratio(value: Float, target: Float) = min(value / target, 1f)
 
 private val WALKING = setOf("Walk", "Run", "Cycling")
 private val CHORES = setOf("Gardening", "Housework")
+private val STUDY = setOf("Study")
 
 private val MEAT_WORDS = listOf("chicken", "mutton", "fish", "egg", "prawn", "meat", "beef", "pork", "lamb", "keema")
 
@@ -121,7 +126,8 @@ fun liveWell(w: WeekData, plan: WellPlan = WellPlan()): Wheel {
     fun minutes(kinds: Set<String>?) = w.activities.filter { kinds == null || it.kind in kinds }.sumOf { it.minutes }
     val walk = minutes(WALKING)
     val chores = minutes(CHORES)
-    val workout = w.activities.filter { it.kind !in WALKING && it.kind !in CHORES }.sumOf { it.minutes }
+    val workout = w.activities.filter { it.kind !in WALKING && it.kind !in CHORES && it.kind !in STUDY }.sumOf { it.minutes }
+    val study = minutes(STUDY)
     val home = w.meals.size
     val plant = w.meals.count { it.plantBased }
     val family = w.meals.count { it.people >= 2 }
@@ -183,6 +189,22 @@ fun liveWell(w: WeekData, plan: WellPlan = WellPlan()): Wheel {
                     else -> "Moments of gratitude or faith"
                 },
                 "Each night, write one good thing from the day in your diary.",
+            ),
+            // Long-lived people keep learning; finishing something on the Study list fills it on its own.
+            Habit(
+                Pillar.OUTLOOK, "Keep learning",
+                when {
+                    w.learned > 0 -> 1f
+                    plan.studyMinutes > 0 -> ratio(study.toFloat(), aim(plan.studyMinutes))
+                    study > 0 -> 1f
+                    else -> null
+                },
+                when {
+                    plan.studyMinutes > 0 -> line(study, plan.studyMinutes, "min studying")
+                    study > 0 -> "$study min studying"
+                    else -> "Log “studied 30 min”, or set a study target in your plan"
+                } + if (w.learned > 0) " · finished ${w.learned} on the Study list" else "",
+                "Twenty minutes of a course, a language or an instrument, a few times a week.",
             ),
         ),
     )

@@ -56,6 +56,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":shared"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
@@ -89,4 +90,9 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.org.json)
+}
+
+// The rules moved to :shared keep running with the app's own tests.
+tasks.matching { it.name == "testLocalUnitTest" || it.name == "testDebugUnitTest" }.configureEach {
+    dependsOn(":shared:testDebugUnitTest")
 }
