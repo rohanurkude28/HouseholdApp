@@ -23,6 +23,8 @@ data class WellPlan(
     val familyMeals: Int = 5,
     /** The person's own weekly targets ("sleep by 11 · 5 nights"), ticked off in the weekly story. */
     val custom: List<CustomTarget> = emptyList(),
+    /** Daily protein, carbs, fat and fibre targets for "Today's plate". */
+    val macros: MacroTargets = MacroTargets(),
 ) {
     val isEmpty: Boolean get() = commitments.values.all { it.isEmpty() }
 }

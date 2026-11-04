@@ -14,6 +14,8 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -169,6 +171,7 @@ fun MainScaffold(session: SessionState.Ready) {
                     onAddDream = { horizon -> openAdd(EntryType.DREAM, horizon?.let { mapOf("horizon" to it) } ?: emptyMap()) },
                     onAddTask = { openAdd(EntryType.TASK, emptyMap()) },
                     onAddEvent = { openAdd(EntryType.EVENT, emptyMap()) },
+                    onAddGoal = { openAdd(EntryType.GOAL, emptyMap()) },
                     onAddPlace = { openAdd(EntryType.PLACE, emptyMap()) },
                     // Dated inside the trip, so it counts even when added afterwards.
                     onAddTripExpense = { trip ->
@@ -199,6 +202,12 @@ fun MainScaffold(session: SessionState.Ready) {
                 SettingsScreen(onBack = { navController.popBackStack() })
             }
         }
+    }
+
+    // A link or text shared in from another app opens the right form.
+    val shared by com.houseaffairs.app.feature.add.SharedInbox.pending.collectAsState()
+    LaunchedEffect(shared) {
+        shared?.let { addRequest = it; com.houseaffairs.app.feature.add.SharedInbox.pending.value = null }
     }
 
     addRequest?.let { request ->

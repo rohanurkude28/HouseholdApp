@@ -111,6 +111,8 @@ fun AddSheet(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     LaunchedEffect(request) {
+        // Shared plain text lands in quick add, read like anything typed.
+        (request.preset[QUICK_TEXT] as? String)?.let { viewModel.onTextChange(it) }
         val type = request.type ?: return@LaunchedEffect
         if (request.editId != null) viewModel.openEdit(type, request.editId) else viewModel.openForm(type, request.preset)
     }
@@ -525,13 +527,15 @@ private fun AnswerCard(answer: Answer, onMove: (MoveAction) -> Unit, onLocationG
             Spacer(Modifier.height(4.dp))
             Text(line, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
         }
-        answer.ideas.forEach { idea ->
+        @Composable
+        fun IdeaRow(idea: com.houseaffairs.app.core.data.DishIdea) {
             Spacer(Modifier.height(10.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconBlob(EntryType.RECIPE.icon, stock, size = 36.dp)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(idea.recipe.title, style = MaterialTheme.typography.titleSmall)
+                    answer.why[idea.recipe.title]?.let { Text("✨ $it", style = MaterialTheme.typography.bodySmall, color = stock.color) }
                     Text(
                         listOfNotNull(
                             idea.rescues.takeIf { it.isNotEmpty() }?.let { "uses ${it.joinToString()} before it expires" },
@@ -542,6 +546,13 @@ private fun AnswerCard(answer: Answer, onMove: (MoveAction) -> Unit, onLocationG
                     )
                 }
             }
+        }
+        answer.ideas.forEach { IdeaRow(it) }
+        // A craving's parts: "Crispy", then "Savoury curry", each with its dishes.
+        answer.groups.forEach { (label, ideas) ->
+            Spacer(Modifier.height(12.dp))
+            Text(label, style = MaterialTheme.typography.labelLarge, color = stock.color)
+            ideas.forEach { IdeaRow(it) }
         }
         if (answer.loading) {
             Spacer(Modifier.height(8.dp))

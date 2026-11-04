@@ -21,6 +21,8 @@ data class Household(
     val budgetCycleStartDay: Int = 1,
     val createdBy: String = "",
     val createdAt: Timestamp? = null,
+    /** Private topic → who may see new entries on it (see PrivateTopics.kt). Owner-set. */
+    val privateTopics: Map<String, List<String>> = emptyMap(),
 )
 
 data class Member(

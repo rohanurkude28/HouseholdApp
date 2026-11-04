@@ -51,6 +51,8 @@ data class StockUiState(
     val mood: String? = null,
     val members: List<Member> = emptyList(),
     val lastCooked: Map<String, LocalDate> = emptyMap(),
+    /** "Last time: Amul 👍" for shopping items, by their id. */
+    val lastTime: Map<String, String> = emptyMap(),
     /** Dishes that rescue food about to expire. */
     val useItUp: List<DishIdea> = emptyList(),
     /** Library dishes you can mostly make with what's in the pantry. */
@@ -64,10 +66,10 @@ class StockViewModel @Inject constructor(
     private val pantryRepo: PantryRepository,
     households: HouseholdRepository,
 ) : ViewModel() {
-    private data class Scope(val householdId: String, val uid: String, val canMedicine: Boolean)
+    private data class Scope(val householdId: String, val uid: String, val canMedicine: Boolean, val ownMedicines: Boolean)
 
     private val scope = session.state.filterIsInstance<SessionState.Ready>()
-        .map { Scope(it.household.id, it.user.uid, it.me.canAccess(AppModule.MEDICINE)) }
+        .map { Scope(it.household.id, it.user.uid, it.me.canAccess(AppModule.MEDICINE), com.houseaffairs.app.core.model.RolePolicy.ownMedicinesOnly(it.me.role)) }
         .distinctUntilChanged()
     private val tab = MutableStateFlow(StockTab.RECIPES)
     private val mood = MutableStateFlow<String?>(null)
@@ -77,9 +79,9 @@ class StockViewModel @Inject constructor(
             pantryRepo.observePantry(s.householdId, s.uid),
             pantryRepo.observeRecipes(s.householdId, s.uid),
             pantryRepo.observeShopping(s.householdId, s.uid),
-            if (s.canMedicine) pantryRepo.observeMedicines(s.householdId, s.uid) else flowOf(emptyList()),
-            combine(pantryRepo.observeSupplies(s.householdId, s.uid), pantryRepo.observeLastCooked(s.householdId, s.uid)) { a, b -> a to b },
-        ) { pantry, recipes, shopping, medicines, (supplies, cooked) -> Data(s.canMedicine, pantry, recipes, shopping, medicines, supplies, cooked) }
+            if (s.canMedicine) pantryRepo.observeMedicines(s.householdId, s.uid, s.ownMedicines) else flowOf(emptyList()),
+            combine(pantryRepo.observeSupplies(s.householdId, s.uid), pantryRepo.observeLastCooked(s.householdId, s.uid), pantryRepo.observeHistory(s.householdId, s.uid)) { a, b, c -> Triple(a, b, c) },
+        ) { pantry, recipes, shopping, medicines, (supplies, cooked, history) -> Data(s.canMedicine, pantry, recipes, shopping, medicines, supplies, cooked, history.second) }
     }
 
     private data class Data(
@@ -90,6 +92,7 @@ class StockViewModel @Inject constructor(
         val medicines: List<PantryStock>,
         val supplies: List<PantryStock>,
         val lastCooked: Map<String, LocalDate>,
+        val memory: List<com.houseaffairs.app.core.data.StockMemory>,
     )
 
     private val members = scope.map { it.householdId }.distinctUntilChanged().flatMapLatest { households.observeMembers(it) }
@@ -97,6 +100,7 @@ class StockViewModel @Inject constructor(
     val state: StateFlow<StockUiState> = combine(data, tab, mood, members) { d, t, m, people ->
         val today = LocalDate.now()
         StockUiState(
+            lastTime = d.shopping.mapNotNull { item -> com.houseaffairs.app.core.data.lastTimeNote(item.title, d.memory)?.let { item.id to it } }.toMap(),
             tab = t,
             tabs = StockTab.entries,
             pantry = d.pantry,

@@ -25,6 +25,17 @@ enum class ListTemplate(
     GIFTS("Gifts", setOf("gift", "gifts"), "Gift ideas", "🎁", "Given"),
     ;
 
+    /** The action that ticks an item off, worded as something to do ("Mark watched"), not a state. */
+    val markLabel: String
+        get() = when (this) {
+            WATCH -> "Mark watched"
+            BOOKS -> "Mark read"
+            MUSIC -> "Mark heard"
+            TRAVEL, EAT_OUT -> "Mark visited"
+            BUY -> "Mark bought"
+            GIFTS -> "Mark given"
+        }
+
     /** Lists whose items are looked up online for a cover, rating and where to find them. */
     val isMedia: Boolean get() = this == WATCH || this == BOOKS || this == MUSIC
 
@@ -63,7 +74,8 @@ sealed interface QuickAddDraft {
     data class Subscription(val title: String, val amount: BigDecimal, val currency: String?, val frequency: String) : QuickAddDraft
     /** [quantity] is "500 g", "2 pcs"…, or null when none was said. */
     data class Shopping(val item: String, val quantity: String? = null) : QuickAddDraft
-    data class Task(val title: String, val due: LocalDate?) : QuickAddDraft
+    /** [repeat] is "Daily", "Weekly" or "Monthly" for "water plants every week", else null. */
+    data class Task(val title: String, val due: LocalDate?, val repeat: String? = null) : QuickAddDraft
     data class Event(val title: String, val kind: String, val date: LocalDate?) : QuickAddDraft
     data class Medicine(val title: String, val forName: String?, val expiry: LocalDate?) : QuickAddDraft
     data class Grocery(val title: String, val quantity: String?, val expiry: LocalDate?) : QuickAddDraft
@@ -111,6 +123,9 @@ sealed interface QuickAddDraft {
 
         /** "How much is the card bill?" / "paid the credit card bill": bills aren't new spending. */
         CARD_BILL,
+
+        /** "I want to eat something crispy with a savoury curry" (subject = what they want). */
+        CRAVING,
     }
 
     /** "Gold necklace is in the bank locker" / "kept spare keys in the blue drawer". */
@@ -330,6 +345,8 @@ class QuickAddParser(private val today: () -> LocalDate = LocalDate::now) {
         // Paying a card bill moves money you already counted when you spent it, so it isn't an expense.
         if (CARD_BILL.containsMatchIn(t)) return QuickAddDraft.Ask(QuickAddDraft.Question.CARD_BILL, if (Regex("\\b(paid|pay|paying|cleared|settled)\\b", RegexOption.IGNORE_CASE).containsMatchIn(t)) "paid" else null)
         ASK_COOK.matchEntire(t)?.let { return QuickAddDraft.Ask(QuickAddDraft.Question.COOK, null) }
+        // Before symptoms: "I feel like eating something spicy" is hunger, not illness.
+        (CRAVING.matchEntire(t) ?: CRAVING_TASTE.matchEntire(t))?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.CRAVING, m.groupValues[1].trim()) }
         ASK_EXPIRING.matchEntire(t)?.let { return QuickAddDraft.Ask(QuickAddDraft.Question.EXPIRING, null) }
         ASK_LEFT.matchEntire(t)?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.LEFT, m.groupValues[1].trim().ifEmpty { null }) }
         ASK_AFFORD.matchEntire(t)?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.AFFORD, m.groupValues[1].trim()) }
@@ -628,10 +645,21 @@ class QuickAddParser(private val today: () -> LocalDate = LocalDate::now) {
     }
 
     private fun parseTask(text: String): QuickAddDraft.Task {
-        val words = TASK_PREFIX.replace(text, "").split(" ").toMutableList()
+        var rest = TASK_PREFIX.replace(text, "")
+        // "every sunday" repeats weekly from the coming Sunday; "daily", "every month"… just repeat.
+        val repeat = TASK_REPEAT.find(rest)?.let { m ->
+            val unit = m.groupValues[1].ifEmpty { m.groupValues[2] }.lowercase()
+            rest = rest.removeRange(m.range).trim() + if (unit in WEEKDAYS) " $unit" else ""
+            when (unit) {
+                "day", "daily", "everyday" -> "Daily"
+                "month", "monthly" -> "Monthly"
+                else -> "Weekly"
+            }
+        }
+        val words = rest.split(" ").filter { it.isNotEmpty() }.toMutableList()
         val due = extractDate(words)
         val title = words.joinToString(" ").trim().capitalized()
-        return QuickAddDraft.Task(title.ifEmpty { text }, due)
+        return QuickAddDraft.Task(title.ifEmpty { text }, due, repeat)
     }
 
     // -----------------------------------------------------------------------------------------
@@ -789,6 +817,14 @@ class QuickAddParser(private val today: () -> LocalDate = LocalDate::now) {
             "^(.+?) (?:is |are |has |have )?(?:over|finished|empty|khatam|running low|almost over|ran out|run out)$",
             RegexOption.IGNORE_CASE,
         )
+        val CRAVING = Regex(
+            "^(?:i\\s+|we\\s+)?(?:want|wanna|would like|feel like|am craving|'m craving|craving|in the mood for)\\s+(?:to\\s+)?(?:eat|eating|have|having|for)\\s+(.+)$",
+            RegexOption.IGNORE_CASE,
+        )
+        val CRAVING_TASTE = Regex(
+            "^((?:something|anything)\\s+(?:crispy|crunchy|spicy|tangy|sweet|savoury|savory|healthy|light)\\b.*)$",
+            RegexOption.IGNORE_CASE,
+        )
         val ASK_COOK = Regex(
             "^(?:(?:what|which)(?: dish(?:es)?)? (?:can|should|shall|could) (?:i|we) (?:cook|make)|what to (?:cook|make)|suggest (?:a |some )?(?:dish|dishes|recipe|recipes|something to cook)|(?:any )?(?:dinner|lunch|breakfast) ideas)\\b.*$",
             RegexOption.IGNORE_CASE,
@@ -906,6 +942,10 @@ class QuickAddParser(private val today: () -> LocalDate = LocalDate::now) {
         val COOKED = Regex("^(?:i |we |just )?(?:made|cooked|prepared|cook)\\s+(.+)$", RegexOption.IGNORE_CASE)
         val COOKED_TAIL = Regex(
             "\\s+(?:today|tonight|now|for (?:breakfast|lunch|dinner|everyone)|for (\\d+)(?: people)?)$",
+            RegexOption.IGNORE_CASE,
+        )
+        val TASK_REPEAT = Regex(
+            "\\b(?:every\\s+(day|week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(daily|weekly|monthly|everyday))\\b",
             RegexOption.IGNORE_CASE,
         )
         /** First words that make a line a task for sure. */

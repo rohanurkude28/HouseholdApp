@@ -3,6 +3,7 @@ package com.houseaffairs.app.feature.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.houseaffairs.app.core.data.Area
+import com.houseaffairs.app.core.data.Priority
 import com.houseaffairs.app.core.data.Attention
 import com.houseaffairs.app.core.data.HomeData
 import com.houseaffairs.app.core.data.buildAttention
@@ -129,6 +130,8 @@ data class HomeUiState(
     /** Gemini's reason for a dish or a show, by title, when smart suggestions are on. */
     val cookWhy: Map<String, String> = emptyMap(),
     val watchWhy: Map<String, String> = emptyMap(),
+    /** Gift ideas per event, by lower-case event title. */
+    val giftsFor: Map<String, Int> = emptyMap(),
 ) {
     val showStats: Boolean get() = layout.firstOrNull { it.section == HomeSection.STATS }?.visible != false
 
@@ -212,6 +215,7 @@ class HomeViewModel @Inject constructor(
         val pantry: List<PantryStock> = emptyList(),
         val recipes: List<Recipe> = emptyList(),
         val lastCooked: Map<String, LocalDate> = emptyMap(),
+        val history: Pair<List<com.houseaffairs.app.core.data.Purchase>, List<com.houseaffairs.app.core.data.StockMemory>> = emptyList<com.houseaffairs.app.core.data.Purchase>() to emptyList(),
     )
 
     private val kitchen = ready
@@ -221,11 +225,22 @@ class HomeViewModel @Inject constructor(
             if (!canStock) {
                 flowOf(Kitchen())
             } else {
-                combine(pantry.observePantry(householdId, uid), pantry.observeRecipes(householdId, uid), pantry.observeLastCooked(householdId, uid), ::Kitchen)
+                combine(
+                    pantry.observePantry(householdId, uid),
+                    pantry.observeRecipes(householdId, uid),
+                    pantry.observeLastCooked(householdId, uid),
+                    pantry.observeHistory(householdId, uid),
+                    ::Kitchen,
+                )
             }
         }
 
-    private data class Plans(val watch: List<WatchItem> = emptyList(), val wishes: List<WishItem> = emptyList(), val places: List<PlaceItem> = emptyList())
+    private data class Plans(
+        val watch: List<WatchItem> = emptyList(),
+        val wishes: List<WishItem> = emptyList(),
+        val places: List<PlaceItem> = emptyList(),
+        val goals: List<com.houseaffairs.app.core.data.Goal> = emptyList(),
+    )
 
     private val plans = ready
         .map { Triple(it.household.id, it.user.uid, it.me.canAccess(AppModule.PLANS)) }
@@ -239,6 +254,7 @@ class HomeViewModel @Inject constructor(
                     watchRepo.observe(householdId, uid).onEach { list -> viewModelScope.launch { runCatching { watchRepo.enrich(householdId, list) } } },
                     things.observeWishes(householdId, uid),
                     things.observePlaces(householdId, uid),
+                    things.observeGoals(householdId, uid),
                     ::Plans,
                 )
             }
@@ -316,7 +332,7 @@ class HomeViewModel @Inject constructor(
                 // An expiring item gets a dish suggestion right in the list.
                 val dish = v.ideas.firstOrNull { idea -> item.area == Area.KITCHEN && idea.rescues.any { it.equals(item.title, ignoreCase = true) } }
                 if (dish != null && item.detail.startsWith("Expires")) item.copy(detail = "${item.detail} · try ${dish.recipe.title}") else item
-            },
+            } + restockAlerts(v.kitchen, data.shopping.map { it.name }) + goalsRecapAlert(v.plans.goals),
             filter = v.filter,
             layout = v.layout,
             budget = v.budget,
@@ -324,6 +340,7 @@ class HomeViewModel @Inject constructor(
             // Gemini's picks first (when on), then the app's own order.
             ideas = v.ideas.sortedBy { idea -> v.picks.cook.indexOfFirst { it.title == idea.recipe.title }.let { if (it < 0) Int.MAX_VALUE else it } },
             watch = v.plans.watch.sortedBy { w -> v.picks.watch.indexOfFirst { it.title == w.title }.let { if (it < 0) Int.MAX_VALUE else it } },
+            giftsFor = v.plans.wishes.mapNotNull { it.event?.lowercase() }.groupingBy { it }.eachCount(),
             cookWhy = v.picks.cook.associate { it.title to it.why },
             watchWhy = v.picks.watch.associate { it.title to it.why },
             rightNow = rightNow(
@@ -365,9 +382,64 @@ class HomeViewModel @Inject constructor(
 
     fun completeTask(id: String, onDone: (com.houseaffairs.app.feature.add.SavedEntry) -> Unit) {
         val r = session.state.value as? SessionState.Ready ?: return
-        val title = state.value.data.tasks.firstOrNull { it.id == id }?.title ?: "Task"
-        val undo = home.completeTask(r.household.id, id)
-        onDone(com.houseaffairs.app.feature.add.SavedEntry("$title · done") { undo() })
+        val task = state.value.data.tasks.firstOrNull { it.id == id } ?: return
+        val undo = home.completeTask(r.household.id, r.user.uid, task)
+        onDone(com.houseaffairs.app.feature.add.SavedEntry(doneMessage(task, state.value.members)) { undo() })
+    }
+
+    /** "Time to buy rice": due from the family's buying rhythm, as Today items with "+ List". */
+    private fun restockAlerts(k: Kitchen, onList: List<String>): List<Attention> {
+        val today = LocalDate.now()
+        return com.houseaffairs.app.core.data.restockDue(k.history.first, k.history.second, onList, today).map { r ->
+            Attention(
+                "restock-${r.title}", Area.KITCHEN, if (r.due.isAfter(today)) Priority.SOON else Priority.TODAY,
+                "Restock ${r.title.lowercase()}", "${r.why} · due ${com.houseaffairs.app.feature.add.formatDate(r.due).lowercase()}",
+                r.due, restock = r.title,
+            )
+        }
+    }
+
+    /** Sundays: how the week's goals went, with a tap through to plan next week's. */
+    private fun goalsRecapAlert(goals: List<com.houseaffairs.app.core.data.Goal>): List<Attention> {
+        val today = LocalDate.now()
+        if (today.dayOfWeek != java.time.DayOfWeek.SUNDAY) return emptyList()
+        val recap = com.houseaffairs.app.core.data.goalsRecap(goals, today) ?: return emptyList()
+        return listOf(Attention("goals-recap", Area.PLANS, Priority.TODAY, "Your week's goals", "$recap · plan next week?", today, open = "plans/GOALS"))
+    }
+
+    /** "+ List" on a Today item: onto the shopping list, with Undo. */
+    fun addToShopping(title: String, onDone: (com.houseaffairs.app.feature.add.SavedEntry) -> Unit) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        val undo = pantry.addToShopping(r.household.id, r.user.uid, title)
+        onDone(com.houseaffairs.app.feature.add.SavedEntry("$title · added to the shopping list") { undo() })
+    }
+
+    /** A renewal from Today logged as spent; Undo takes the expense back out. */
+    fun logRenewal(id: String, onDone: (com.houseaffairs.app.feature.add.SavedEntry) -> Unit) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        val renewal = state.value.data.renewals.firstOrNull { it.id == id } ?: return
+        viewModelScope.launch {
+            money.logRenewal(r.household.id, r.user.uid, id, renewal.next)?.let { undo ->
+                onDone(com.houseaffairs.app.feature.add.SavedEntry("${renewal.title} · logged as spent") { undo() })
+            }
+        }
+    }
+
+    // Renewals set to "Log it automatically" are logged once their day comes. A transaction stops
+    // two phones logging the same one; each (id, date) is only tried once per screen.
+    private val autoLogged = mutableSetOf<Pair<String, LocalDate>>()
+
+    init {
+        viewModelScope.launch {
+            data.collect { d ->
+                val r = session.state.value as? SessionState.Ready ?: return@collect
+                if (!r.me.canAccess(AppModule.MONEY)) return@collect
+                val today = LocalDate.now()
+                d.renewals.filter { it.auto && it.pending(today) && autoLogged.add(it.id to it.next) }.forEach { renewal ->
+                    launch { money.logRenewal(r.household.id, r.user.uid, renewal.id, renewal.next, exclusive = true) }
+                }
+            }
+        }
     }
 
     /** A card bill reminder in Today, marked paid; Undo brings the reminder back. */

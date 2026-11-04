@@ -52,3 +52,12 @@ internal fun coachSummary(wheel: Wheel, plan: WellPlan): String {
     val mine = Pillar.entries.mapNotNull { p -> plan.commitments[p]?.takeIf { it.isNotEmpty() }?.let { "${p.label}: ${it.joinToString()}" } }
     return habits + if (mine.isEmpty()) "" else "\nTheir plan: ${mine.joinToString("; ")}"
 }
+
+/** "Water plants · done. Next: Wed 11 Nov, Prachi's turn" for a repeating task; "… · done" otherwise. */
+internal fun doneMessage(task: com.houseaffairs.app.core.data.TaskItem, members: List<com.houseaffairs.app.core.model.Member>, today: LocalDate = LocalDate.now()): String {
+    val next = com.houseaffairs.app.core.data.nextDue(task.dueDate, task.repeat, today) ?: return "${task.title} · done"
+    val who = com.houseaffairs.app.core.data.nextInRotation(task.rotation, task.assignee)
+        ?.takeIf { task.rotation.size > 1 }
+        ?.let { uid -> members.firstOrNull { it.uid == uid }?.displayName?.substringBefore(' ') }
+    return "${task.title} · done. Next: ${com.houseaffairs.app.feature.add.formatDate(next)}" + (who?.let { ", $it's turn" } ?: "")
+}

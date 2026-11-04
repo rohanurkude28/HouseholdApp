@@ -241,7 +241,7 @@ fun StockScreen(
                 val item = row.item
                 // The circle ticks it off (into the pantry, with Undo); the row opens it for editing.
                 CompactRow(
-                    item.title, qty(item.amount, item.unit ?: ""), null,
+                    item.title, listOfNotNull(qty(item.amount, item.unit ?: "").takeIf { it.isNotEmpty() }, state.lastTime[item.id]).joinToString(" · "), null,
                     onClick = { onEdit(EntryType.SHOPPING, item.id) },
                     leading = { TickCircle(androidx.compose.ui.graphics.Color(item.aisle.argb), onTick = { viewModel.markBought(item.id, onCooked) }, size = 22.dp, contentDescription = "Bought ${item.title}") },
                 )

@@ -63,6 +63,7 @@ import com.houseaffairs.app.core.data.Attention
 import com.houseaffairs.app.core.data.Priority
 import com.houseaffairs.app.core.data.TodayRow
 import com.houseaffairs.app.core.data.BILL_PREFIX
+import com.houseaffairs.app.core.data.RENEWAL_PREFIX
 import com.houseaffairs.app.core.data.buildToday
 import com.houseaffairs.app.core.data.COMING_UP_COLLECTIONS
 import androidx.compose.material.icons.outlined.Restaurant
@@ -213,7 +214,7 @@ private fun HomeContent(
         state.layout.filter { it.visible }.forEach { pref ->
             when (pref.section) {
                 HomeSection.STATS -> Unit // drawn inside the hero
-                HomeSection.TODAY -> item { val nav = LocalHomeNav.current; TodaySection(state, onQuickAdd, onBillPaid = { key -> viewModel.markBillPaid(key, nav.saved) }) { id -> viewModel.completeTask(id, nav.saved) } }
+                HomeSection.TODAY -> item { val nav = LocalHomeNav.current; TodaySection(state, onQuickAdd, onBillPaid = { key -> viewModel.markBillPaid(key, nav.saved) }, onLogRenewal = { id -> viewModel.logRenewal(id, nav.saved) }, onRestock = { title -> viewModel.addToShopping(title, nav.saved) }) { id -> viewModel.completeTask(id, nav.saved) } }
                 HomeSection.COMING_UP -> item { ComingUpSection(state) }
                 HomeSection.GLANCE -> item { GlanceRow(state, onOpenSettings) }
                 HomeSection.RIGHT_NOW, HomeSection.USE_IT_UP, HomeSection.WATCH, HomeSection.SHOPPING ->
@@ -296,7 +297,7 @@ private fun areaIcon(area: Area): ImageVector = when (area) {
 
 /** Tasks and alerts in one ranked list, so Home has a single place to look first. */
 @Composable
-private fun TodaySection(state: HomeUiState, onQuickAdd: () -> Unit, onBillPaid: (String) -> Unit, onComplete: (String) -> Unit) {
+private fun TodaySection(state: HomeUiState, onQuickAdd: () -> Unit, onBillPaid: (String) -> Unit, onLogRenewal: (String) -> Unit, onRestock: (String) -> Unit, onComplete: (String) -> Unit) {
     val nav = LocalHomeNav.current
     val tasks = if (state.canPlans && state.shows(Area.PLANS)) state.data.tasks else emptyList()
     val rows = buildToday(state.attention.filter { state.shows(it.area) }, tasks, LocalDate.now())
@@ -347,14 +348,20 @@ private fun TodaySection(state: HomeUiState, onQuickAdd: () -> Unit, onBillPaid:
                             title = item.title,
                             detail = item.detail,
                             onClick = {
+                                item.open?.let { return@AttentionRow nav.open(it) }
                                 val type = collectionType(item.collection)
-                                if (type != null) nav.edit(type, item.id) else nav.open("money")
+                                if (type != null) nav.edit(type, item.id.removePrefix(RENEWAL_PREFIX)) else nav.open("money")
                             },
                         ) {
                             // Card bills are marked paid right here; Money no longer has a card box.
                             val bill = item.id.removePrefix(BILL_PREFIX).takeIf { item.id.startsWith(BILL_PREFIX) }
+                            val renewal = item.id.removePrefix(RENEWAL_PREFIX).takeIf { item.id.startsWith(RENEWAL_PREFIX) }
                             if (bill != null) {
                                 TextButton(onClick = { onBillPaid(bill) }) { Text("Paid") }
+                            } else if (renewal != null) {
+                                TextButton(onClick = { onLogRenewal(renewal) }) { Text("Log it") }
+                            } else if (item.restock != null && state.data.shopping.none { com.houseaffairs.app.core.data.itemKey(it.name) == com.houseaffairs.app.core.data.itemKey(item.restock) }) {
+                                TextButton(onClick = { onRestock(item.restock) }) { Text("+ List") }
                             } else {
                                 Text(item.priority.label, style = MaterialTheme.typography.labelMedium, color = priorityColor(item.priority))
                             }
@@ -410,12 +417,16 @@ private fun comingUp(state: HomeUiState): List<ComingUpRow> {
     val horizon = LocalDate.now().plusDays(30)
     val inToday = state.attention.filter { it.collection in COMING_UP_COLLECTIONS && it.priority != Priority.SOON }.map { it.id }.toSet()
     val events = if (state.canPlans && state.shows(Area.PLANS)) {
-        state.data.events.filter { !it.next.isAfter(horizon) }.map { ComingUpRow(it.id, Area.PLANS, it.title, it.kind, it.next) }
+        state.data.events.filter { !it.next.isAfter(horizon) }.map { e ->
+            val gifts = state.giftsFor[e.title.lowercase()]
+            ComingUpRow(e.id, Area.PLANS, e.title, listOfNotNull(e.kind, gifts?.let { "🎁 $it gift idea" + if (it > 1) "s" else "" }).joinToString(" · "), e.next)
+        }
     } else {
         emptyList()
     }
     val renewals = if (state.canMoney && state.shows(Area.MONEY)) {
-        state.data.renewals.filter { !it.next.isAfter(horizon) }.map { ComingUpRow(it.id, Area.MONEY, it.title, it.amountText ?: "Payment", it.next) }
+        // Renewals waiting to be logged live in Today, not here.
+        state.data.renewals.filter { !it.next.isAfter(horizon) && !it.pending(LocalDate.now()) }.map { ComingUpRow(it.id, Area.MONEY, it.title, it.amountText ?: "Payment", it.next) }
     } else {
         emptyList()
     }
@@ -1137,7 +1148,7 @@ private fun WatchRow(watch: List<WatchItem>, why: Map<String, String>, onWatched
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                // Always one line, so the "Watched" buttons line up across posters.
+                // Always one line, so the "Mark watched" buttons line up across posters.
                 Text(
                     w.whereToWatch?.let { "▶ $it" } ?: " ",
                     style = MaterialTheme.typography.labelMedium,
@@ -1145,7 +1156,15 @@ private fun WatchRow(watch: List<WatchItem>, why: Map<String, String>, onWatched
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                TextButton(onClick = { onWatched(w.id) }, contentPadding = PaddingValues(0.dp)) { Text("${w.template.doneLabel} ✓") }
+                // An empty circle and a verb, like every other tick in the app, so it reads as "tap when done".
+                Row(
+                    Modifier.padding(top = 6.dp).clip(CircleShape).clickable { onWatched(w.id) }.padding(end = 8.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TickCircle(LocalHouseColors.current.vault.color, onTick = { onWatched(w.id) }, size = 20.dp, contentDescription = "${w.template.markLabel}: ${w.title}")
+                    Spacer(Modifier.width(6.dp))
+                    Text(w.template.markLabel, style = MaterialTheme.typography.labelMedium, color = LocalHouseColors.current.vault.color, maxLines = 1, softWrap = false)
+                }
             }
         }
     }

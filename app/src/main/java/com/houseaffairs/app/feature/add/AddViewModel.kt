@@ -20,6 +20,9 @@ import com.houseaffairs.app.core.data.available
 import com.houseaffairs.app.core.data.KeptItem
 import com.houseaffairs.app.core.data.ThingsRepository
 import com.houseaffairs.app.core.data.whereIs
+import com.houseaffairs.app.core.data.cravingIdeas
+import com.houseaffairs.app.core.data.privateTopicOf
+import com.houseaffairs.app.core.data.privateVisibleTo
 import com.houseaffairs.app.core.data.GeoRepository
 import com.houseaffairs.app.core.data.LatLng
 import com.houseaffairs.app.core.data.PlaceItem
@@ -41,6 +44,7 @@ import com.houseaffairs.app.core.data.Recipe
 import com.houseaffairs.app.core.data.planCooking
 import com.houseaffairs.app.core.data.sameIngredient
 import com.houseaffairs.app.core.model.AppModule
+import com.houseaffairs.app.core.model.RolePolicy
 import kotlinx.coroutines.flow.flowOf
 import com.houseaffairs.app.core.data.HouseholdRepository
 import com.houseaffairs.app.core.data.SessionManager
@@ -138,6 +142,10 @@ data class Answer(
     /** "What's near me" without location permission: the card offers to allow it. */
     val needsLocation: Boolean = false,
     val loading: Boolean = false,
+    /** Dishes grouped by the part of a craving they answer ("Crispy", "Savoury curry"). */
+    val groups: List<Pair<String, List<DishIdea>>> = emptyList(),
+    /** Gemini's reason for a dish, by title, when smart suggestions are on. */
+    val why: Map<String, String> = emptyMap(),
 )
 
 /** "Made paneer sabzi": the matching recipe (if any) and what it takes from the pantry. */
@@ -252,9 +260,9 @@ class AddViewModel @Inject constructor(
 
     // Medicine cabinet with "used for" tags, for "I'm feeling feverish". Medicine access only.
     private val cabinet: StateFlow<List<MedicineInfo>> = ready
-        .map { Triple(it.household.id, it.user.uid, it.me.canAccess(AppModule.MEDICINE)) }
+        .map { Triple(it.household.id, it.user.uid, it.me.canAccess(AppModule.MEDICINE) to RolePolicy.ownMedicinesOnly(it.me.role)) }
         .distinctUntilChanged()
-        .flatMapLatest { (householdId, uid, can) -> if (can) pantry.observeMedicineInfo(householdId, uid) else flowOf(emptyList()) }
+        .flatMapLatest { (householdId, uid, access) -> if (access.first) pantry.observeMedicineInfo(householdId, uid, access.second) else flowOf(emptyList()) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     // Saved places, for "going to Indiranagar". Plans access only.
@@ -285,18 +293,25 @@ class AddViewModel @Inject constructor(
 
     // Pantry, supplies and medicines, for "jeera is in the spice box" and "where is the jeera?".
     private val homeStock: StateFlow<List<Pair<EntryType, PantryStock>>> = ready
-        .map { Triple(it.household.id, it.user.uid, it.me.canAccess(AppModule.STOCK) to it.me.canAccess(AppModule.MEDICINE)) }
+        .map { Triple(it.household.id, it.user.uid, Triple(it.me.canAccess(AppModule.STOCK), it.me.canAccess(AppModule.MEDICINE), RolePolicy.ownMedicinesOnly(it.me.role))) }
         .distinctUntilChanged()
         .flatMapLatest { (householdId, uid, access) ->
-            val (canStock, canMedicine) = access
+            val (canStock, canMedicine, ownMeds) = access
             combine(
                 if (canStock) pantry.observePantry(householdId, uid) else flowOf(emptyList()),
                 if (canStock) pantry.observeSupplies(householdId, uid) else flowOf(emptyList()),
-                if (canMedicine) pantry.observeMedicines(householdId, uid) else flowOf(emptyList()),
+                if (canMedicine) pantry.observeMedicines(householdId, uid, ownMeds) else flowOf(emptyList()),
             ) { food, supplies, medicines ->
                 food.map { EntryType.GROCERY to it } + supplies.map { EntryType.HOUSEHOLD to it } + medicines.map { EntryType.MEDICINE to it }
             }
         }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    // Birthdays and other events, so a gift idea can say which occasion it's for.
+    private val eventTitles: StateFlow<List<String>> = ready
+        .map { Triple(it.household.id, it.user.uid, it.me.canAccess(AppModule.PLANS)) }
+        .distinctUntilChanged()
+        .flatMapLatest { (householdId, uid, can) -> if (can) things.observeEventTitles(householdId, uid) else flowOf(emptyList()) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     // What the family has taught quick add, and the classifier trained on it.
@@ -313,6 +328,7 @@ class AddViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, KindClassifier(SEED_EXAMPLES))
 
     private val smartAdd: StateFlow<Boolean> = settings.smartAdd.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    private val smartSuggest: StateFlow<Boolean> = settings.smartSuggest.stateIn(viewModelScope, SharingStarted.Eagerly, false)
     private var assistJob: Job? = null
 
     // Declared after `money` and `kitchen`: the combine below reads them as soon as it starts.
@@ -332,6 +348,7 @@ class AddViewModel @Inject constructor(
                 "trips" to money?.trips?.map { it.trip }
                     ?.filter { !(it.end ?: it.start).isBefore(LocalDate.now().minusDays(7)) }
                     ?.map { it.title }.orEmpty(),
+                "events" to eventTitles.value,
             ),
             form = l.form,
             voiceUnavailable = l.voiceUnavailable,
@@ -346,7 +363,7 @@ class AddViewModel @Inject constructor(
                     is QuickAddDraft.Move, is QuickAddDraft.Fund, is QuickAddDraft.Growth, is QuickAddDraft.Revalue -> r.me.canAccess(AppModule.MONEY)
                     is QuickAddDraft.Change -> (d.kind != "expense" || r.me.canAccess(AppModule.MONEY))
                     is QuickAddDraft.Ask -> when (d.question) {
-                        QuickAddDraft.Question.COOK -> true
+                        QuickAddDraft.Question.COOK, QuickAddDraft.Question.CRAVING -> true
                         QuickAddDraft.Question.WHERE -> true
                         QuickAddDraft.Question.NEARBY -> r.me.canAccess(AppModule.PLANS)
                         QuickAddDraft.Question.SYMPTOM -> true
@@ -377,6 +394,7 @@ class AddViewModel @Inject constructor(
                 local.update { if (it.text == text) it.copy(change = found) else it }
             }
         }
+        if (draft is QuickAddDraft.Ask && draft.question == QuickAddDraft.Question.CRAVING && smartSuggest.value) pairDishes(text, draft.subject.orEmpty())
         if (draft is QuickAddDraft.Ask && draft.question == QuickAddDraft.Question.NEARBY) {
             viewModelScope.launch {
                 val result = nearbyAnswer(draft.subject)
@@ -454,6 +472,30 @@ class AddViewModel @Inject constructor(
                     draft == null -> s.copy(thinking = false)
                     else -> s.copy(thinking = false, suggestion = suggestionFor(draft).copy(source = SuggestionSource.AI, kind = lineKindOf(draft) ?: LineKind.TASK))
                 }
+            }
+        }
+    }
+
+    /** Gemini picks dishes from the craving's matches that go well together, and says why. */
+    private fun pairDishes(text: String, craving: String) {
+        val answer = local.value.answer ?: return
+        val options = answer.groups.flatMap { it.second }.map { it.recipe.title }.distinct()
+        if (options.isEmpty()) return
+        assistJob?.cancel()
+        assistJob = viewModelScope.launch {
+            delay(ASSIST_PAUSE_MS)
+            val kitchen = this@AddViewModel.kitchen.value.stock.take(25).joinToString { it.title }
+            val picks = assistant.pick(
+                "a meal for someone who said: \"$craving\". Pick dishes that go well together to make it",
+                "In their kitchen: ${kitchen.ifEmpty { "not tracked" }}. Now: ${java.time.LocalTime.now().hour}:00.",
+                options, 3,
+            )
+            local.update { s ->
+                val a = s.answer
+                if (s.text != text || a == null) return@update s
+                val order = picks.map { it.title }
+                fun rank(i: DishIdea) = order.indexOf(i.recipe.title).let { if (it < 0) Int.MAX_VALUE else it }
+                s.copy(answer = a.copy(loading = false, why = picks.associate { it.title to it.why }, groups = a.groups.map { (label, ideas) -> label to ideas.sortedBy(::rank) }))
             }
         }
     }
@@ -557,6 +599,15 @@ class AddViewModel @Inject constructor(
                     title = if (ideas.isEmpty()) "Add a few groceries first" else "You could make",
                     lines = if (ideas.isEmpty()) listOf("Tell me what's in the kitchen (“bought 500g paneer”) and I'll suggest dishes.") else emptyList(),
                     ideas = ideas,
+                )
+            }
+            QuickAddDraft.Question.CRAVING -> {
+                val groups = cravingIdeas(ask.subject.orEmpty(), k.stock, k.recipes, today)
+                Answer(
+                    title = if (groups.isEmpty()) "Nothing matches that yet" else "For “${ask.subject}”",
+                    lines = if (groups.isEmpty()) listOf("Try “something crispy”, “a spicy curry” or “something with paneer”, or save your own recipes.") else emptyList(),
+                    groups = groups,
+                    loading = groups.isNotEmpty() && smartSuggest.value,
                 )
             }
             QuickAddDraft.Question.EXPIRING -> {
@@ -1076,6 +1127,14 @@ class AddViewModel @Inject constructor(
             WhoCanSee.CHOSEN -> (listOf(uid) + form.visibleMembers).distinct()
         }
         val title = titleOf(form.type, form.values)
+        // A new entry on a topic the owner made private is only seen by the chosen people.
+        val topic = if (form.editId == null && form.whoCanSee == WhoCanSee.EVERYONE) {
+            privateTopicOf(form.type.collection, title, (form.values["category"] ?: form.values["supplyType"] ?: form.values["aisle"]) as? String)
+                ?.takeIf { it in r.household.privateTopics }
+        } else {
+            null
+        }
+        val shownTo = topic?.let { privateVisibleTo(r.household.privateTopics.getValue(it), uid) } ?: visibleTo
         if (form.editId != null) {
             entries.update(r.household.id, form.type, form.editId, form.values, visibleTo)
             local.value = LocalState()
@@ -1085,10 +1144,10 @@ class AddViewModel @Inject constructor(
                 if (before != null) entries.update(r.household.id, form.type, form.editId, before, beforeVisible)
             }
         }
-        val ref = entries.save(r.household.id, uid, form.type, form.values, visibleTo, form.source)
+        val ref = entries.save(r.household.id, uid, form.type, form.values, shownTo, form.source)
         viewModelScope.launch { settings.markQuickAddTried() }
         local.value = LocalState()
-        return SavedEntry("$title · ${form.type.label} saved") { entries.delete(ref) }
+        return SavedEntry("$title · ${form.type.label} saved" + (topic?.let { " privately ($it)" } ?: "")) { entries.delete(ref) }
     }
 
     private fun updateForm(block: (FormState) -> FormState) = local.update { s -> s.form?.let { s.copy(form = block(it)) } ?: s }
@@ -1158,7 +1217,7 @@ class AddViewModel @Inject constructor(
                 "title" to draft.item,
                 "quantity" to draft.quantity?.split(" ")?.let { QuantityValue(it[0], it.getOrElse(1) { "pcs" }) },
             )
-            is QuickAddDraft.Task -> EntryType.TASK to mapOf("title" to draft.title, "due" to draft.due)
+            is QuickAddDraft.Task -> EntryType.TASK to mapOf("title" to draft.title, "due" to draft.due, "repeat" to draft.repeat)
             is QuickAddDraft.Event -> EntryType.EVENT to mapOf(
                 "title" to draft.title,
                 "kind" to draft.kind,

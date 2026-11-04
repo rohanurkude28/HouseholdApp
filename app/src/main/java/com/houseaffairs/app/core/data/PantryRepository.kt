@@ -8,6 +8,7 @@ import com.houseaffairs.app.core.model.Visibility
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.tasks.await
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -21,6 +22,8 @@ data class Recipe(
     val link: String?,
     /** Breakfast, Lunch, Dinner, Snack or Dessert, when known. */
     val meal: String? = null,
+    /** Per serving, as "protein · carbs · fat · fibre" in grams ("25g · 30g · 12g · 4g"); approximate for library dishes. */
+    val macros: String? = null,
 )
 
 data class ShoppingEntry(val id: String, val title: String, val amount: Double?, val unit: String?, val aisleChoice: String? = null) {
@@ -67,14 +70,18 @@ class PantryRepository @Inject constructor(
         )
     }
 
-    fun observeMedicines(householdId: String, uid: String): Flow<List<PantryStock>> =
-        visible(householdId, "medicines", uid).observeSnapshots()
+    /** Medicines this person may see; [ownOnly] (teens) means only ones that are for them. */
+    private fun medicines(householdId: String, uid: String, ownOnly: Boolean): Query =
+        if (ownOnly) collection(householdId, "medicines").whereArrayContains("forWhom", uid) else visible(householdId, "medicines", uid)
+
+    fun observeMedicines(householdId: String, uid: String, ownOnly: Boolean = false): Flow<List<PantryStock>> =
+        medicines(householdId, uid, ownOnly).observeSnapshots()
             .map { snap -> snap.documents.filter { it.getString("status") != "USED_UP" }.map(::toStock).sortedBy { it.expiry ?: java.time.LocalDate.MAX } }
             .catch { emit(emptyList()) }
 
     /** Medicines with what they're for and who they're for, for "I'm feeling…". */
-    fun observeMedicineInfo(householdId: String, uid: String): Flow<List<MedicineInfo>> =
-        visible(householdId, "medicines", uid).observeSnapshots()
+    fun observeMedicineInfo(householdId: String, uid: String, ownOnly: Boolean = false): Flow<List<MedicineInfo>> =
+        medicines(householdId, uid, ownOnly).observeSnapshots()
             .map { snap ->
                 snap.documents.filter { it.getString("status") != "USED_UP" }.map { d ->
                     MedicineInfo(
@@ -230,6 +237,33 @@ class PantryRepository @Inject constructor(
         }
     }
 
+    /**
+     * Purchase history for restock predictions: ticked-off shopping items plus groceries added as
+     * bought, and what each pantry entry remembers (brand, rating, restock choice).
+     */
+    fun observeHistory(householdId: String, uid: String): Flow<Pair<List<Purchase>, List<StockMemory>>> =
+        combine(
+            visible(householdId, "shopping", uid).observeSnapshots().map { snap ->
+                snap.documents.filter { it.getBoolean("done") == true }.mapNotNull { d ->
+                    d.localDate("boughtAt")?.let { Purchase(d.getString("title") ?: d.getString("name").orEmpty(), it) }
+                }
+            },
+            visible(householdId, "stock", uid).observeSnapshots().map { snap -> snap.documents.filter { it.getString("type") != "HOUSEHOLD" } },
+        ) { bought, stock ->
+            val added = stock.filter { it.getString("source") != "shopping" }.mapNotNull { d -> d.localDate("createdAt")?.let { Purchase(d.getString("title").orEmpty(), it) } }
+            val memory = stock.map { d ->
+                StockMemory(d.getString("title").orEmpty(), d.getString("brand")?.takeIf { it.isNotBlank() }, d.getString("rating"), d.getString("restock"), d.localDate("createdAt"))
+            }
+            (bought + added) to memory
+        }.catch { emit(emptyList<Purchase>() to emptyList()) }
+
+    /** Puts [title] on the shopping list; the returned undo takes it off again. */
+    fun addToShopping(householdId: String, uid: String, title: String): () -> Unit {
+        val ref = collection(householdId, "shopping").document()
+        ref.set(common(uid, "restock") + mapOf("title" to title, "done" to false))
+        return { ref.delete() }
+    }
+
     /** "It's finished": out of the pantry, onto the shopping list. */
     fun usedUp(householdId: String, uid: String, stock: PantryStock, openShopping: List<String>) {
         val batch = db.batch()
@@ -289,5 +323,6 @@ class PantryRepository @Inject constructor(
         mood = (doc.get("mood") as? List<*>).orEmpty().filterIsInstance<String>(),
         link = doc.getString("link"),
         meal = doc.getString("mealType"),
+        macros = doc.getString("macros")?.takeIf { it.isNotBlank() },
     )
 }

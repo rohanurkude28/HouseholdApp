@@ -168,6 +168,11 @@ fun WellPlanSheet(onDismiss: () -> Unit, onSaved: () -> Unit = {}, viewModel: We
             Stepper("Workout, yoga or sport (min)", plan.workoutMinutes, 15) { plan = plan.copy(workoutMinutes = it.coerceIn(10, 2000)) }
             Stepper("Meals cooked at home", plan.homeMeals, 1) { plan = plan.copy(homeMeals = it.coerceIn(1, 21)) }
             Stepper("Meals eaten together", plan.familyMeals, 1) { plan = plan.copy(familyMeals = it.coerceIn(1, 21)) }
+            // Daily targets for "Today's plate"; the defaults suit most adults.
+            Stepper("Protein a day (g)", plan.macros.protein, 5) { plan = plan.copy(macros = plan.macros.copy(protein = it.coerceIn(10, 250))) }
+            Stepper("Fibre a day (g)", plan.macros.fibre, 5) { plan = plan.copy(macros = plan.macros.copy(fibre = it.coerceIn(5, 80))) }
+            Stepper("Carbs a day (g)", plan.macros.carbs, 10) { plan = plan.copy(macros = plan.macros.copy(carbs = it.coerceIn(50, 500))) }
+            Stepper("Fat a day (g)", plan.macros.fat, 5) { plan = plan.copy(macros = plan.macros.copy(fat = it.coerceIn(20, 200))) }
 
             Spacer(Modifier.height(4.dp))
             Text("My own targets", style = MaterialTheme.typography.titleMedium)

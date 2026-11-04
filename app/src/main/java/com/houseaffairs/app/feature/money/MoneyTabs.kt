@@ -1,5 +1,6 @@
 package com.houseaffairs.app.feature.money
 
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -253,3 +254,58 @@ internal fun ExpensesSearch(m: MoneyState, money: (Long) -> String, onAdd: () ->
     }
 }
 
+
+/** Spend per budget month, what's saved, where the year is heading, and big things coming up. */
+@Composable
+internal fun YearOutlookCard(o: com.houseaffairs.app.core.data.YearOutlook, money: (Long) -> String) {
+    val accent = LocalHouseColors.current.money
+    Column(Modifier.padding(top = 8.dp)) {
+        HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+            Text("Saved this year", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(money(o.savedSoFarMinor), style = MaterialTheme.typography.headlineMedium)
+            Text("On track for about ${money(o.projectedMinor)} by December", style = MaterialTheme.typography.bodyMedium, color = accent.color)
+            o.insight?.let {
+                Spacer(Modifier.height(8.dp))
+                Text("✨ $it", style = MaterialTheme.typography.bodyMedium)
+            }
+            // One bar per budget month, against the budget line.
+            val top = (o.months.maxOfOrNull { maxOf(it.spentMinor, it.budgetMinor) } ?: 1L).coerceAtLeast(1L)
+            Spacer(Modifier.height(16.dp))
+            Row(Modifier.fillMaxWidth().height(120.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
+                o.months.forEach { mth ->
+                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                        val over = mth.spentMinor > mth.budgetMinor
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .height((100 * mth.spentMinor / top).toInt().coerceAtLeast(2).dp)
+                                .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp))
+                                .background(if (over) MaterialTheme.colorScheme.error else if (mth.current) accent.color.copy(alpha = 0.5f) else accent.color),
+                        )
+                        Text(mth.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+        if (o.upcoming.isNotEmpty()) {
+            Text("Coming up in the next year", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 8.dp))
+            HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+                o.upcoming.forEachIndexed { i, item ->
+                    if (i > 0) Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            when (item.kind) { "Trip" -> "🧳"; "Dream" -> "⭐"; else -> "📅" },
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(item.title, style = MaterialTheme.typography.titleSmall)
+                            Text("${item.kind} · ${com.houseaffairs.app.feature.add.formatDate(item.date)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        item.amountMinor?.let { Text(money(it), style = MaterialTheme.typography.titleSmall) }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -67,9 +67,47 @@ class ThingsRepository @Inject constructor(
                     WishItem(
                         d.id, template, d.getString("title").orEmpty(), d.getString("place"),
                         d.getLong("budgetMinor")?.let { m -> d.getString("budgetCurrency")?.let { com.houseaffairs.app.core.util.formatMinor(m, it) } },
+                        status = d.getString("status") ?: "IDEA",
+                        votes = (d.get("votes") as? List<*>).orEmpty().filterIsInstance<String>(),
+                        event = d.getString("event"),
                     )
                 }
             }
+            .catch { emit(emptyList()) }
+
+    /** Weekly goals, newest first. */
+    fun observeGoals(householdId: String, uid: String): Flow<List<Goal>> =
+        visible(householdId, "weeklyGoals", uid).observeSnapshots()
+            .map { snap ->
+                snap.documents.map { d ->
+                    Goal(
+                        d.id, d.getString("title").orEmpty(), d.getString("kind"),
+                        (d.get("who") as? List<*>).orEmpty().filterIsInstance<String>(),
+                        (d.getLong("progress") ?: 0).toInt(), d.localDate("by"), d.localDate("createdAt"),
+                    )
+                }.sortedByDescending { it.created }
+            }
+            .catch { emit(emptyList()) }
+
+    fun setGoalProgress(householdId: String, id: String, progress: Int) {
+        db.collection("households").document(householdId).collection("weeklyGoals").document(id).update("progress", progress.coerceIn(0, 100))
+    }
+
+    /** ❤️ a list item, or take the ❤️ back. */
+    fun setVote(householdId: String, id: String, uid: String, on: Boolean) {
+        db.collection("households").document(householdId).collection("listItems").document(id)
+            .update("votes", if (on) com.google.firebase.firestore.FieldValue.arrayUnion(uid) else com.google.firebase.firestore.FieldValue.arrayRemove(uid))
+    }
+
+    /** Idea → Planned and back; "done" is the tick. */
+    fun setStatus(householdId: String, id: String, status: String) {
+        db.collection("households").document(householdId).collection("listItems").document(id).update("status", status)
+    }
+
+    /** Upcoming event titles, for "which occasion is this gift for?". */
+    fun observeEventTitles(householdId: String, uid: String): Flow<List<String>> =
+        visible(householdId, "events", uid).observeSnapshots()
+            .map { snap -> snap.documents.mapNotNull { it.getString("title") }.distinct().sorted() }
             .catch { emit(emptyList()) }
 
     /** Ticked-off tasks and finished list items, newest first, so they can be brought back. */

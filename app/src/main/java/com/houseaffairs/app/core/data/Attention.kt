@@ -18,6 +18,10 @@ data class Attention(
     val date: LocalDate,
     /** Collection of the entry behind it (tasks, stock…), so a tap can open it; null for budget alerts. */
     val collection: String? = null,
+    /** Something to buy again: Today offers "+ List" to put it on the shopping list. */
+    val restock: String? = null,
+    /** Where a tap goes when there's no single entry behind it ("plans/GOALS"). */
+    val open: String? = null,
 )
 
 /** The day [left] would be used up if spending carries on at the rate so far ([spent] over [day] days). */
@@ -26,6 +30,9 @@ internal fun runOutDate(spent: Long, left: Long, day: Int, today: LocalDate): Lo
     val perDay = spent.toDouble() / day
     return today.plusDays((left / perDay).toLong())
 }
+
+/** Attention ids for renewals waiting to be logged; the rest is the subscription's id. */
+const val RENEWAL_PREFIX = "renew-"
 
 /** Attention ids for card bills; the rest of the id is the bill's [billKey]. */
 const val BILL_PREFIX = "bill-"
@@ -124,7 +131,7 @@ fun buildAttention(
             days != null && days < 0 -> items += Attention(item.id, area, Priority.URGENT, item.title, "Expired · replace or throw out", expiry, collection)
             days != null && days <= 2 -> items += Attention(item.id, area, Priority.TODAY, item.title, "Expires ${relative(expiry, today)}", expiry, collection)
             days != null && days <= soonDays -> items += Attention(item.id, area, Priority.SOON, item.title, "Expires ${relative(expiry, today)}", expiry, collection)
-            (item.level ?: 100) <= 25 -> items += Attention(item.id, area, Priority.SOON, item.title, "Running low · ${item.level}% left", today.plusDays(7), collection)
+            (item.level ?: 100) <= 25 -> items += Attention(item.id, area, Priority.SOON, item.title, "Running low · ${item.level}% left", today.plusDays(7), collection, restock = item.title)
         }
     }
     stock(data.pantry, Area.KITCHEN, soonDays = 7, collection = "stock")
@@ -135,7 +142,20 @@ fun buildAttention(
         val days = ChronoUnit.DAYS.between(today, renewal.next)
         val what = renewal.amountText?.let { "$it due" } ?: "Due"
         when {
-            days in 0L..2L -> items += Attention(renewal.id, Area.MONEY, Priority.TODAY, renewal.title, "$what ${relative(renewal.next, today)}", renewal.next, "recurring")
+            // Renewed and not yet logged as spent: Today offers "Log it".
+            days <= 0 && !renewal.auto -> items += Attention(
+                "$RENEWAL_PREFIX${renewal.id}", Area.MONEY, Priority.TODAY, "${renewal.title} renewed",
+                listOfNotNull(renewal.amountText, if (days == 0L) "today" else "on ${renewal.next.format(SHORT)}", "log it as spent?").joinToString(" · "),
+                renewal.next, "recurring",
+            )
+            days <= 0 -> Unit // logged automatically
+            // Paying for something nobody uses: a heads-up in time to cancel.
+            renewal.using != null && days <= 7 -> items += Attention(
+                renewal.id, Area.MONEY, Priority.TODAY, "Cancel ${renewal.title}?",
+                "Renews ${relative(renewal.next, today)}${renewal.amountText?.let { " for $it" } ?: ""} · you said: ${renewal.using.lowercase()}",
+                renewal.next, "recurring",
+            )
+            days in 1L..2L -> items += Attention(renewal.id, Area.MONEY, Priority.TODAY, renewal.title, "$what ${relative(renewal.next, today)}", renewal.next, "recurring")
             days in 3L..7L -> items += Attention(renewal.id, Area.MONEY, Priority.SOON, renewal.title, "$what ${relative(renewal.next, today)}", renewal.next, "recurring")
         }
     }

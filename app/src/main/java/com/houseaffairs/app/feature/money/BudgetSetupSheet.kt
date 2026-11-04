@@ -69,6 +69,7 @@ private fun parseMinor(text: String, currency: String): Long? =
 fun BudgetSetupSheet(existing: Budget?, currency: String, onSave: (Budget) -> Unit, onDismiss: () -> Unit) {
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val money = LocalHouseColors.current.money
+    var income by remember { mutableStateOf(existing?.incomeMinor?.takeIf { it > 0 }?.let { wholeUnits(it, currency) } ?: "") }
     var limit by remember { mutableStateOf(existing?.let { wholeUnits(it.limitMinor, currency) } ?: "") }
     var startDay by remember { mutableStateOf(existing?.cycleStartDay ?: 1) }
     var savings by remember { mutableStateOf(existing?.savingsGoalMinor?.takeIf { it > 0 }?.let { wholeUnits(it, currency) } ?: "") }
@@ -93,6 +94,39 @@ fun BudgetSetupSheet(existing: Budget?, currency: String, onSave: (Budget) -> Un
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             Text(if (existing == null) "Set your monthly budget" else "Edit budget", style = MaterialTheme.typography.headlineSmall)
+
+            // Optional: with income, one tap sets the savings and leaves the rest as the budget.
+            Column {
+                OutlinedTextField(
+                    value = income,
+                    onValueChange = { income = it.filter { c -> c.isDigit() || c == '.' } },
+                    label = { Text("Monthly income (optional)") },
+                    prefix = { Text("$currency  ") },
+                    singleLine = true,
+                    shape = MaterialTheme.shapes.medium,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                parseMinor(income, currency)?.takeIf { it > 0 }?.let { incomeMinor ->
+                    Spacer(Modifier.height(8.dp))
+                    Text("How much to save?", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(10, 20, 30, 40).forEach { pct ->
+                            val save = incomeMinor * pct / 100
+                            FilterChip(
+                                selected = parseMinor(savings, currency) == save && parseMinor(limit, currency) == incomeMinor - save,
+                                onClick = {
+                                    savings = wholeUnits(save, currency)
+                                    limit = wholeUnits(incomeMinor - save, currency)
+                                },
+                                label = { Text("$pct%") },
+                                shape = CircleShape,
+                                colors = chipColors,
+                            )
+                        }
+                    }
+                }
+            }
 
             OutlinedTextField(
                 value = limit,
@@ -245,6 +279,7 @@ fun BudgetSetupSheet(existing: Budget?, currency: String, onSave: (Budget) -> Un
                         Budget(
                             limitMinor = limitMinor ?: 0,
                             currency = currency,
+                            incomeMinor = parseMinor(income, currency) ?: 0,
                             cycleStartDay = startDay,
                             savingsGoalMinor = savingsMinor,
                             categories = split.mapNotNull { (k, v) -> parseMinor(v, currency)?.takeIf { it > 0 }?.let { k to it } }.toMap(),

@@ -42,7 +42,7 @@ import javax.inject.Inject
 import com.houseaffairs.app.feature.quickadd.ListTemplate
 import kotlinx.coroutines.flow.onEach
 
-enum class PlansTab(val label: String) { DREAMS("Vision board"), TASKS("Tasks"), EVENTS("Events"), LISTS("Lists"), PLACES("Places") }
+enum class PlansTab(val label: String) { DREAMS("Vision board"), TASKS("Tasks"), GOALS("Goals"), EVENTS("Events"), LISTS("Lists"), PLACES("Places") }
 
 data class PlansUiState(
     val tab: PlansTab = PlansTab.DREAMS,
@@ -51,6 +51,7 @@ data class PlansUiState(
     val dreams: List<Dream> = emptyList(),
     val tasks: List<TaskItem> = emptyList(),
     val events: List<EventItem> = emptyList(),
+    val goals: List<com.houseaffairs.app.core.data.Goal> = emptyList(),
     val places: List<PlaceItem> = emptyList(),
     val placeKind: String? = null,
     /** The list shown in Lists; null shows every list. */
@@ -77,7 +78,16 @@ class PlansViewModel @Inject constructor(
     private val things: ThingsRepository,
     private val geo: GeoRepository,
     private val watchRepo: WatchRepository,
+    households: com.houseaffairs.app.core.data.HouseholdRepository,
 ) : ViewModel() {
+    // Names for "Prachi's turn" when a chore rota moves on.
+    private val members: StateFlow<List<com.houseaffairs.app.core.model.Member>> = session.state
+        .filterIsInstance<SessionState.Ready>()
+        .map { it.household.id }
+        .distinctUntilChanged()
+        .flatMapLatest { households.observeMembers(it) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
     private data class Near(val on: Boolean = false, val center: LatLng? = null, val radiusKm: Double = 2.0, val locating: Boolean = false, val missing: Boolean = false)
 
     private val near = MutableStateFlow(Near())
@@ -102,6 +112,7 @@ class PlansViewModel @Inject constructor(
                 ) { w, v -> w to v },
             ) { money, dreams, homeData, places, (wishes, watch) -> Data(money, dreams, homeData, places, r.household.baseCurrency, wishes, watch) }
                 .combine(things.observeFinished(s.householdId, s.uid)) { d, f -> d.copy(finished = f) }
+                .combine(things.observeGoals(s.householdId, s.uid)) { d, g -> d.copy(goals = g) }
         }
 
     private data class Data(
@@ -113,6 +124,7 @@ class PlansViewModel @Inject constructor(
         val wishes: List<WishItem>,
         val watch: List<WatchItem>,
         val finished: List<com.houseaffairs.app.core.data.FinishedItem> = emptyList(),
+        val goals: List<com.houseaffairs.app.core.data.Goal> = emptyList(),
     )
 
     val state: StateFlow<PlansUiState> = combine(data, tab, combine(placeKind, listFilter) { k, l -> k to l }, near) { d, t, (k, l), n ->
@@ -120,7 +132,7 @@ class PlansViewModel @Inject constructor(
         PlansUiState(
             tab = t, money = d.money, dreams = d.dreams, tasks = d.home.tasks, events = d.home.events,
             places = places, placeKind = k, listFilter = l,
-            wishes = d.wishes, watch = d.watch, finished = d.finished,
+            wishes = d.wishes, watch = d.watch, finished = d.finished, goals = d.goals,
             nearby = if (n.on && n.center != null) nearbyPlaces(places, n.center, null, n.radiusKm) else null,
             radiusKm = n.radiusKm,
             locating = n.locating,
@@ -156,6 +168,25 @@ class PlansViewModel @Inject constructor(
         val undo = watchRepo.markWatched(r.household.id, id)
         return SavedEntry("$title · done") { undo() }
     }
+
+    fun setGoalProgress(id: String, progress: Int) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        things.setGoalProgress(r.household.id, id, progress)
+    }
+
+    /** ❤️ or un-❤️ a list item. */
+    fun vote(id: String, on: Boolean) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        things.setVote(r.household.id, id, r.user.uid, on)
+    }
+
+    /** Idea ↔ Planned. */
+    fun togglePlanned(id: String, status: String) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        things.setStatus(r.household.id, id, if (status == "PLANNED") "IDEA" else "PLANNED")
+    }
+
+    val myUid: String get() = (session.state.value as? SessionState.Ready)?.user?.uid.orEmpty()
 
     fun selectPlaceKind(kind: String?) {
         placeKind.value = if (placeKind.value == kind) null else kind
@@ -197,7 +228,7 @@ class PlansViewModel @Inject constructor(
 
     fun completeTask(task: TaskItem): SavedEntry? {
         val r = session.state.value as? SessionState.Ready ?: return null
-        val undo = home.completeTask(r.household.id, task.id)
-        return SavedEntry("${task.title} · done") { undo() }
+        val undo = home.completeTask(r.household.id, r.user.uid, task)
+        return SavedEntry(com.houseaffairs.app.feature.home.doneMessage(task, members.value)) { undo() }
     }
 }

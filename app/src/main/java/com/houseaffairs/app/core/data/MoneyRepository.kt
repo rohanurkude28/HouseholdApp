@@ -84,6 +84,7 @@ class MoneyRepository @Inject constructor(
                         }
                     },
                     paidBills = (doc.get("paidBills") as? List<*>).orEmpty().filterIsInstance<String>().toSet(),
+                    incomeMinor = doc.getLong("incomeMinor") ?: 0,
                 )
                 // Rollover counts from the budget month the family started tracking.
                 val started = doc.localDate("startedOn") ?: doc.localDate("createdAt") ?: LocalDate.now()
@@ -99,6 +100,7 @@ class MoneyRepository @Inject constructor(
             "currency" to budget.currency,
             "cycleStartDay" to budget.cycleStartDay,
             "savingsGoalMinor" to budget.savingsGoalMinor,
+            "incomeMinor" to budget.incomeMinor,
             "categories" to budget.categories,
             "cards" to budget.cards.map { mapOf("name" to it.name.trim(), "statementDay" to it.statementDay, "dueDay" to it.dueDay) },
             "updatedAt" to FieldValue.serverTimestamp(),
@@ -315,6 +317,57 @@ class MoneyRepository @Inject constructor(
         budgetDoc(householdId).update("paidBills", if (paid) FieldValue.arrayUnion(key) else FieldValue.arrayRemove(key))
     }
 
+    /**
+     * Logs a subscription's renewal on [date] as an expense and remembers it, so it isn't counted
+     * twice. [exclusive] (automatic logging, maybe on several phones) uses a transaction and does
+     * nothing if someone already logged it; a tap writes straight away, offline too.
+     * Returns an undo, or null if there was nothing to log.
+     */
+    suspend fun logRenewal(householdId: String, uid: String, id: String, date: LocalDate, exclusive: Boolean = false): (() -> Unit)? {
+        val sub = household(householdId).collection("recurring").document(id)
+        val txn = household(householdId).collection("transactions").document()
+        fun expenseFrom(doc: DocumentSnapshot) = mapOf(
+            "type" to "EXPENSE",
+            "title" to (doc.getString("title") ?: "Subscription"),
+            "merchant" to (doc.getString("title") ?: "Subscription"),
+            "amountMinor" to (doc.getLong("amountMinor") ?: 0L),
+            "currency" to doc.getString("currency"),
+            "category" to (doc.getString("category") ?: "Bills"),
+            "paymentMethod" to doc.getString("paymentMethod"),
+            "date" to date.toTimestamp(),
+            "status" to "Paid",
+            "fromSubscription" to id,
+            "createdBy" to uid,
+            "visibleTo" to (doc.get("visibleTo") ?: Visibility.everyone),
+            "createdAt" to FieldValue.serverTimestamp(),
+            "source" to "subscription",
+        ).filterValues { it != null }
+        val before: LocalDate?
+        if (exclusive) {
+            var previous: LocalDate? = null
+            val logged = runCatching {
+                db.runTransaction { tr ->
+                    val doc = tr.get(sub)
+                    previous = doc.localDate("lastLogged")
+                    if (!doc.exists() || previous?.let { !date.isAfter(it) } == true) return@runTransaction false
+                    tr.set(txn, expenseFrom(doc))
+                    tr.update(sub, "lastLogged", date.toTimestamp())
+                    true
+                }.await()
+            }.getOrDefault(false)
+            if (!logged) return null
+            before = previous
+        } else {
+            val doc = runCatching { sub.get().await() }.getOrNull()?.takeIf { it.exists() } ?: return null
+            before = doc.localDate("lastLogged")
+            db.batch().set(txn, expenseFrom(doc)).update(sub, "lastLogged", date.toTimestamp()).commit()
+        }
+        return {
+            txn.delete()
+            sub.update("lastLogged", before?.toTimestamp() ?: FieldValue.delete())
+        }
+    }
+
     fun markPaid(householdId: String, txnId: String) {
         household(householdId).collection("transactions").document(txnId)
             .update(mapOf("status" to "Paid", "date" to Timestamp.now()))
@@ -355,12 +408,9 @@ class MoneyRepository @Inject constructor(
                     .filter { it.getString("currency") == currency }
                     .mapNotNull { doc ->
                         val next = doc.localDate("nextDate") ?: return@mapNotNull null
-                        val repeat = when (doc.getString("frequency")) {
-                            "Yearly" -> "Yearly"
-                            "Monthly", "Quarterly" -> "Monthly"
-                            else -> null
-                        }
-                        DuePayment(doc.id, doc.getString("title") ?: "Payment", nextOccurrence(next, repeat, today), doc.getLong("amountMinor") ?: 0)
+                        // Once logged, a renewal is spending; until then it's still due (even if the day has passed).
+                        val owed = nextRenewal(next, doc.getString("frequency"), doc.localDate("lastLogged"), today)
+                        DuePayment(doc.id, doc.getString("title") ?: "Payment", owed, doc.getLong("amountMinor") ?: 0)
                     }
             }
             .catch { emit(emptyList()) }

@@ -105,6 +105,14 @@ class HouseholdRepository @Inject constructor(
         }
     }
 
+    /** Makes [topic] private to [uids], or public again when null. Owner only (rules). */
+    suspend fun setPrivateTopic(householdId: String, topic: String, uids: List<String>?) {
+        household(householdId).update(
+            com.google.firebase.firestore.FieldPath.of("privateTopics", topic),
+            uids ?: com.google.firebase.firestore.FieldValue.delete(),
+        ).await()
+    }
+
     suspend fun setBaseCurrency(householdId: String, currency: String) {
         household(householdId).update("baseCurrency", currency).await()
     }

@@ -34,7 +34,7 @@ import com.houseaffairs.app.feature.quickadd.ListTemplate
 import java.time.LocalDate
 
 private val PAYMENT_METHODS = listOf("UPI", "Card", "Cash", "Bank transfer")
-private val FREQUENCIES = listOf("Weekly", "Monthly", "Quarterly", "Yearly")
+private val FREQUENCIES = com.houseaffairs.app.core.data.RENEWAL_FREQUENCIES
 private val REMINDERS = listOf("No reminder", "On the day", "1 day before", "3 days before", "1 week before")
 private val RESTOCK = listOf("Off", "When it's low", "Every week", "Every month")
 private val FLAVOURS = listOf("Sweet", "Spicy", "Tangy", "Crispy", "Savoury", "Healthy")
@@ -86,6 +86,8 @@ enum class EntryType(
             // separate "which card" question). Without cards set up, it's just "Card".
             ChoiceSpec("paymentMethod", "Paid with", PAYMENT_METHODS, dynamicOptions = "cards", replacedByDynamic = "Card"),
             MembersSpec("paidBy", "Paid by", multi = false, essential = false),
+            // Lightweight, not a bill split: who it was for ("Riya's school shoes").
+            MembersSpec("forWhom", "For whom", essential = false),
             ChoiceSpec("tags", "Tags", listOf("Trip", "Festival", "Kids", "Work", "Gift"), multi = true, allowCustom = true, essential = false),
             TextSpec("note", "Note", multiline = true, essential = false),
         ),
@@ -100,6 +102,10 @@ enum class EntryType(
             ChoiceSpec("category", "Category", EXPENSE_CATEGORIES, essential = false),
             ChoiceSpec("paymentMethod", "Paid with", PAYMENT_METHODS, essential = false),
             ChoiceSpec("remind", "Remind me", REMINDERS, essential = false),
+            // "Ask me": Today shows a "Log it" button on the day. Otherwise it's logged as spent by itself.
+            ChoiceSpec("onRenew", "When it renews", listOf("Ask me", "Log it automatically"), essential = false),
+            // "Rarely" or "Not using" gets a "cancel before it renews?" heads-up a week ahead.
+            ChoiceSpec("using", "Still using it?", listOf("Yes", "Rarely", "Not using"), essential = false),
             TextSpec("note", "Note", multiline = true, essential = false),
         ),
     ),
@@ -112,6 +118,8 @@ enum class EntryType(
             // Guessed from the name when left empty, so only needed to correct a guess.
             ChoiceSpec("groceryType", "Category", Aisle.FOOD.map { it.label }),
             TextSpec("keptAt", "Kept at", "Spice box, top shelf, fridge door…", essential = false),
+            // With the rating, the shopping list can say "Last time: Amul 👍".
+            TextSpec("brand", "Brand", "Amul, Tata, Aashirvaad…", essential = false),
             MoneySpec("cost", "Cost (adds to budget)", required = false, essential = false),
             TextSpec("store", "Bought at", essential = false),
             LevelSpec("level", "How much is left", "% left"),
@@ -161,6 +169,8 @@ enum class EntryType(
             DateSpec("due", "Due"),
             ChoiceSpec("priority", "Priority", PRIORITY, essential = false),
             ChoiceSpec("repeat", "Repeat", listOf("Never", "Daily", "Weekly", "Monthly"), essential = false),
+            // A chore rota: each time it's done, the next one goes to the next person.
+            MembersSpec("rotation", "Take turns", essential = false, visibleWhen = { (it["repeat"] as? String).let { r -> r != null && r != "Never" } }),
             ChoiceSpec("remind", "Remind", REMINDERS, essential = false),
             TextSpec("note", "Note", multiline = true, essential = false),
         ),
@@ -192,6 +202,8 @@ enum class EntryType(
             ),
             TextSpec("place", "Where", "City, restaurant, store", visibleWhen = { template(it) in setOf(ListTemplate.TRAVEL.label, ListTemplate.EAT_OUT.label) }),
             MembersSpec("forWhom", "For", visibleWhen = { template(it) == ListTemplate.GIFTS.label }),
+            // Links the gift to a birthday or anniversary, which then shows "🎁 2 gift ideas".
+            ChoiceSpec("event", "For the occasion", emptyList(), dynamicOptions = "events", hideWithoutDynamic = true, visibleWhen = { template(it) == ListTemplate.GIFTS.label }),
             TextSpec("link", "Link", "Instagram reel, website…", isLink = true, essential = false),
             TextSpec("thingsToTry", "Things to try or buy there", multiline = true, essential = false, visibleWhen = { template(it) in setOf(ListTemplate.TRAVEL.label, ListTemplate.EAT_OUT.label) }),
             MoneySpec("budget", "Rough budget", required = false, essential = false),

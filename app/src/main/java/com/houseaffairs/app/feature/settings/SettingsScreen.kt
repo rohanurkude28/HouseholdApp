@@ -211,6 +211,11 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
             }
         }
 
+        if (state.isOwner) {
+            item { SectionHeader("Private topics") }
+            item { PrivateTopicsGroup(state, viewModel::setPrivateTopic) }
+        }
+
         item { SectionHeader("Account") }
         item {
             SettingsGroup {
@@ -453,6 +458,45 @@ private fun NotificationsGroup(prefs: SettingsRepository.NotificationPrefs, onCh
                         DigestWorker.runNow(context)
                     }
                 }) { Text("Send a test now") }
+            }
+        }
+    }
+}
+
+/**
+ * Topics only some people should see. New entries on them (pads, condoms, doctor bills…) are saved
+ * visible only to the people ticked here, plus whoever adds them.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PrivateTopicsGroup(state: SettingsUiState, onChange: (String, List<String>?) -> Unit) {
+    SettingsGroup {
+        Text(
+            "New entries on these are only seen by the people you pick (and whoever adds them).",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp),
+        )
+        com.houseaffairs.app.core.data.PRIVATE_TOPICS.forEach { topic ->
+            val allowed = state.privateTopics[topic]
+            ListItem(
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                headlineContent = { Text(topic, style = MaterialTheme.typography.titleSmall) },
+                supportingContent = { Text(if (allowed == null) "Everyone" else "Private") },
+                trailingContent = { Switch(checked = allowed != null, onCheckedChange = { on -> onChange(topic, if (on) listOf(state.myUid) else null) }) },
+            )
+            if (allowed != null) {
+                FlowRow(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    state.members.forEach { m ->
+                        val on = m.uid in allowed
+                        FilterChip(
+                            selected = on,
+                            onClick = { onChange(topic, if (on) (allowed - m.uid).ifEmpty { listOf(state.myUid) } else allowed + m.uid) },
+                            label = { Text(m.displayName.substringBefore(' ')) },
+                            shape = CircleShape,
+                        )
+                    }
+                }
             }
         }
     }

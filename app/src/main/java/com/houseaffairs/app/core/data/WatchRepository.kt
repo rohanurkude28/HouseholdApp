@@ -31,6 +31,11 @@ data class WatchItem(
     val lookedUp: Boolean,
     /** Movies & shows, books or music. */
     val template: ListTemplate = ListTemplate.WATCH,
+    /** IMDb rating ("8.6") and Rotten Tomatoes score ("93%"), from OMDb when a key is set. */
+    val imdb: String? = null,
+    val rottenTomatoes: String? = null,
+    val status: String = "IDEA",
+    val votes: List<String> = emptyList(),
     /** Author or artist, for books and music. */
     val creator: String? = null,
 ) {
@@ -68,6 +73,10 @@ class WatchRepository @Inject constructor(
                             kind = d.getString("kind"),
                             year = d.getString("year"),
                             lookedUp = d.getBoolean("lookedUp") == true,
+                            imdb = d.getString("imdbRating"),
+                            rottenTomatoes = d.getString("rtScore"),
+                            status = d.getString("status") ?: "IDEA",
+                            votes = (d.get("votes") as? List<*>).orEmpty().filterIsInstance<String>(),
                         )
                     }
                     .sortedByDescending { it.rating ?: 0.0 }
@@ -95,6 +104,22 @@ class WatchRepository @Inject constructor(
             }
             items(householdId).document(item.id).update(fields)
         }
+        // IMDb and Rotten Tomatoes, once per movie or show, when there's an OMDb key.
+        if (BuildConfig.OMDB_API_KEY.isNotBlank()) {
+            list.filter { it.template == ListTemplate.WATCH && it.imdb == null && it.rottenTomatoes == null }.take(8).forEach { item ->
+                val scores = runCatching { omdb(item.title, item.year) }.getOrNull() ?: return@forEach
+                items(householdId).document(item.id).update(scores)
+            }
+        }
+    }
+
+    /** IMDb rating and Rotten Tomatoes score for a title; "N/A" ratings are left out. */
+    private fun omdb(title: String, year: String?): Map<String, Any?>? {
+        val q = java.net.URLEncoder.encode(title, "UTF-8")
+        val json = get("https://www.omdbapi.com/?apikey=${BuildConfig.OMDB_API_KEY}&t=$q" + (year?.let { "&y=$it" } ?: "")) ?: return null
+        if (json.optString("Response") != "True") return mapOf("imdbRating" to "", "rtScore" to "")
+        val rt = json.optJSONArray("Ratings")?.let { a -> (0 until a.length()).map { a.getJSONObject(it) }.firstOrNull { it.optString("Source") == "Rotten Tomatoes" }?.optString("Value") }
+        return mapOf("imdbRating" to json.optString("imdbRating").takeIf { it != "N/A" }.orEmpty(), "rtScore" to rt.orEmpty())
     }
 
     /** Returns an undo that puts the item back on its list. */

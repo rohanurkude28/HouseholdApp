@@ -108,4 +108,25 @@ class AttentionTest {
         val ids = buildToday(buildAttention(data, today), emptyList(), today).map { (it as TodayRow.Alert).item.id }
         assertEquals(listOf("anniv"), ids)
     }
+
+    @Test
+    fun `a renewal that came due asks to be logged, unless it logs itself`() {
+        val data = HomeData(
+            renewals = listOf(
+                Renewal("netflix", "Netflix", today, "₹649"),
+                Renewal("gym", "Gym", today.minusDays(2), "₹1,500", auto = true),
+            ),
+        )
+        val items = buildAttention(data, today)
+        assertEquals(listOf("${RENEWAL_PREFIX}netflix"), items.map { it.id })
+        assertEquals("Netflix renewed", items.single().title)
+    }
+
+    @Test
+    fun `unused subscriptions get a cancel heads-up a week ahead`() {
+        val data = HomeData(renewals = listOf(Renewal("hotstar", "Hotstar", today.plusDays(5), "₹299", using = "Not using")))
+        val item = buildAttention(data, today).single()
+        assertEquals("Cancel Hotstar?", item.title)
+        assertEquals(Priority.TODAY, item.priority)
+    }
 }

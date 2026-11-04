@@ -38,6 +38,8 @@ data class SettingsUiState(
     val notifications: SettingsRepository.NotificationPrefs = SettingsRepository.NotificationPrefs(),
     val smartAdd: Boolean = false,
     val smartSuggest: Boolean = false,
+    /** Private topic → who may see it. */
+    val privateTopics: Map<String, List<String>> = emptyMap(),
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -76,12 +78,16 @@ class SettingsViewModel @Inject constructor(
             notifications = p.notifications,
             smartAdd = p.smartAdd,
             smartSuggest = p.smartSuggest,
+            privateTopics = r.household.privateTopics,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
 
     fun setThemeMode(mode: ThemeMode) {
         viewModelScope.launch { settings.setThemeMode(mode) }
     }
+
+    /** Turns a private topic on (seen by [uids]) or off (null). */
+    fun setPrivateTopic(topic: String, uids: List<String>?) = withHousehold { households.setPrivateTopic(it, topic, uids) }
 
     fun setCurrency(currency: String) = withHousehold { households.setBaseCurrency(it, currency) }
 

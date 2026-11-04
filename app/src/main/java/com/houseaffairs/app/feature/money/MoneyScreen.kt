@@ -101,7 +101,7 @@ import java.time.format.DateTimeFormatter
 
 /** The Money tab: what's left this budget month, where it went, and what's coming. */
 /** Money's three views: the month, where savings are, and every expense. */
-enum class MoneyTab(val label: String) { MONTH("This month"), SAVINGS("Savings"), EXPENSES("Expenses") }
+enum class MoneyTab(val label: String) { MONTH("This month"), YEAR("This year"), SAVINGS("Savings"), EXPENSES("Expenses") }
 
 @Composable
 fun MoneyScreen(
@@ -228,6 +228,12 @@ fun MoneyScreen(
                     }
                     MoneyTab.EXPENSES -> if (m != null) {
                         item { ExpensesSearch(m, money, onAdd = onAddExpense) { onEdit(EntryType.EXPENSE, it) } }
+                    }
+                    MoneyTab.YEAR -> if (m != null) {
+                        val outlook = com.houseaffairs.app.core.data.yearOutlook(
+                            m.budget, m.startedOn, m.txns, m.dreams.map { it.dream }, m.trips.map { it.trip }, java.time.LocalDate.now(), money,
+                        )
+                        item { YearOutlookCard(outlook, money) }
                     }
                 }
             }

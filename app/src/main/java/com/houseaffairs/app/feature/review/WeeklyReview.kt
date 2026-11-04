@@ -363,6 +363,10 @@ fun WeeklyReviewScreen(
             }
         }
 
+        if (review.isThisWeek && review.tracksPantry) {
+            item { SectionTitle("Today's plate") }
+            item { TodaysPlate(review.today, review.plan.macros) }
+        }
         item { SectionTitle("My week in numbers") }
         item { WeekNumbers(review) }
     }
@@ -645,5 +649,41 @@ fun StoryAvatar(name: String, fresh: Boolean, modifier: Modifier = Modifier) {
             }
         }
         Avatar(name, size = 34.dp)
+    }
+}
+
+/** Protein, fibre, carbs and fat from today's home-cooked meals, against the plan's daily targets. */
+@Composable
+private fun TodaysPlate(today: com.houseaffairs.app.core.data.Macros?, targets: com.houseaffairs.app.core.data.MacroTargets) {
+    val eat = PILLAR_COLORS.getValue(Pillar.EAT)
+    HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        if (today == null) {
+            Text("Nothing logged today", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "When you say “made dal tadka”, the dish's protein, carbs, fat and fibre count here for everyone who ate.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@HaCard
+        }
+        Text("${today.kcal} kcal from home-cooked meals", style = MaterialTheme.typography.titleSmall)
+        listOf(
+            Triple("Protein", today.protein, targets.protein),
+            Triple("Fibre", today.fibre, targets.fibre),
+            Triple("Carbs", today.carbs, targets.carbs),
+            Triple("Fat", today.fat, targets.fat),
+        ).forEach { (name, have, aim) ->
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.width(64.dp))
+                Box(Modifier.weight(1f).height(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHighest)) {
+                    Box(Modifier.fillMaxWidth((have / aim).toFloat().coerceIn(0f, 1f)).fillMaxHeight().background(eat))
+                }
+                Spacer(Modifier.width(10.dp))
+                Text("${have.toInt()} / $aim g", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("Approximate, from one serving of each dish.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

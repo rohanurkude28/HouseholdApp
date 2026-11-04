@@ -113,6 +113,7 @@ fun PlansScreen(
     onAddTripExpense: (com.houseaffairs.app.core.data.Trip) -> Unit,
     onAddTask: () -> Unit,
     onAddEvent: () -> Unit,
+    onAddGoal: () -> Unit,
     onAddPlace: () -> Unit,
     onAddWish: (ListTemplate?) -> Unit,
     onSaved: (SavedEntry) -> Unit,
@@ -243,6 +244,20 @@ fun PlansScreen(
                     }
                 }
             }
+            // This week's goals with a progress slider; last weeks' stay below for the record.
+            PlansTab.GOALS -> {
+                val today = LocalDate.now()
+                val week = com.houseaffairs.app.core.data.thisWeeksGoals(state.goals, today)
+                val earlier = state.goals - week.toSet()
+                item { AddRow("Add a goal for this week", onAddGoal) }
+                com.houseaffairs.app.core.data.goalsRecap(state.goals, today)?.let { recap -> item { Hint(recap) } }
+                if (week.isEmpty()) item { Hint("Something to learn or get done this week: “finish a book”, “3 workouts”, “file taxes”.") }
+                items(week, key = { "goal-" + it.id }) { goal -> GoalRow(goal, onEdit = { onEdit(EntryType.GOAL, goal.id) }, onProgress = { viewModel.setGoalProgress(goal.id, it) }) }
+                if (earlier.isNotEmpty()) {
+                    item { ListHeader("Earlier weeks") }
+                    items(earlier.take(20), key = { "goal-old-" + it.id }) { goal -> GoalRow(goal, onEdit = { onEdit(EntryType.GOAL, goal.id) }, onProgress = null) }
+                }
+            }
             PlansTab.TASKS -> {
                 item { AddRow("Add a task", onAddTask) }
                 if (state.tasks.isEmpty()) item { Hint("Nothing to do. Say “pay rent tomorrow”.") }
@@ -321,24 +336,34 @@ fun PlansScreen(
                     val wishItems = others[template].orEmpty()
                     if (mediaItems.isEmpty() && wishItems.isEmpty()) return@forEach
                     if (state.listFilter == null) item(key = "h-" + template.name) { ListHeader("${template.emoji} ${template.title}") }
-                    items(mediaItems, key = { "media-" + it.id }) { w ->
+                    // Planned first, then the most ❤️'d.
+                    items(mediaItems.sortedWith(compareBy({ it.status != "PLANNED" }, { -it.votes.size })), key = { "media-" + it.id }) { w ->
                         WishRow(
                             title = w.title,
-                            detail = listOfNotNull(w.creator, w.rating?.let { "★ %.1f".format(it) }, w.whereToWatch, w.year).joinToString(" · ").ifEmpty { template.title },
+                            detail = listOfNotNull(
+                                w.creator,
+                                w.imdb?.takeIf { it.isNotEmpty() }?.let { "IMDb $it" } ?: w.rating?.let { "★ %.1f".format(it) },
+                                w.rottenTomatoes?.takeIf { it.isNotEmpty() }?.let { "🍅 $it" },
+                                w.whereToWatch, w.year,
+                            ).joinToString(" · ").ifEmpty { template.title },
                             image = w.poster,
-                            doneLabel = template.doneLabel,
+                            doneLabel = template.markLabel,
                             onClick = { onEdit(EntryType.WISH, w.id) },
                             onDone = { viewModel.markDone(w.id, w.title)?.let(onSaved) },
+                            votes = w.votes, myUid = viewModel.myUid, status = w.status,
+                            onVote = { on -> viewModel.vote(w.id, on) }, onPlan = { viewModel.togglePlanned(w.id, w.status) },
                         )
                     }
-                    items(wishItems, key = { "wish-" + it.id }) { wish ->
+                    items(wishItems.sortedWith(compareBy({ it.status != "PLANNED" }, { -it.votes.size })), key = { "wish-" + it.id }) { wish ->
                         WishRow(
                             title = wish.title,
-                            detail = listOfNotNull(wish.place, wish.budgetText).joinToString(" · ").ifEmpty { template.title },
+                            detail = listOfNotNull(wish.event?.let { "🎁 $it" }, wish.place, wish.budgetText).joinToString(" · ").ifEmpty { template.title },
                             image = null,
-                            doneLabel = template.doneLabel,
+                            doneLabel = template.markLabel,
                             onClick = { onEdit(EntryType.WISH, wish.id) },
                             onDone = { viewModel.markDone(wish.id, wish.title)?.let(onSaved) },
+                            votes = wish.votes, myUid = viewModel.myUid, status = wish.status,
+                            onVote = { on -> viewModel.vote(wish.id, on) }, onPlan = { viewModel.togglePlanned(wish.id, wish.status) },
                         )
                     }
                 }
@@ -350,7 +375,7 @@ fun PlansScreen(
                 state.wishes.filter { ListTemplate.of(it.template) == null }.takeIf { state.listFilter == null && it.isNotEmpty() }?.let { rest ->
                     item { ListHeader("Other") }
                     items(rest, key = { "other-" + it.id }) { wish ->
-                        WishRow(wish.title, wish.template, null, "Done", onClick = { onEdit(EntryType.WISH, wish.id) }, onDone = { viewModel.markDone(wish.id, wish.title)?.let(onSaved) })
+                        WishRow(wish.title, wish.template, null, "Mark done", onClick = { onEdit(EntryType.WISH, wish.id) }, onDone = { viewModel.markDone(wish.id, wish.title)?.let(onSaved) })
                     }
                 }
             }
@@ -363,7 +388,12 @@ fun PlansScreen(
                         Spacer(Modifier.width(14.dp))
                         Column(Modifier.weight(1f)) {
                             Text(event.title, style = MaterialTheme.typography.titleSmall)
-                            Text(event.kind, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            val gifts = state.wishes.count { it.event.equals(event.title, ignoreCase = true) }
+                            Text(
+                                listOfNotNull(event.kind, gifts.takeIf { it > 0 }?.let { "🎁 $it gift idea" + if (it > 1) "s" else "" }).joinToString(" · "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                         Text(formatDate(event.next), style = MaterialTheme.typography.labelLarge, color = LocalHouseColors.current.plans.color)
                     }
@@ -468,7 +498,19 @@ private fun ListHeader(text: String) {
 }
 
 @Composable
-private fun WishRow(title: String, detail: String, image: String?, doneLabel: String, onClick: () -> Unit, onDone: () -> Unit) {
+private fun WishRow(
+    title: String,
+    detail: String,
+    image: String?,
+    doneLabel: String,
+    onClick: () -> Unit,
+    onDone: () -> Unit,
+    votes: List<String> = emptyList(),
+    myUid: String = "",
+    status: String = "IDEA",
+    onVote: ((Boolean) -> Unit)? = null,
+    onPlan: (() -> Unit)? = null,
+) {
     Row(Modifier.fillMaxWidth().opensEdit(onClick).padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         if (image != null) {
             coil.compose.AsyncImage(
@@ -482,6 +524,28 @@ private fun WishRow(title: String, detail: String, image: String?, doneLabel: St
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // ❤️ from each member, and Idea → Planned; ticking it off is the circle on the right.
+            if (onVote != null && onPlan != null) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
+                    val mine = myUid in votes
+                    Text(
+                        (if (mine) "❤️" else "🤍") + if (votes.isNotEmpty()) " ${votes.size}" else "",
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.clip(CircleShape).clickable(onClickLabel = if (mine) "Remove your heart" else "Heart it") { onVote(!mine) }.padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                    val planned = status == "PLANNED"
+                    Text(
+                        if (planned) "📅 Planned" else "💡 Idea",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (planned) LocalHouseColors.current.plans.color else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(if (planned) LocalHouseColors.current.plans.container else MaterialTheme.colorScheme.surfaceContainerHigh)
+                            .clickable(onClickLabel = if (planned) "Back to idea" else "Mark planned", onClick = onPlan)
+                            .padding(horizontal = 10.dp, vertical = 3.dp),
+                    )
+                }
+            }
         }
         // Same as everywhere: the circle ticks it off; the row (tap or hold) opens it.
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -705,6 +769,33 @@ private fun DreamSheet(
                     Text(if (dream.achieved) "Mark as not achieved" else "We did it! Mark achieved 🎉")
                 }
             }
+        }
+    }
+}
+
+/** A weekly goal: drag to say how far along it is; earlier weeks are read-only. */
+@Composable
+private fun GoalRow(goal: com.houseaffairs.app.core.data.Goal, onEdit: () -> Unit, onProgress: ((Int) -> Unit)?) {
+    val accent = LocalHouseColors.current.plans
+    var value by remember(goal.id, goal.progress) { mutableStateOf(goal.progress.toFloat()) }
+    Column(Modifier.fillMaxWidth().opensEdit(onEdit).padding(horizontal = 20.dp, vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(if (goal.done) "✅" else "🎯", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(goal.title, style = MaterialTheme.typography.titleSmall)
+                goal.kind?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+            Text("${value.toInt()}%", style = MaterialTheme.typography.labelLarge, color = accent.color)
+        }
+        if (onProgress != null) {
+            androidx.compose.material3.Slider(
+                value = value,
+                onValueChange = { value = it },
+                onValueChangeFinished = { onProgress(value.toInt()) },
+                valueRange = 0f..100f,
+                steps = 9,
+            )
         }
     }
 }

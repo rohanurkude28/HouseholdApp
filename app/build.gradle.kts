@@ -24,6 +24,8 @@ android {
         // Put tmdb.apiKey=… in local.properties; without it, shows still get ratings from TVMaze.
         val local = Properties().apply { rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use(::load) }
         buildConfigField("String", "TMDB_API_KEY", "\"${local.getProperty("tmdb.apiKey", "")}\"")
+        // Optional free OMDb key (omdbapi.com) for IMDb and Rotten Tomatoes scores: omdb.apiKey=… in local.properties.
+        buildConfigField("String", "OMDB_API_KEY", "\"${local.getProperty("omdb.apiKey", "")}\"")
     }
 
     buildTypes {

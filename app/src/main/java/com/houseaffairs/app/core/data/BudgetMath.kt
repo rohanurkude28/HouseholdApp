@@ -19,6 +19,8 @@ data class Budget(
     val cards: List<Card> = emptyList(),
     /** Card bills marked paid, by [billKey]. */
     val paidBills: Set<String> = emptySet(),
+    /** Monthly take-home income, if the family shared it; only used to suggest the budget. */
+    val incomeMinor: Long = 0,
 )
 
 data class Txn(

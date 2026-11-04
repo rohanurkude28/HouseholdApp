@@ -328,4 +328,25 @@ class QuickAddParserTest {
         assertEquals("Cosmetics & skincare", d.type)
         assertEquals(LocalDate.of(2027, 3, 31), d.expiry)
     }
+
+    @Test
+    fun `repeating tasks`() {
+        val weekly = parser.parse("water the plants every week") as QuickAddDraft.Task
+        assertEquals("Water the plants", weekly.title)
+        assertEquals("Weekly", weekly.repeat)
+        val sunday = parser.parse("take out the trash every sunday") as QuickAddDraft.Task
+        assertEquals("Take out the trash", sunday.title)
+        assertEquals("Weekly", sunday.repeat)
+        assertEquals(java.time.DayOfWeek.SUNDAY, sunday.due?.dayOfWeek)
+        assertEquals("Daily", (parser.parse("feed the cat daily") as QuickAddDraft.Task).repeat)
+        assertEquals(null, (parser.parse("call the plumber") as QuickAddDraft.Task).repeat)
+    }
+
+    @Test
+    fun `cravings are understood, symptoms still are too`() {
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.CRAVING, "something crispy with a savoury curry"), parser.parse("I want to eat something crispy with a savoury curry"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.CRAVING, "something spicy"), parser.parse("feel like eating something spicy"))
+        assertEquals(QuickAddDraft.Question.CRAVING, (parser.parse("something tangy for dinner") as QuickAddDraft.Ask).question)
+        assertEquals(QuickAddDraft.Question.SYMPTOM, (parser.parse("I'm feeling feverish") as QuickAddDraft.Ask).question)
+    }
 }

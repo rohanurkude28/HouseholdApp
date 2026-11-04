@@ -82,6 +82,15 @@ firebase emulators:start --project demo-houseaffairs --only auth,firestore   # U
 - "X is in Y" for an item already in pantry, supplies or medicines updates that item's place (`AddViewModel.placeExisting` → `EntryRepository.setPlace`). Anything else becomes a new Where it's kept entry.
 - "Where is X?" searches all of them through the pure `whereIs()` in `ThingsRepository.kt`. Valuables are Vault-only, so kids get answers only from lists their role can see.
 
+**Rules that span several files.**
+- **Subscriptions:** a renewal becomes spending only once it's logged. `lastLogged` on the `recurring` doc records the latest one, and `Renewals.kt` works out what's owed. "Log it" in Today, or `onRenew = "Log it automatically"`, calls `MoneyRepository.logRenewal`, which uses a transaction for automatic logging.
+- **Repeating tasks:** ticking one off (`HomeRepository.completeTask`) creates the next, with the due date and rota from `Repeats.kt`.
+- **Restock:** predictions use ticked-off shopping items (`boughtAt`) plus groceries added as bought (`Restock.kt`, `PantryRepository.observeHistory`).
+- **Private topics:** these live on the household doc (`privateTopics`). `AddViewModel.persist` narrows `visibleTo` for new entries on them.
+- **Teens and medicines:** teens only see medicines where they're in `forWhom`. This is enforced by `canUseItem` in `firestore.rules`, and every medicine query must use `RolePolicy.ownMedicinesOnly`.
+- **Share sheet:** shared text and links arrive through `MainActivity` → `SharedInbox` → the Add sheet. Routing is in `Shared.kt`.
+- **Optional keys** in `local.properties`: `tmdb.apiKey` and `omdb.apiKey` (IMDb and Rotten Tomatoes).
+
 **Notifications.** `notify/DigestWorker` sends one daily digest via WorkManager. `HouseAffairsApp` reschedules it whenever the notification settings change. The digest content comes from the pure `Digest.kt`.
 
 ## Conventions

@@ -45,6 +45,8 @@ data class WeekReview(
     val diary: List<DiaryDay> = emptyList(),
     /** Whether the pantry is tracked for this person, so "nothing went to waste" means something. */
     val tracksPantry: Boolean = false,
+    /** What today's meals added up to, against the plan's targets; null when nothing was logged. */
+    val today: Macros? = null,
 ) {
     val isThisWeek: Boolean get() = weekStart == mondayOf(LocalDate.now())
     /** Only for the week you're in: there's nothing to nudge about last week. */
@@ -87,6 +89,9 @@ class WeeklyRepository @Inject constructor(
             }
         } + RECIPE_LIBRARY.map { it.title.lowercase() to it.ingredients }).toMap()
         val mealDocs = if (me.canAccess(AppModule.STOCK)) visible(householdId, "cookLog", uid).filter { inWeek(it.created()) && it.involves("eaters") } else emptyList()
+        // Today's plate: one serving of each dish this person ate today.
+        val savedRecipes = visible(householdId, "recipes", uid).map { d -> Recipe(d.id, d.getString("title").orEmpty(), emptyList(), 2, emptyList(), null, macros = d.getString("macros")) }
+        val todayMacros = dayMacros(mealDocs.filter { it.created() == today }.map { it.getString("title").orEmpty() }, savedRecipes)
         val meals = mealDocs.map { d ->
             val title = d.getString("title").orEmpty()
             CookedMeal(title, (d.getLong("people") ?: 1).toInt().coerceAtLeast(1), recipes[title.lowercase()]?.let(::isPlantBased) ?: true)
@@ -184,7 +189,7 @@ class WeeklyRepository @Inject constructor(
             days = dates.size, diaryDays = diary.count { it.note != null },
         )
         val plan = loadPlan(householdId, uid)
-        return WeekReview(liveWell(data, plan), data, spent, currency, activities.sumOf { it.minutes }, plan, counts, from, diary, me.canAccess(AppModule.STOCK))
+        return WeekReview(liveWell(data, plan), data, spent, currency, activities.sumOf { it.minutes }, plan, counts, from, diary, me.canAccess(AppModule.STOCK), todayMacros)
     }
 
     /** Writes (or clears) the day's diary line and mood; private to the person. */
@@ -212,6 +217,12 @@ class WeeklyRepository @Inject constructor(
             workoutMinutes = d.getLong("workoutMinutes")?.toInt() ?: 90,
             homeMeals = d.getLong("homeMeals")?.toInt() ?: 7,
             familyMeals = d.getLong("familyMeals")?.toInt() ?: 5,
+            macros = (d.get("macros") as? Map<*, *>)?.let { m ->
+                MacroTargets(
+                    (m["protein"] as? Number)?.toInt() ?: 50, (m["carbs"] as? Number)?.toInt() ?: 250,
+                    (m["fat"] as? Number)?.toInt() ?: 65, (m["fibre"] as? Number)?.toInt() ?: 30,
+                )
+            } ?: MacroTargets(),
             custom = (d.get("custom") as? List<*>).orEmpty().mapNotNull { raw ->
                 (raw as? Map<*, *>)?.let { m ->
                     CustomTarget(
@@ -231,6 +242,7 @@ class WeeklyRepository @Inject constructor(
                 "commitments" to plan.commitments.mapKeys { it.key.name },
                 "walkMinutes" to plan.walkMinutes, "workoutMinutes" to plan.workoutMinutes,
                 "homeMeals" to plan.homeMeals, "familyMeals" to plan.familyMeals,
+                "macros" to mapOf("protein" to plan.macros.protein, "carbs" to plan.macros.carbs, "fat" to plan.macros.fat, "fibre" to plan.macros.fibre),
                 "custom" to plan.custom.map { mapOf("name" to it.name, "pillar" to it.pillar.name, "perWeek" to it.perWeek) },
                 "createdBy" to uid, "visibleTo" to listOf(uid), "updatedAt" to FieldValue.serverTimestamp(),
             ),

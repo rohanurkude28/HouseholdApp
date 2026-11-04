@@ -20,7 +20,7 @@ service cloud.firestore {
       return {
         'OWNER':  {'money': true,  'stock': true, 'medicine': true,  'plans': true,  'vault': true},
         'ADULT':  {'money': true,  'stock': true, 'medicine': true,  'plans': true,  'vault': true},
-        'TEEN':   {'money': false, 'stock': true, 'medicine': false, 'plans': true,  'vault': false},
+        'TEEN':   {'money': false, 'stock': true, 'medicine': true,  'plans': true,  'vault': false},
         'KID':    {'money': false, 'stock': true, 'medicine': false, 'plans': true,  'vault': false},
         'HELPER': {'money': false, 'stock': true, 'medicine': false, 'plans': false, 'vault': false}
       }[role];
@@ -44,6 +44,12 @@ service cloud.firestore {
     // Medicines live in their own collection so a pantry query never has to touch them.
     function canUse(hid, collection, data) {
       return hasModule(hid, moduleOf(collection)) && canSee(data);
+    }
+    // Teens only see and add medicines that are for them (`forWhom`); the app queries them that way.
+    function teenMedicine(hid, collection) { return collection == 'medicines' && me(hid).role == 'TEEN'; }
+    function canUseItem(hid, collection, data) {
+      return (teenMedicine(hid, collection) && hasModule(hid, 'medicine') && uid() in data.get('forWhom', []))
+        || (!teenMedicine(hid, collection) && canUse(hid, collection, data));
     }
 
     function isFounder(hid) {
@@ -97,12 +103,12 @@ service cloud.firestore {
       // where("visibleTo", "array-contains-any", ["*", uid]) so every result is provably visible.
       match /{collection}/{docId} {
         // A missing document (e.g. the budget before it's first set) reads as "not found", not denied.
-        allow read: if (resource == null && hasModule(hid, moduleOf(collection))) || canUse(hid, collection, resource.data);
-        allow create: if request.resource.data.createdBy == uid() && canUse(hid, collection, request.resource.data);
-        allow update: if canUse(hid, collection, resource.data)
+        allow read: if (resource == null && hasModule(hid, moduleOf(collection))) || canUseItem(hid, collection, resource.data);
+        allow create: if request.resource.data.createdBy == uid() && canUseItem(hid, collection, request.resource.data);
+        allow update: if canUseItem(hid, collection, resource.data)
           && request.resource.data.createdBy == resource.data.createdBy
-          && canUse(hid, collection, request.resource.data);
-        allow delete: if canUse(hid, collection, resource.data);
+          && canUseItem(hid, collection, request.resource.data);
+        allow delete: if canUseItem(hid, collection, resource.data);
       }
     }
   }

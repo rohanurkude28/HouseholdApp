@@ -18,7 +18,19 @@ data class NowSuggestion(
 data class RightNow(val headline: String, val items: List<NowSuggestion>)
 
 /** A wish-list item: eat-out spots and things to buy. */
-data class WishItem(val id: String, val template: String, val title: String, val place: String?, val budgetText: String?)
+data class WishItem(
+    val id: String,
+    val template: String,
+    val title: String,
+    val place: String?,
+    val budgetText: String?,
+    /** "IDEA" or "PLANNED"; done items aren't listed. */
+    val status: String = "IDEA",
+    /** Who ❤️'d it. */
+    val votes: List<String> = emptyList(),
+    /** For gift ideas: the event it's for ("Riya's birthday"). */
+    val event: String? = null,
+)
 
 /**
  * What's worth suggesting at this moment: breakfast/lunch/dinner from the pantry by time of day,
