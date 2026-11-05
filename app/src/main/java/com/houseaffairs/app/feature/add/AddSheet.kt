@@ -262,7 +262,7 @@ private fun Picker(
         } else if (state.move != null) {
             MoveCard(state.move, onMove)
         } else if (state.answer != null) {
-            AnswerCard(state.answer, onMove, onLocationGranted, onNumber = viewModel::rememberNumber)
+            AnswerCard(state.answer, onMove, onLocationGranted, onNumber = viewModel::rememberNumber, onSkip = viewModel::skipDose)
         } else if (cook != null) {
             CookCard(cook, state.members, viewModel, onCook = onCook, onSaveRecipe = viewModel::saveCookAsRecipe)
         } else if (suggestion == null) {
@@ -585,7 +585,13 @@ private fun MoveCard(move: MoveAction, onMove: (MoveAction) -> Unit) {
 }
 
 @Composable
-private fun AnswerCard(answer: Answer, onMove: (MoveAction) -> Unit, onLocationGranted: () -> Unit = {}, onNumber: (String, String) -> Unit = { _, _ -> }) {
+private fun AnswerCard(
+    answer: Answer,
+    onMove: (MoveAction) -> Unit,
+    onLocationGranted: () -> Unit = {},
+    onNumber: (String, String) -> Unit = { _, _ -> },
+    onSkip: (String, java.time.LocalDate) -> Unit = { _, _ -> },
+) {
     val stock = LocalHouseColors.current.stock
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
         if (granted.values.any { it }) onLocationGranted()
@@ -638,6 +644,10 @@ private fun AnswerCard(answer: Answer, onMove: (MoveAction) -> Unit, onLocationG
                 shape = CircleShape,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Allow location") }
+        }
+        answer.skip?.let { (id, day) ->
+            Spacer(Modifier.height(12.dp))
+            Button(onClick = { onSkip(id, day) }, shape = CircleShape, modifier = Modifier.fillMaxWidth()) { Text("Skip it") }
         }
         answer.shareWith?.let { name ->
             Spacer(Modifier.height(12.dp))

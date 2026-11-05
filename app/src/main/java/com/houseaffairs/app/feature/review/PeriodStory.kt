@@ -96,6 +96,8 @@ fun LazyListScope.periodStory(state: ReviewUi, currency: String, onPrev: () -> U
         item { Text("Nothing logged yet. Tick things off, log walks and write in your diary, and your story builds up here.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(20.dp)) }
         return
     }
+    val before = if (year) "${start.year - 1}" else start.minusMonths(1).month.getDisplayName(TextStyle.FULL, Locale.US)
+    item { GlanceCard(p, currency, before) }
     item { Highlights(p) }
     p.spentMinor?.let { spent -> item { SectionTitle("Money") }; item { MoneyCard(p, spent, currency, year) } }
     if (p.bought > 0 || p.groceriesMinor != null) {
@@ -141,14 +143,68 @@ fun LazyListScope.periodStory(state: ReviewUi, currency: String, onPrev: () -> U
     }
 }
 
+/**
+ * The period at a glance: one line that sums it up, then the four numbers that matter most,
+ * each against the month or year before (green when it went the right way).
+ */
+@Composable
+private fun GlanceCard(p: PeriodReview, currency: String, before: String) {
+    val prev = p.previous
+    val plans = LocalHouseColors.current.plans
+    androidx.compose.material3.Surface(
+        shape = RoundedCornerShape(28.dp),
+        color = plans.container,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+    ) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            com.houseaffairs.app.core.data.storyHeadline(p, before)?.let { Text(it, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold) }
+            Row(Modifier.fillMaxWidth()) {
+                p.spentMinor?.let { spent ->
+                    // Spending less is the good direction.
+                    GlanceStat("Spent", formatCompactMoney(spent, currency), prev?.spentMinor?.let { com.houseaffairs.app.core.data.percentChange(spent, it) }, lowerIsBetter = true, Modifier.weight(1f))
+                }
+                GlanceStat("Active", hours(p.activeMinutes), prev?.let { com.houseaffairs.app.core.data.percentChange(p.activeMinutes.toLong(), it.activeMinutes.toLong()) }, modifier = Modifier.weight(1f))
+            }
+            Row(Modifier.fillMaxWidth()) {
+                val finished = p.finished.sumOf { it.titles.size } + p.goalsReached.size
+                GlanceStat("Finished", "$finished", prev?.let { com.houseaffairs.app.core.data.percentChange(finished.toLong(), (it.finished.sumOf { g -> g.titles.size } + it.goalsReached.size).toLong()) }, modifier = Modifier.weight(1f))
+                GlanceStat("Mostly felt", p.moods.firstOrNull()?.first ?: "—", null, modifier = Modifier.weight(1f))
+            }
+            if (prev != null) Text(
+                // Still going: it's compared with the same number of days, not the whole of the one before.
+                if (!LocalDate.now().isAfter(p.to)) "Compared with the same days of $before" else "Compared with $before",
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun GlanceStat(label: String, value: String, change: Int?, lowerIsBetter: Boolean = false, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+        change?.takeIf { it != 0 }?.let { c ->
+            val good = if (lowerIsBetter) c < 0 else c > 0
+            Text(
+                (if (c > 0) "▲ " else "▼ ") + "${kotlin.math.abs(c)}%",
+                style = MaterialTheme.typography.labelLarge,
+                color = if (good) androidx.compose.ui.graphics.Color(0xFF1E9E6A) else MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
+/** "₹35.6k": big numbers read at a glance. */
+private fun formatCompactMoney(minor: Long, currency: String) = com.houseaffairs.app.core.util.formatCompact(minor, currency)
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun Highlights(p: PeriodReview) {
+    // Finished and active time lead in the card above; these are the rest.
     val tiles = listOfNotNull(
-        p.finished.sumOf { it.titles.size }.takeIf { it > 0 }?.let { "🏁" to "$it finished" },
         p.tasksDone.takeIf { it > 0 }?.let { "✅" to count(it, "task") + " done" },
         p.goalsReached.size.takeIf { it > 0 }?.let { "🎯" to count(it, "goal") + " reached" },
-        p.activeMinutes.takeIf { it > 0 }?.let { "🚶" to "${hours(it)} active · ${count(p.activeDays, "day")}" },
         p.mealsCooked.takeIf { it > 0 }?.let { "🍲" to count(it, "home meal") },
         p.diaryDays.takeIf { it > 0 }?.let { "📔" to "${p.diaryDays} of ${count(p.days, "day")} written" },
     )

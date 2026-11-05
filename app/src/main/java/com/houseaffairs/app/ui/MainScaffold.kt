@@ -62,6 +62,8 @@ internal enum class Tab(val route: String, val label: String, val icon: ImageVec
 
     fun visibleTo(member: Member): Boolean = when (module) {
         null -> true
+        // Everyone gets Money: without access it's just "My spends", with no family totals.
+        AppModule.MONEY -> true
         // Things holds medicines and supplies too, so it shows for anyone with one of them.
         AppModule.VAULT -> member.canAccess(AppModule.VAULT) || member.canAccess(AppModule.MEDICINE) || member.canAccess(AppModule.STOCK)
         else -> member.canAccess(module)
@@ -156,6 +158,11 @@ fun MainScaffold(session: SessionState.Ready) {
                 )
             }
             composable(Tab.MONEY.route) {
+                // Without Money access: just your own spends, no family totals.
+                if (!session.me.canAccess(com.houseaffairs.app.core.model.AppModule.MONEY)) {
+                    com.houseaffairs.app.feature.money.MySpendsScreen(onAdd = { openAdd(EntryType.EXPENSE, emptyMap()) }, onOpen = { openEdit(EntryType.EXPENSE, it) })
+                    return@composable
+                }
                 MoneyScreen(
                     onAddExpense = { openAdd(EntryType.EXPENSE, emptyMap()) },
                     onPlanSpend = { openAdd(EntryType.EXPENSE, mapOf("status" to "Planned", "date" to LocalDate.now().plusWeeks(1))) },

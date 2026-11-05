@@ -75,7 +75,8 @@ sealed interface QuickAddDraft {
     data class Activity(val kind: String, val minutes: Int?, val steps: Int?) : QuickAddDraft
 
     /** "Start trip Goa" / "outing: Sunday picnic this sunday". */
-    data class Trip(val title: String, val start: LocalDate?) : QuickAddDraft
+    /** [places] is the day's plan in order, when said ("…to Cubbon Park, Lalbagh and MTR"). */
+    data class Trip(val title: String, val start: LocalDate?, val places: String? = null) : QuickAddDraft
 
     data class Subscription(val title: String, val amount: Decimal, val currency: String?, val frequency: String) : QuickAddDraft
     /** [quantity] is "500 g", "2 pcs"…, or null when none was said. */
@@ -93,7 +94,8 @@ sealed interface QuickAddDraft {
         val forName: String? = null,
     ) : QuickAddDraft
     data class Event(val title: String, val kind: String, val date: LocalDate?) : QuickAddDraft
-    data class Medicine(val title: String, val forName: String?, val expiry: LocalDate?) : QuickAddDraft
+    /** [frequency] is one of `DOSE_FREQUENCIES` when said ("twice a day"); [until] ends the course ("for 5 days"). */
+    data class Medicine(val title: String, val forName: String?, val expiry: LocalDate?, val frequency: String? = null, val until: LocalDate? = null) : QuickAddDraft
     data class Grocery(val title: String, val quantity: String?, val expiry: LocalDate?) : QuickAddDraft
     data class ListItem(val template: ListTemplate, val title: String) : QuickAddDraft
 
@@ -169,6 +171,9 @@ sealed interface QuickAddDraft {
         SHARE_LOCATION,
     }
 
+    /** "Won't take crocin today" / "skip crocin tonight": no doses (or reminders) that day, and the count stays. */
+    data class SkipDose(val medicine: String, val day: LocalDate) : QuickAddDraft
+
     /** "Gold necklace is in the bank locker" / "kept spare keys in the blue drawer". */
     data class Kept(val item: String, val location: String) : QuickAddDraft
 
@@ -198,7 +203,8 @@ class QuickAddParser(
     fun parse(input: String): QuickAddDraft? {
         val text = withLakhs(input.trim().replace(WHITESPACE, " "))
         if (text.isEmpty()) return null
-        return parseWant(text)
+        return parseSkipDose(text)
+            ?: parseWant(text)
             ?: parseAsk(text)
             ?: parseChange(text)
             ?: parseBatch(text)
@@ -236,6 +242,15 @@ class QuickAddParser(
     /** [input] as something new to save, ignoring change commands ("update passport" as a task). */
     fun parseAsNew(input: String): QuickAddDraft? = parseSingle(withLakhs(input.trim().replace(WHITESPACE, " ")))
 
+    private fun parseSkipDose(text: String): QuickAddDraft.SkipDose? {
+        val t = text.trim().trimEnd('.', '!').trim()
+        val m = SKIP_DOSE.matchEntire(t) ?: SKIP_DOSE_SHORT.matchEntire(t) ?: return null
+        val name = m.groupValues[1].trim().removePrefix("my ").removeSuffix(" dose").removeSuffix(" doses").trim()
+        if (name.isEmpty()) return null
+        val day = if (m.groupValues[2].equals("tomorrow", ignoreCase = true)) today().plusDays(1) else today()
+        return QuickAddDraft.SkipDose(name.capitalized(), day)
+    }
+
     /** "5 lakh" → "500000", "1.2 crore" → "12000000": said that way, but every amount rule reads digits. */
     private fun withLakhs(text: String): String = LAKH.replace(text) { m ->
         val n = decimalOf(m.groupValues[1]) ?: return@replace m.value
@@ -246,6 +261,8 @@ class QuickAddParser(
     /** Everything but questions, changes and batches; also used for each part of a batch. */
     private fun parseSingle(text: String): QuickAddDraft? {
         return parsePersonTask(text)
+            // "Remind me every day at 9 pm to take vitamins" is a reminder, whatever it mentions.
+            ?: (if (REMINDER.containsMatchIn(text)) parseTask(text) else null)
             ?: parseActivity(text)
             ?: parseTrip(text)
             ?: parseAddTo(text)
@@ -456,6 +473,15 @@ class QuickAddParser(
     }
 
     private fun parseTrip(text: String): QuickAddDraft.Trip? {
+        // "Sunday outing to Cubbon Park, Lalbagh and MTR": the outing and its stops, in order.
+        TRIP_STOPS.matchEntire(text.trimEnd('.'))?.let { m ->
+            val places = m.groupValues[2].trim()
+            if (places.split(Regex(",|\\band\\b|\\bthen\\b")).count { it.isNotBlank() } >= 2) {
+                val title = m.groupValues[1].trim().capitalized()
+                val start = extractDate(title.split(" ").toMutableList())
+                return QuickAddDraft.Trip(title, start, places)
+            }
+        }
         val m = TRIP_START.matchEntire(text) ?: return null
         val words = (m.groupValues[1].ifEmpty { m.groupValues[2] }).split(" ").toMutableList()
         val start = extractDate(words)
@@ -713,14 +739,30 @@ class QuickAddParser(
         }
     }
 
-    private fun parseMedicine(text: String): QuickAddDraft.Medicine? {
-        val words = text.split(" ").toMutableList()
-        if (words.none { it.normalizedWord() in MEDICINE_WORDS }) return null
-        if (CURRENCY_MARKER.containsMatchIn(text)) return null // "₹120 crocin" is an expense
+    private fun parseMedicine(input: String): QuickAddDraft.Medicine? {
+        if (input.split(" ").none { it.normalizedWord() in MEDICINE_WORDS }) return null
+        if (CURRENCY_MARKER.containsMatchIn(input)) return null // "₹120 crocin" is an expense
+        var text = input
+        // "twice a day", "3 times daily", "every night": a schedule, so doses can be reminded.
+        val frequency = DOSE_FREQUENCY.find(text)?.let { m ->
+            text = text.removeRange(m.range).trim()
+            when (m.groupValues[1].lowercase()) {
+                "twice", "2 times", "two times", "2x" -> "Twice a day"
+                "thrice", "3 times", "three times", "3x" -> "Three times a day"
+                else -> "Once a day"
+            }
+        }
+        // "for 5 days", "for a week": when the course ends.
+        val until = COURSE_LENGTH.find(text)?.let { m ->
+            text = text.removeRange(m.range).trim()
+            val n = m.groupValues[1].let { if (it.equals("a", true) || it.equals("one", true)) 1 else it.toIntOrNull() ?: 1 }
+            today().plusDays((if (m.groupValues[2].lowercase().startsWith("week")) n * 7 else n).toLong() - 1)
+        }
+        val words = text.split(" ").filter { it.isNotEmpty() }.toMutableList()
         val expiry = extractExpiry(words)
         val forName = extractFor(words)
         val title = words.filterNot { it.normalizedWord() in ACQUIRE_VERBS }.joinToString(" ").trim().capitalized()
-        return QuickAddDraft.Medicine(title.ifEmpty { "Medicine" }, forName, expiry)
+        return QuickAddDraft.Medicine(title.ifEmpty { "Medicine" }, forName, expiry, frequency, until)
     }
 
     private fun parseGrocery(text: String): QuickAddDraft.Grocery? {
@@ -812,7 +854,10 @@ class QuickAddParser(
     }
 
     private fun parseTask(text: String): QuickAddDraft.Task {
-        var rest = WANT_PREFIX.replace(TASK_PREFIX.replace(text, ""), "")
+        // "…at 6 PM IST": the phone's own time zone is the one that matters.
+        var rest = WANT_PREFIX.replace(TASK_PREFIX.replace(TIME_ZONE.replace(text, ""), ""), "")
+        // "…and remind everyday": the reminder is the task's time; the words only say it repeats.
+        rest = REMIND_TAIL.replace(rest, " ").replace(WHITESPACE, " ").trim()
         // "every sunday" repeats weekly from the coming Sunday; "daily", "every month"… just repeat.
         val repeat = TASK_REPEAT.find(rest)?.let { m ->
             val unit = m.groupValues[1].ifEmpty { m.groupValues[2] }.lowercase()
@@ -836,7 +881,7 @@ class QuickAddParser(
         val words = rest.split(" ").filter { it.isNotEmpty() }.toMutableList()
         val due = extractDate(words)
         if (minute == null && tonight) minute = 20 * 60
-        val title = words.joinToString(" ").trim().trimEnd(',', '-').capitalized()
+        val title = words.joinToString(" ").trim().trimEnd(',', '-', '.').removePrefix("to ").removePrefix("To ").trim().capitalized()
         // "Call mom", "message Ravi": the task opens the dialer or WhatsApp, and is due today unless a day was said.
         val reach = reachOf(title)
         // A time with no day is the next one: today, or tomorrow once it has passed.
@@ -990,6 +1035,12 @@ class QuickAddParser(
             "^(?:please )?add (.+) (?:to|in|on)(?: the| my| our)? (.+?)(?: list)?$",
             RegexOption.IGNORE_CASE,
         )
+        /** "twice a day", "3 times daily", "once daily", "every night". */
+        val DOSE_FREQUENCY = Regex("\\b(once|twice|thrice|three times|two times|[23] times|[23]x)(?: a| per)? ?(?:day|daily)\\b|\\b(daily|every day|every night|every morning)\\b", RegexOption.IGNORE_CASE)
+
+        /** "for 5 days", "for a week", "for 2 weeks". */
+        val COURSE_LENGTH = Regex("\\bfor (\\d+|a|one) (days?|weeks?)\\b", RegexOption.IGNORE_CASE)
+
         /** "remind Mom to…", "ask Ravi to…", "tell Riya to…" (not "remind me to"). */
         val REMIND_PERSON = Regex("^(?:please )?(?:remind|ask|tell) ([a-z]+) to (.+)$", RegexOption.IGNORE_CASE)
 
@@ -1000,6 +1051,7 @@ class QuickAddParser(
         val NOT_NAMES = setOf(
             "me", "us", "i", "we", "you", "it", "them", "him", "her", "ok", "okay", "so", "also", "then", "now", "today",
             "tomorrow", "and", "but", "please", "hey", "hi", "hello", "yes", "no", "well", "oh", "the", "a",
+            "everyday", "daily", "every", "each", "weekly", "monthly", "always",
         )
 
         /** "add it to the shopping list" after naming what's running low. */
@@ -1063,6 +1115,9 @@ class QuickAddParser(
         )
         val DURATION = Regex("\\b(\\d+(?:\\.\\d+)?|an|a)\\s?(minutes|minute|mins|min|m|hours|hour|hrs|hr|h)\\b")
         val STEPS = Regex("\\b(\\d[\\d,]*)\\s?steps\\b")
+        /** "Sunday outing to A, B and C", "plan a day out: A then B". */
+        val TRIP_STOPS = Regex("^(?:plan(?:ning)?\\s+(?:a\\s+|an\\s+|the\\s+)?)?(.*?\\b(?:outing|trip|day out|road trip))\\s*(?:to|via|covering|:)\\s+(.+)$", RegexOption.IGNORE_CASE)
+
         val TRIP_START = Regex(
             "^(?:start(?:ing)?|plan(?:ning)?|new|begin)\\s+(?:a\\s+|an\\s+|the\\s+)?(?:trip|outing|holiday|vacation)(?:\\s+to|\\s*:)?\\s+(.+)$|^(?:trip|outing)\\s*:\\s*(.+)$",
             RegexOption.IGNORE_CASE,
@@ -1217,7 +1272,22 @@ class QuickAddParser(
             "message", "ask", "tell", "do", "make", "change", "replace", "install", "sort", "organise", "organize", "plan",
         )
         val TASK_TIME = Regex("(?:\\s|^)(?:at|@|by|around)?\\s*(\\d{1,2}(?:[:.]\\d{2})?\\s?(?:am|pm|a\\.m\\.|p\\.m\\.)|\\d{1,2}:\\d{2}|noon)(?=\\s|$|[,.!?])", RegexOption.IGNORE_CASE)
-        val TASK_PREFIX = Regex("^(?:remind me to|remind me|todo:?|to-do:?|task:?)\\s+", RegexOption.IGNORE_CASE)
+        val TASK_PREFIX = Regex("^(?:please )?(?:remind me to|remind me|remind to|remind|todo:?|to-do:?|task:?)\\s+", RegexOption.IGNORE_CASE)
+
+        /** Starts by asking to be reminded: "remind me…", "remind every day…" (not "remind Mom to…"). */
+        val REMINDER = Regex("^(?:please )?remind(?: me)?(?:\\s+(?:to|every ?day|daily|every|at|on|tomorrow|today)\\b|$)", RegexOption.IGNORE_CASE)
+
+        /** "and remind me", ", remind everyday": the repeat stays, these words go. */
+        val REMIND_TAIL = Regex("(?:,|\\band\\b)?\\s*\\bremind(?: me)?\\b(?!\\s+to\\b)", RegexOption.IGNORE_CASE)
+
+        /** "6 PM IST": time zones said after a time. */
+        val TIME_ZONE = Regex("\\s*\\b(?:IST|GMT|UTC|BST|PST|PDT|EST|EDT|CET|CEST|SGT|GST)\\b", RegexOption.IGNORE_CASE)
+
+        /** "won't take crocin today", "not having my vitamins tonight", "don't give Riya calpol today". */
+        val SKIP_DOSE = Regex("^(?:i |we |she |he |riya )?(?:won['’]?t|will not|wont|not going to|am not going to|don['’]?t|do not|not|skipping|skip) (?:take|taking|eat|eating|have|having|give|giving)(?: my| the| her| his)? (.+?)(?: (today|tonight|tomorrow|this evening|this morning))?$", RegexOption.IGNORE_CASE)
+
+        /** "skip crocin today", "no crocin tonight": a day word is needed so "skip" alone isn't misread. */
+        val SKIP_DOSE_SHORT = Regex("^(?:skip|skipping|no)(?: my| the)? (.+?) (today|tonight|tomorrow)$", RegexOption.IGNORE_CASE)
 
         val SHOPPING_ALIASES = setOf("shopping", "grocery", "groceries", "cart")
         val CARD_BILL = Regex("\\b(?:credit\\s+)?card\\s+bill\\b|\\bcc\\s+bill\\b|\\bcard\\s+statement\\b", RegexOption.IGNORE_CASE)

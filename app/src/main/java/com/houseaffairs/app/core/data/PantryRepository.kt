@@ -302,17 +302,27 @@ class PantryRepository @Inject constructor(
                 val start = d.localDate("boughtOn") ?: d.localDate("createdAt") ?: return@mapNotNull null
                 d.localDate("usedUpAt")?.takeIf { d.getString("status") == "USED_UP" }?.let { StockLife(d.getString("title").orEmpty(), start, it) }
             }
-            val wasted = stock.mapNotNull { d ->
+            val wasted = stock.flatMap { d ->
                 val cost = d.getLong("costMinor")
                 val level = d.getLong("level")?.toInt()
-                when (d.getString("status")) {
-                    "WASTED" -> d.localDate("wastedAt")?.let { Expired(d.getString("title").orEmpty(), it, cost, level, thrown = true) }
-                    "USED_UP" -> null
-                    else -> d.localDate("expiry")?.let { Expired(d.getString("title").orEmpty(), it, cost, level) }
+                val title = d.getString("title").orEmpty()
+                // Parts thrown away earlier ("half the milk"), each on its own day, valued at its share.
+                val parts = (d.get("wasteLog") as? List<*>).orEmpty().mapNotNull { raw ->
+                    val m = raw as? Map<*, *> ?: return@mapNotNull null
+                    val share = (m["share"] as? Number)?.toInt() ?: return@mapNotNull null
+                    val at = (m["at"] as? com.google.firebase.Timestamp)?.toDate()?.toInstant()?.atZone(java.time.ZoneId.systemDefault())?.toLocalDate() ?: return@mapNotNull null
+                    Expired(partLabel(title, share), at, cost?.let { it * share / 100 }, 100, thrown = true)
                 }
+                parts + listOfNotNull(
+                    when (d.getString("status")) {
+                        "WASTED" -> d.localDate("wastedAt")?.let { Expired(title, it, cost, level, thrown = true) }
+                        "USED_UP" -> null
+                        else -> d.localDate("expiry")?.let { Expired(title, it, cost, level) }
+                    },
+                )
             }
-            StockHistory(ticked + added, lives, wasted)
-        }.catch { emit(StockHistory(emptyList(), emptyList(), emptyList())) }
+            StockHistory(ticked + added, lives, wasted, stock.filter { it.getString("status") !in GONE_STATUSES }.map(::toStock))
+        }.catch { emit(StockHistory(emptyList(), emptyList(), emptyList(), emptyList())) }
     }
 
     /** Every pack of pantry food and supplies, bought and finished, for how long things last. */
@@ -338,7 +348,7 @@ class PantryRepository @Inject constructor(
      * "It's finished" (or [thrown] away): out of the pantry (or the medicine cabinet), onto the shopping list.
      * Returns the shopping item it added, if any, so "don't buy again" can take it off.
      */
-    fun usedUp(householdId: String, uid: String, stock: PantryStock, openShopping: List<String>, from: String = "stock", thrown: Boolean = false): String? {
+    fun usedUp(householdId: String, uid: String, stock: PantryStock, openShopping: List<String>, from: String = "stock", thrown: Boolean = false, addToList: Boolean = true): String? {
         val batch = db.batch()
         batch.update(
             collection(householdId, from).document(stock.id),
@@ -347,10 +357,37 @@ class PantryRepository @Inject constructor(
             if (thrown) mapOf("status" to "WASTED", "wastedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp())
             else mapOf("status" to "USED_UP", "level" to 0, "usedUpAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()),
         )
-        val added = if (openShopping.none { sameIngredient(it, stock.title) }) collection(householdId, "shopping").document() else null
+        val added = if (addToList && openShopping.none { sameIngredient(it, stock.title) }) collection(householdId, "shopping").document() else null
         added?.let { batch.set(it, common(uid, "pantry") + mapOf("title" to stock.title, "done" to false)) }
         batch.commit()
         return added?.id
+    }
+
+    /**
+     * "Threw some away": [share] (% of the pack) goes to waste and comes off what's left. When
+     * nothing would be left, it's the whole thing thrown away. Returns true if all of it went.
+     */
+    suspend fun wastePart(householdId: String, uid: String, stock: PantryStock, openShopping: List<String>, share: Int, from: String = "stock"): Boolean {
+        val ref = collection(householdId, from).document(stock.id)
+        val level = ref.get().await().getLong("level")?.toInt()
+        val left = levelAfterWaste(level, share)
+        if (left <= 0) {
+            usedUp(householdId, uid, stock, openShopping, from, thrown = true)
+            return true
+        }
+        ref.update(
+            mapOf(
+                "level" to left,
+                "quantity" to stock.amount?.let { a -> stock.initialAmount?.takeIf { it > 0 }?.let { mapOf("amount" to it * left / 100.0, "unit" to stock.unit) } ?: mapOf("amount" to a, "unit" to stock.unit) },
+                "wasteLog" to FieldValue.arrayUnion(mapOf("share" to share, "at" to com.google.firebase.Timestamp.now())),
+            ),
+        ).await()
+        return false
+    }
+
+    /** "Won't take it today": no dose reminders that day, and what's left isn't counted down for it. */
+    fun skipDose(householdId: String, medicineId: String, day: LocalDate) {
+        collection(householdId, "medicines").document(medicineId).update("skipped", FieldValue.arrayUnion(day.toEpochDay()))
     }
 
     /** "Don't buy again" after finishing something: takes it back off the shopping list. */
@@ -398,6 +435,8 @@ class PantryRepository @Inject constructor(
                 ?: (doc.get("usedFor") as? List<*>)?.filterIsInstance<String>()?.firstOrNull(),
             keptAt = doc.getString("keptAt")?.takeIf { it.isNotBlank() },
             photos = (doc.get("photos") as? List<*>).orEmpty().filterIsInstance<String>(),
+            restock = doc.getString("restock"),
+            schedule = courseOf(doc)?.let { scheduleLine(it, LocalDate.now()) },
         )
     }
 

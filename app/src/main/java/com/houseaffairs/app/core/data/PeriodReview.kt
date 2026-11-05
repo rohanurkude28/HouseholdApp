@@ -50,6 +50,8 @@ data class PeriodReview(
     /** Moods picked, most often first: "🙂" to 12. */
     val moods: List<Pair<String, Int>>,
     val days: Int,
+    /** The month or year before, for "12% less than October". */
+    val previous: PeriodReview? = null,
 ) {
     val isEmpty: Boolean
         get() = (spentMinor ?: 0) == 0L && bought == 0 && finished.isEmpty() && tasksDone == 0 && goalsReached.isEmpty() &&
@@ -137,3 +139,40 @@ data class PlanYear(val year: Int, val months: List<PlanMonth>) {
 
 fun planYears(months: List<PlanMonth>): List<PlanYear> =
     months.groupBy { it.month.year }.map { (y, ms) -> PlanYear(y, ms.sortedByDescending { it.month }) }.sortedByDescending { it.year }
+
+/** Change from [before] to [now] in whole percent; null when there's nothing to compare with. */
+fun percentChange(now: Long, before: Long): Int? = if (before <= 0) null else Math.round((now - before) * 100.0 / before).toInt()
+
+/**
+ * The one line that sums up the period, against the one before ([before] names it: "October",
+ * "2025"): the biggest good news first, then what got done. Null when there's nothing to say.
+ */
+fun storyHeadline(p: PeriodReview, before: String): String? {
+    val prev = p.previous
+    val spend = prev?.spentMinor?.let { b -> p.spentMinor?.let { percentChange(it, b) } }
+    val moved = prev?.let { percentChange(p.activeMinutes.toLong(), it.activeMinutes.toLong()) }
+    val finished = p.finished.sumOf { it.titles.size }
+    val finishedBefore = prev?.finished?.sumOf { it.titles.size } ?: 0
+    return when {
+        spend != null && spend <= -10 -> "Spent ${-spend}% less than $before"
+        moved != null && moved >= 20 -> "Moved $moved% more than $before"
+        finished > 0 && finished > finishedBefore && prev != null -> "Finished $finished ${if (finished == 1) "thing" else "things"}, more than $before"
+        finished > 0 -> "Finished $finished ${if (finished == 1) "thing" else "things"}"
+        p.activeMinutes > 0 -> "Active on ${p.activeDays} ${if (p.activeDays == 1) "day" else "days"}"
+        // Spending more isn't a headline: the arrow under "Spent" already says it.
+        p.topSpends.isNotEmpty() -> "Most went on ${p.topSpends.first().first.lowercase()}"
+        else -> null
+    }
+}
+
+/**
+ * The stretch to compare with: the period before, cut to as many days as this one has had so
+ * far, so the 5th of November is compared with 1–5 October rather than all of it.
+ */
+fun comparedDays(from: LocalDate, to: LocalDate, today: LocalDate, year: Boolean): ClosedRange<LocalDate> {
+    val prevFrom = if (year) from.minusYears(1) else from.minusMonths(1)
+    val fullPrev = from.minusDays(1)
+    if (today.isAfter(to)) return prevFrom..fullPrev
+    val sofar = prevFrom.plusDays(java.time.temporal.ChronoUnit.DAYS.between(from, today))
+    return prevFrom..minOf(sofar, fullPrev)
+}

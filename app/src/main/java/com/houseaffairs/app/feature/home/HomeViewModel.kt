@@ -1,5 +1,7 @@
 package com.houseaffairs.app.feature.home
 
+import com.houseaffairs.app.core.data.needsRefill
+import com.houseaffairs.app.core.data.leftOn
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.houseaffairs.app.core.data.Area
@@ -332,7 +334,7 @@ class HomeViewModel @Inject constructor(
                 // An expiring item gets a dish suggestion right in the list.
                 val dish = v.ideas.firstOrNull { idea -> item.area == Area.KITCHEN && idea.rescues.any { it.equals(item.title, ignoreCase = true) } }
                 if (dish != null && item.detail.startsWith("Expires")) item.copy(detail = "${item.detail} · try ${dish.recipe.title}") else item
-            } + restockAlerts(v.kitchen, data.shopping.map { it.name }) + goalsRecapAlert(v.plans.goals),
+            } + restockAlerts(v.kitchen, data.shopping.map { it.name }) + refillAlerts(data.courses, data.shopping.map { it.name }) + goalsRecapAlert(v.plans.goals),
             filter = v.filter,
             layout = v.layout,
             budget = v.budget,
@@ -415,6 +417,20 @@ class HomeViewModel @Inject constructor(
                 "restock-${r.title}", Area.KITCHEN, if (r.due.isAfter(today)) Priority.SOON else Priority.TODAY,
                 "Restock ${r.title.lowercase()}", "${r.why} · due ${com.houseaffairs.app.feature.add.formatDate(r.due).lowercase()}",
                 r.due, restock = r.title,
+            )
+        }
+    }
+
+    /** "Crocin runs out around Sat": a medicine taken on a schedule, before it's gone, with "+ List". */
+    private fun refillAlerts(courses: List<com.houseaffairs.app.core.data.MedicineCourse>, onList: List<String>): List<Attention> {
+        val today = LocalDate.now()
+        return courses.filter { c -> onList.none { com.houseaffairs.app.core.data.sameIngredient(it, c.title) } }.mapNotNull { c ->
+            val out = c.needsRefill(today) ?: return@mapNotNull null
+            val left = c.leftOn(today)?.let { l -> if (l % 1.0 == 0.0) l.toLong().toString() else "%.1f".format(l) }
+            Attention(
+                "refill-${c.id}", Area.HEALTH, if (out.isAfter(today.plusDays(1))) Priority.SOON else Priority.TODAY,
+                "Refill ${c.title}", listOfNotNull(left?.let { "$it ${c.unit} left" }, "runs out ${com.houseaffairs.app.feature.add.formatDate(out).lowercase()}").joinToString(" · "),
+                out, collection = "medicines", restock = c.title,
             )
         }
     }

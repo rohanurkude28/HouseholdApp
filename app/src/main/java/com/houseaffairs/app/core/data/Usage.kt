@@ -78,7 +78,13 @@ data class Expired(val title: String, val date: LocalDate, val costMinor: Long? 
 enum class StockKind { FOOD, SUPPLIES, MEDICINES }
 
 /** Everything the month and year views need for one kind of stock. */
-data class StockHistory(val bought: List<KitchenBuy>, val lives: List<StockLife>, val wasted: List<Expired>)
+data class StockHistory(
+    val bought: List<KitchenBuy>,
+    val lives: List<StockLife>,
+    val wasted: List<Expired>,
+    /** What's in stock now, for "record waste" from the month view. */
+    val current: List<PantryStock> = emptyList(),
+)
 
 /** One month in the kitchen: what came home and of which kind, what ran out, what went off, what it cost. */
 data class KitchenMonth(
@@ -162,3 +168,17 @@ data class StockYear(val year: Int, val months: List<KitchenMonth>) {
 /** Months grouped by year, newest first. */
 fun stockYears(months: List<KitchenMonth>): List<StockYear> =
     months.groupBy { it.month.year }.map { (y, ms) -> StockYear(y, ms.sortedByDescending { it.month }) }.sortedByDescending { it.year }
+
+/**
+ * Part of a pack thrown away ("half the milk went off"): what's left after, as a % of the pack.
+ * Zero or less means the whole thing went. [share] is the share of the whole pack, 0..100.
+ */
+fun levelAfterWaste(level: Int?, share: Int): Int = (level ?: 100) - share.coerceIn(0, 100)
+
+/** "Milk · half", "Rice · a quarter": how a part thrown away reads in the waste list. */
+fun partLabel(title: String, share: Int): String = title + " · " + when (share) {
+    25 -> "a quarter"
+    50 -> "half"
+    75 -> "three quarters"
+    else -> "$share%"
+}

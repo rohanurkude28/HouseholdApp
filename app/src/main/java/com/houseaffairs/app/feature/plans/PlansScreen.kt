@@ -191,6 +191,8 @@ fun PlansScreen(
                             trips, { formatMinor(it, state.currency) }, { onAddTrip(null) },
                             onDone = { viewModel.markTripDone(it.trip)?.let(onSaved) },
                             onAddExpense = { onAddTripExpense(it.trip) },
+                            onStops = viewModel::setStops,
+                            places = state.places.map { it.title },
                         ) { onEdit(EntryType.TRIP, it) }
                     }
                     if (past.isNotEmpty()) {

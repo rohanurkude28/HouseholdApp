@@ -144,6 +144,12 @@ enum class EntryType(
             // Expiry and who it's for come first: an expired or wrong-person medicine is the risk.
             DateSpec("expiry", "Expires"),
             MembersSpec("forWhom", "For"),
+            // Taken on a schedule: doses ring at their times, and Home warns before it runs out.
+            ChoiceSpec("frequency", "How often", com.houseaffairs.app.core.data.DOSE_FREQUENCIES),
+            ChoiceSpec("doseTimes", "At", com.houseaffairs.app.core.data.TIME_CHOICES, multi = true, allowCustom = true, visibleWhen = { it.takesDoses() }),
+            ChoiceSpec("perDose", "Each dose", com.houseaffairs.app.core.data.DOSE_AMOUNTS, allowCustom = true, visibleWhen = { it.takesDoses() }),
+            DateSpec("until", "Until (course ends)", essential = false, visibleWhen = { it.takesDoses() }),
+            ChoiceSpec("remindDose", "Remind to take it", listOf("Yes", "No"), essential = false, visibleWhen = { it.takesDoses() }),
             // Tags match the assistant's "I'm feeling…" care list, so it can suggest what's at home.
             ChoiceSpec(
                 "usedFor", "Used for",
@@ -324,6 +330,8 @@ enum class EntryType(
             TextSpec("title", "Name", "Sunday outing, Goa trip…", required = true),
             DateSpec("start", "Starts", required = true),
             DateSpec("end", "Ends"),
+            // The plan for the day: "Cubbon Park, Lalbagh, MTR"; reorder and add days on the trip card.
+            TextSpec("places", "Places, in order", "Cubbon Park, Lalbagh, MTR…"),
             MoneySpec("budget", "Budget for it", required = false),
             // Trips sit on the vision board under the dream they make come true.
             ChoiceSpec("forDream", "Part of a dream", listOf("Not linked"), dynamicOptions = "dreams", hideWithoutDynamic = true),
@@ -436,3 +444,12 @@ enum class EntryType(
         }
     }
 }
+
+/**
+ * What [member] may add: everything their modules allow, plus an expense for anyone. Kids and
+ * teens log what they spend; the family's budget, totals and breakdown stay with Money.
+ */
+fun com.houseaffairs.app.core.model.Member.canAdd(type: EntryType): Boolean = type == EntryType.EXPENSE || canAccess(type.module)
+
+/** A schedule was picked, so the dose fields matter. */
+private fun FormValues.takesDoses(): Boolean = (this["frequency"] as? String)?.let { it != "As needed" } == true

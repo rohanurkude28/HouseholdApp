@@ -187,6 +187,17 @@ class EntryRepository @Inject constructor(
         if (type in setOf(EntryType.GROCERY, EntryType.MEDICINE, EntryType.HOUSEHOLD)) {
             (values["quantity"] as? QuantityValue)?.parsed?.let { changes["initialAmount"] = it }
         }
+        // A medicine counted again ("8 tablets left"): the count down starts from now.
+        if (type == EntryType.MEDICINE) {
+            val ref = db.collection("households").document(householdId).collection(type.collection).document(id)
+            val amount = (values["quantity"] as? QuantityValue)?.parsed?.toDouble()
+            ref.get().addOnSuccessListener { old ->
+                val before = ((old.get("quantity") as? Map<*, *>)?.get("amount") as? Number)?.toDouble()
+                if (amount != null && amount != before) changes["countedAt"] = FieldValue.serverTimestamp()
+                ref.update(changes)
+            }.addOnFailureListener { ref.update(changes) }
+            return
+        }
         // The address or link may have changed: find the place on the map again.
         if (type == EntryType.PLACE) {
             changes["lat"] = FieldValue.delete()

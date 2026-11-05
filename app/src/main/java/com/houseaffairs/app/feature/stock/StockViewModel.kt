@@ -184,16 +184,31 @@ class StockViewModel @Inject constructor(
 
     fun useOne(stock: PantryStock) = withIds { hid, uid -> pantryRepo.useOne(hid, uid, stock, state.value.shopping.map { it.title }) }
 
-    /** Finished: off the list it's on ([from] is "stock" or "medicines"), onto the shopping list, with a "don't buy again". */
-    fun usedUp(stock: PantryStock, from: String = "stock") = withIds { hid, uid ->
-        val added = pantryRepo.usedUp(hid, uid, stock, state.value.shopping.map { it.title }, from) ?: return@withIds
-        com.houseaffairs.app.core.ui.FollowUps.show(com.houseaffairs.app.core.data.finishedFollowUp(stock.title) { pantryRepo.removeFromShopping(hid, added) })
+    /**
+     * Used up (or [thrown] away): off its list. Something kept stocked ("Remind to restock") goes
+     * back on the buy list with a "don't buy again"; anything else asks first.
+     */
+    fun usedUp(stock: PantryStock, from: String = "stock", thrown: Boolean = false) = withIds { hid, uid ->
+        val onList = state.value.shopping.map { it.title }
+        val added = pantryRepo.usedUp(hid, uid, stock, onList, from, thrown, addToList = stock.keptStocked)
+        val followUp = when {
+            added != null -> com.houseaffairs.app.core.data.finishedFollowUp(stock.title) { pantryRepo.removeFromShopping(hid, added) }
+            stock.keptStocked -> null
+            else -> com.houseaffairs.app.core.data.buyAgainFollowUp(stock.title, thrown) { pantryRepo.addToShopping(hid, uid, stock.title) }
+        }
+        followUp?.let { com.houseaffairs.app.core.ui.FollowUps.show(it) }
     }
 
-    /** Threw it away: like Finished, but counted as waste in the month and year views. */
-    fun threwAway(stock: PantryStock, from: String = "stock") = withIds { hid, uid ->
-        val added = pantryRepo.usedUp(hid, uid, stock, state.value.shopping.map { it.title }, from, thrown = true)
-        com.houseaffairs.app.core.ui.FollowUps.show(com.houseaffairs.app.core.data.thrownFollowUp(stock.title) { added?.let { pantryRepo.removeFromShopping(hid, it) } })
+    /** "Skip today" on a medicine taken on a schedule: no reminders today, not counted down. */
+    fun skipToday(stock: PantryStock) = withIds { hid, _ -> pantryRepo.skipDose(hid, stock.id, java.time.LocalDate.now()) }
+
+    /** Threw it all away: like Used up, but counted as waste in the month and year views. */
+    fun threwAway(stock: PantryStock, from: String = "stock") = usedUp(stock, from, thrown = true)
+
+    /** Part of it thrown away (or all, at 100): counted as waste, the rest stays. */
+    fun wastePart(stock: PantryStock, share: Int, from: String = "stock") {
+        if (share >= 100) return threwAway(stock, from)
+        withIds { hid, uid -> viewModelScope.launch { runCatching { pantryRepo.wastePart(hid, uid, stock, state.value.shopping.map { it.title }, share, from) } } }
     }
 
     private fun withIds(block: (String, String) -> Unit) {

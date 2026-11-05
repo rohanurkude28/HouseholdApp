@@ -93,6 +93,7 @@ class HomeRepository @Inject constructor(
                     .sortedWith(compareBy<TaskItem, LocalDate?>(nullsLast()) { it.dueDate }.thenBy { listOf("High", "Medium", "Low").indexOf(it.priority) }),
                 pantry = stockDocs.filter { it.getString("status") !in GONE_STATUSES }.map(::stockItem),
                 medicines = medicineDocs.filter { it.getString("status") !in GONE_STATUSES }.map(::stockItem),
+                courses = medicineDocs.filter { it.getString("status") !in GONE_STATUSES }.mapNotNull(::courseOf),
                 renewals = recurringDocs.mapNotNull { doc ->
                     val next = doc.localDate("nextDate") ?: return@mapNotNull null
                     val amount = doc.getLong("amountMinor")?.let { minor -> doc.getString("currency")?.let { formatMinor(minor, it) } }
@@ -221,5 +222,31 @@ class HomeRepository @Inject constructor(
         createdBy = getString("createdBy").orEmpty(),
         // Just-saved items have no server time yet; use the local estimate so they show at the top.
         createdAtMillis = getTimestamp("createdAt", ServerTimestampBehavior.ESTIMATE)?.toDate()?.time,
+    )
+}
+
+/**
+ * A medicine with a schedule ("Twice a day"), or null when it's taken as needed. The count runs
+ * from when it was last counted (an edit to how much is left), else when it was bought.
+ */
+internal fun courseOf(doc: DocumentSnapshot): MedicineCourse? {
+    val frequency = doc.getString("frequency")
+    val times = doseTimes(frequency, (doc.get("doseTimes") as? List<*>).orEmpty().filterIsInstance<String>())
+    if (times.isEmpty()) return null
+    val quantity = doc.get("quantity") as? Map<*, *>
+    return MedicineCourse(
+        id = doc.id,
+        title = doc.getString("title").orEmpty(),
+        forWhom = (doc.get("forWhom") as? List<*>).orEmpty().filterIsInstance<String>(),
+        createdBy = doc.getString("createdBy"),
+        times = times,
+        perDose = doseAmount(doc.getString("perDose")),
+        unit = (quantity?.get("unit") as? String) ?: "tablets",
+        left = (quantity?.get("amount") as? Number)?.toDouble(),
+        since = doc.localDate("countedAt") ?: doc.localDate("boughtOn") ?: doc.localDate("createdAt"),
+        until = doc.localDate("until"),
+        remindDoses = doc.getString("remindDose") != "No",
+        restock = doc.getString("restock").let { it != null && it != "Off" },
+        skipped = (doc.get("skipped") as? List<*>).orEmpty().mapNotNull { (it as? Number)?.toLong() }.toSet(),
     )
 }

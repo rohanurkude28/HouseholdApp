@@ -93,5 +93,7 @@ data class HomeData(
     val renewals: List<Renewal> = emptyList(),
     val events: List<EventItem> = emptyList(),
     val recent: List<ActivityItem> = emptyList(),
+    /** Medicines taken on a schedule, for dose reminders and "runs out soon". */
+    val courses: List<MedicineCourse> = emptyList(),
 )
 

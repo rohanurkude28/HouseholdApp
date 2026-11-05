@@ -72,6 +72,8 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import java.time.LocalDate
@@ -93,14 +95,11 @@ class UsageViewModel @Inject constructor(session: SessionManager, private val pa
         Who(it.household.id, it.user.uid, it.me.canAccess(AppModule.MONEY), it.me.canAccess(AppModule.MEDICINE), RolePolicy.ownMedicinesOnly(it.me.role))
     }.distinctUntilChanged()
 
-    /** Grocery spending and the Groceries budget, for those who can see money; null otherwise. */
-    private val groceries = who.flatMapLatest { w ->
-        if (w.money) {
-            money.observeMoney(w.hid, w.uid).map { m -> m?.let { it.txns.filter { t -> t.category == "Groceries" } to it.budget.categories["Groceries"] } }
-        } else {
-            flowOf(null)
-        }
-    }
+    /** All spending and the budget, for those who can see money; null otherwise. */
+    private val moneyState = who.flatMapLatest { w -> if (w.money) money.observeMoney(w.hid, w.uid) else flowOf(null) }
+
+    /** The kind's spending and its budget line: groceries, health (medicines) or home (supplies). */
+    private fun spending(kind: StockKind) = moneyState.map { m -> m?.let { it.txns.filter { t -> t.category == kind.category() } to it.budget.categories[kind.category()] } }
 
     private fun history(kind: StockKind): Flow<StockHistory> = who.flatMapLatest { w ->
         if (kind == StockKind.MEDICINES && !w.medicine) flowOf(StockHistory(emptyList(), emptyList(), emptyList()))
@@ -112,8 +111,7 @@ class UsageViewModel @Inject constructor(session: SessionManager, private val pa
     }
 
     private fun months(kind: StockKind): StateFlow<List<KitchenMonth>> =
-        // Money is only for food: groceries have their own budget line.
-        (if (kind == StockKind.FOOD) combine(histories.getValue(kind), groceries) { h, g -> h to g } else histories.getValue(kind).map { it to null })
+        combine(histories.getValue(kind), spending(kind)) { h, g -> h to g }
             .map { (h, g) -> kitchenMonths(h.bought, h.lives, h.wasted, g?.first, LocalDate.now(), groceryBudgetMinor = g?.second, months = MONTHS) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -125,6 +123,18 @@ class UsageViewModel @Inject constructor(session: SessionManager, private val pa
     /** Bought, finished and wasted, for "how long things last". */
     fun historyOf(kind: StockKind): StateFlow<StockHistory> = histories.getValue(kind)
 
+    /** "Record waste" from the month view: part (or all) of something in stock went off. */
+    fun wastePart(kind: StockKind, stock: com.houseaffairs.app.core.data.PantryStock, share: Int) {
+        viewModelScope.launch {
+            val w = who.first()
+            val from = if (kind == StockKind.MEDICINES) "medicines" else "stock"
+            runCatching {
+                if (share >= 100) pantry.usedUp(w.hid, w.uid, stock, emptyList(), from, thrown = true)
+                else pantry.wastePart(w.hid, w.uid, stock, emptyList(), share, from)
+            }
+        }
+    }
+
     val currency: StateFlow<String> = ready.map { it.household.baseCurrency }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "INR")
 }
 
@@ -132,6 +142,13 @@ private fun StockKind.place() = when (this) {
     StockKind.FOOD -> "the kitchen"
     StockKind.SUPPLIES -> "supplies"
     StockKind.MEDICINES -> "medicines"
+}
+
+/** The spending category each kind's costs go into (see `EntryRepository`). */
+internal fun StockKind.category() = when (this) {
+    StockKind.FOOD -> "Groceries"
+    StockKind.MEDICINES -> "Health"
+    StockKind.SUPPLIES -> "Home"
 }
 
 private fun StockKind.accent(colors: com.houseaffairs.app.core.designsystem.HouseColors): Accent = if (this == StockKind.FOOD) colors.stock else colors.vault
@@ -174,10 +191,10 @@ fun StockMonthCard(kind: StockKind, onOpen: () -> Unit, modifier: Modifier = Mod
         if (spent != null) {
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(formatMinor(spent, currency), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-                Text("  on groceries", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(bottom = 3.dp))
+                Text("  on ${kind.category().lowercase()}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(bottom = 3.dp))
             }
             changeText(m)?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            m.budgetMinor?.let { BudgetBar(spent, it, currency, accent.color, Modifier.padding(top = 8.dp)) }
+            m.budgetMinor?.let { BudgetBar(spent, it, currency, accent.color, kind.category().lowercase(), Modifier.padding(top = 8.dp)) }
             Spacer(Modifier.height(10.dp))
         }
         val parts = listOfNotNull(
@@ -194,7 +211,7 @@ fun StockMonthCard(kind: StockKind, onOpen: () -> Unit, modifier: Modifier = Mod
 }
 
 @Composable
-private fun BudgetBar(spent: Long, budget: Long, currency: String, color: Color, modifier: Modifier = Modifier) {
+private fun BudgetBar(spent: Long, budget: Long, currency: String, color: Color, what: String, modifier: Modifier = Modifier) {
     val over = spent > budget
     Column(modifier) {
         LinearProgressIndicator(
@@ -205,7 +222,7 @@ private fun BudgetBar(spent: Long, budget: Long, currency: String, color: Color,
             drawStopIndicator = {},
         )
         Text(
-            if (over) "${formatMinor(spent - budget, currency)} over the ${formatMinor(budget, currency)} grocery budget"
+            if (over) "${formatMinor(spent - budget, currency)} over the ${formatMinor(budget, currency)} $what budget"
             else "${formatMinor(budget - spent, currency)} left of ${formatMinor(budget, currency)}",
             style = MaterialTheme.typography.labelMedium,
             color = if (over) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -231,6 +248,28 @@ fun StockYearSheet(kind: StockKind, onDismiss: () -> Unit, viewModel: UsageViewM
     var flipped by remember { mutableStateOf(setOf<java.time.YearMonth>()) }
     val accent = kind.accent(LocalHouseColors.current)
     val today = LocalDate.now()
+    // "Record waste": pick what went off, then how much of it.
+    var picking by remember { mutableStateOf(false) }
+    var wasting by remember { mutableStateOf<com.houseaffairs.app.core.data.PantryStock?>(null) }
+    if (picking) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { picking = false },
+            title = { Text("What went to waste?") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    if (history.current.isEmpty()) Text("Nothing in stock right now.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    history.current.sortedBy { it.title.lowercase() }.forEach { item ->
+                        androidx.compose.material3.TextButton(onClick = { picking = false; wasting = item }, modifier = Modifier.fillMaxWidth()) {
+                            Text(item.title, modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { picking = false }) { Text("Cancel") } },
+        )
+    }
+    wasting?.let { item -> WasteDialog(item.title, onPick = { viewModel.wastePart(kind, item, it); wasting = null }, onDismiss = { wasting = null }) }
     YearSheet(
         title = "${kind.place().replaceFirstChar { it.uppercase() }} by year",
         accent = accent,
@@ -248,7 +287,7 @@ fun StockYearSheet(kind: StockKind, onDismiss: () -> Unit, viewModel: UsageViewM
                     m.usedUp.sumOf { it.second }.takeIf { it > 0 }?.let { "$it used up" },
                     wasteText(m.wasted.size, m.wastedMinor, currency),
                 ).joinToString(" · ").ifEmpty { "Nothing logged" },
-            ) { MonthDetail(m, kind, currency, accent) }
+            ) { MonthDetail(m, kind, currency, accent, onRecordWaste = if (m.month == java.time.YearMonth.from(today)) ({ picking = true }) else null) }
         },
     ) {
         // How long packs last only makes sense for what gets finished and bought again.
@@ -279,7 +318,7 @@ fun StockYearSheet(kind: StockKind, onDismiss: () -> Unit, viewModel: UsageViewM
 private fun ColumnScope.YearSummary(y: StockYear, kind: StockKind, currency: String) {
     run {
         Text(if (y.year == LocalDate.now().year) "${y.year} so far" else "${y.year}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        y.spentMinor?.let { Text("${formatMinor(it, currency)} on groceries", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold) }
+        y.spentMinor?.let { Text("${formatMinor(it, currency)} on ${kind.category().lowercase()}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold) }
         Text(
             listOfNotNull(
                 "${things(y.bought)} bought",
@@ -299,14 +338,14 @@ private fun ColumnScope.YearSummary(y: StockYear, kind: StockKind, currency: Str
 }
 
 @Composable
-private fun MonthDetail(m: KitchenMonth, kind: StockKind, currency: String, accent: Accent, modifier: Modifier = Modifier) {
+private fun MonthDetail(m: KitchenMonth, kind: StockKind, currency: String, accent: Accent, modifier: Modifier = Modifier, onRecordWaste: (() -> Unit)? = null) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(14.dp)) {
         m.spentMinor?.let { spent ->
             Column {
-                Text("Groceries", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(kind.category(), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(formatMinor(spent, currency), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
                 changeText(m)?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                m.budgetMinor?.let { BudgetBar(spent, it, currency, accent.color, Modifier.padding(top = 8.dp)) }
+                m.budgetMinor?.let { BudgetBar(spent, it, currency, accent.color, kind.category().lowercase(), Modifier.padding(top = 8.dp)) }
             }
         }
 
@@ -344,6 +383,7 @@ private fun MonthDetail(m: KitchenMonth, kind: StockKind, currency: String, acce
             if (m.wasted.any { it.lostMinor == null }) {
                 Text("Add a cost when you add things to see what waste costs.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            onRecordWaste?.let { androidx.compose.material3.OutlinedButton(onClick = it, shape = CircleShape, modifier = Modifier.padding(top = 4.dp)) { Text("🗑️ Record waste") } }
         }
 
         if (m.usedUp.isNotEmpty()) {

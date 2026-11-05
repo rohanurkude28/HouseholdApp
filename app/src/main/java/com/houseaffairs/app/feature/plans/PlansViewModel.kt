@@ -189,6 +189,12 @@ class PlansViewModel @Inject constructor(
 
     val myUid: String get() = (session.state.value as? SessionState.Ready)?.user?.uid.orEmpty()
 
+    /** A trip's new plan: its stops by day, in order. */
+    fun setStops(trip: com.houseaffairs.app.core.data.Trip, stops: List<com.houseaffairs.app.core.data.Stop>) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        moneyRepo.setStops(r.household.id, trip.id, stops)
+    }
+
     fun nameOf(uid: String): String =
         if (uid == myUid) "You" else members.value.firstOrNull { it.uid == uid }?.displayName?.substringBefore(' ') ?: "Someone"
 

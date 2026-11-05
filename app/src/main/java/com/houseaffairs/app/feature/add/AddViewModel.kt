@@ -158,6 +158,8 @@ data class Answer(
     val groups: List<Pair<String, List<DishIdea>>> = emptyList(),
     /** Gemini's reason for a dish, by title, when smart suggestions are on. */
     val why: Map<String, String> = emptyMap(),
+    /** "Won't take crocin today": which medicine and day, for the "Skip" button. */
+    val skip: Pair<String, LocalDate>? = null,
     /** "Share my live location with Ravi": who, and their number once known on this phone. */
     val shareWith: String? = null,
     val sharePhone: String? = null,
@@ -405,7 +407,7 @@ class AddViewModel @Inject constructor(
             canAskAi = l.suggestion?.unsure == true && l.suggestion.source !in setOf(SuggestionSource.AI, SuggestionSource.LEARNED) && !l.asked && !l.thinking,
             members = m,
             myUid = r.user.uid,
-            allowedTypes = EntryType.entries.filter { r.me.canAccess(it.module) },
+            allowedTypes = EntryType.entries.filter { r.me.canAdd(it) },
             examples = EXAMPLES.filter { example ->
                 when (val d = parser.parse(example)) {
                     null -> false
@@ -418,7 +420,7 @@ class AddViewModel @Inject constructor(
                         QuickAddDraft.Question.SYMPTOM -> true
                         else -> r.me.canAccess(AppModule.MONEY)
                     }
-                    else -> r.me.canAccess(prefill(d).first.module)
+                    else -> r.me.canAdd(prefill(d).first)
                 }
             },
         )
@@ -467,6 +469,7 @@ class AddViewModel @Inject constructor(
             is QuickAddDraft.Fund -> cleared.copy(move = moveFor(draft.amount, "Gullak", draft.target))
             is QuickAddDraft.Growth -> cleared.copy(move = growthFor(draft.target, toMinorUnits(draft.amount, currency()), revalue = false))
             is QuickAddDraft.Revalue -> cleared.copy(move = growthFor(draft.target, toMinorUnits(draft.amount, currency()), revalue = true))
+            is QuickAddDraft.SkipDose -> cleared.copy(answer = skipAnswer(draft))
             is QuickAddDraft.Ask -> cleared.copy(answer = answerFor(draft)).also {
                 // The number for this person, if one was picked here before.
                 draft.subject?.takeIf { draft.question == QuickAddDraft.Question.SHARE_LOCATION }?.let { name ->
@@ -1116,7 +1119,7 @@ class AddViewModel @Inject constructor(
 
     private suspend fun lookUp(change: QuickAddDraft.Change, text: String): ChangeProposal {
         val r = ctx ?: return ChangeProposal(change, problem = "Sign in first.")
-        val types = typesFor(change).filter { r.me.canAccess(it.module) }
+        val types = typesFor(change).filter { r.me.canAdd(it) }
         val what = listOf(change.target.ifEmpty { "the latest" }, change.kind ?: "").joinToString(" ").trim()
         if (types.isEmpty()) return ChangeProposal(change, problem = "Your role can't change ${change.kind ?: "that"}s.")
         val matches = runCatching { entries.find(r.household.id, r.user.uid, types, change.target) }.getOrDefault(emptyList()).take(4)
@@ -1216,7 +1219,7 @@ class AddViewModel @Inject constructor(
     fun saveBatch(): SavedEntry? {
         val r = ctx ?: return null
         val forms = local.value.batch.orEmpty().map { newForm(it.type, it.values, "voice") }
-            .filter { it.missing.isEmpty() && r.me.canAccess(it.type.module) }
+            .filter { it.missing.isEmpty() && r.me.canAdd(it.type) }
         if (forms.isEmpty()) return null
         val refs = forms.map { entries.save(r.household.id, r.user.uid, it.type, it.values, Visibility.everyone, it.source) }
         viewModelScope.launch { settings.markQuickAddTried() }
@@ -1412,7 +1415,7 @@ class AddViewModel @Inject constructor(
 
     private fun persist(form: FormState): SavedEntry? {
         val r = ctx ?: return null
-        if (!r.me.canAccess(form.type.module)) return null
+        if (!r.me.canAdd(form.type)) return null
         val uid = r.user.uid
         val visibleTo = when (form.whoCanSee) {
             WhoCanSee.EVERYONE -> Visibility.everyone
@@ -1502,16 +1505,20 @@ class AddViewModel @Inject constructor(
 
     private fun summaryOf(type: EntryType, values: FormValues): String {
         val members = state.value.members
-        return type.fields
+        val main = type.fields
             .filter { it.essential && it.key != type.titleKey && it.visibleWhen(values) }
             .mapNotNull { it.display(values[it.key], members) }
-            .joinToString(" · ")
+        // A repeat that was said ("remind everyday") shows on the card too, though it's an extra field.
+        val repeat = (values["repeat"] as? String)?.takeIf { it != "Never" }?.let { "repeats ${it.lowercase()}" }
+        return (main + listOfNotNull(repeat)).joinToString(" · ")
     }
 
     /** Maps a parsed sentence onto a kind of entry and its form values. */
     private fun prefill(draft: QuickAddDraft): Pair<EntryType, FormValues> {
         val currency = ctx?.household?.baseCurrency ?: "USD"
         return when (draft) {
+            // Answered on the spot, never a form.
+            is QuickAddDraft.SkipDose -> EntryType.MEDICINE to emptyMap()
             is QuickAddDraft.Expense -> EntryType.EXPENSE to mapOf(
                 "amount" to MoneyValue(draft.amount.toPlainString(), draft.currency ?: currency),
                 // "Cook 5000" goes under the family's own Cook rather than the built-in Home.
@@ -1544,7 +1551,11 @@ class AddViewModel @Inject constructor(
                 // stays with me, named in the title.
                 val person = draft.forName?.let(::memberNamed)
                 val title = if (draft.forName != null && person == null) "${draft.forName}: ${draft.title.replaceFirstChar { it.lowercase() }}" else draft.title
-                EntryType.TASK to mapOf("title" to title, "due" to draft.due, "repeat" to draft.repeat, "priority" to (draft.priority ?: "Low"), "reach" to draft.reach, "time" to draft.time) +
+                EntryType.TASK to mapOf(
+                    "title" to title, "due" to draft.due, "repeat" to draft.repeat, "priority" to (draft.priority ?: "Low"), "reach" to draft.reach, "time" to draft.time,
+                    // "At 6 pm" rings at 6 on the day; the form says so.
+                    "remind" to if (draft.time != null) "On the day" else null,
+                ) +
                     (person?.let { mapOf("assignee" to it.uid) } ?: emptyMap())
             }
             is QuickAddDraft.Event -> EntryType.EVENT to mapOf(
@@ -1559,6 +1570,8 @@ class AddViewModel @Inject constructor(
                     "title" to draft.title,
                     "forWhom" to person?.let { listOf(it.uid) },
                     "expiry" to draft.expiry,
+                    "frequency" to draft.frequency,
+                    "until" to draft.until,
                     "dosage" to draft.forName?.takeIf { person == null }?.let { "For $it" },
                 )
             }
@@ -1588,7 +1601,7 @@ class AddViewModel @Inject constructor(
                 "minutes" to (draft.minutes ?: draft.steps?.let { it / 100 })?.toString(),
                 "steps" to draft.steps?.toString(),
             )
-            is QuickAddDraft.Trip -> EntryType.TRIP to mapOf("title" to draft.title, "start" to draft.start)
+            is QuickAddDraft.Trip -> EntryType.TRIP to mapOf("title" to draft.title, "start" to draft.start, "places" to draft.places)
             is QuickAddDraft.Kept -> EntryType.KEPT to mapOf("title" to draft.item, "location" to draft.location, "kind" to com.houseaffairs.app.core.data.keptKindOf(draft.item))
             is QuickAddDraft.Household -> EntryType.HOUSEHOLD to mapOf(
                 "title" to draft.title,
@@ -1600,6 +1613,22 @@ class AddViewModel @Inject constructor(
             is QuickAddDraft.Move, is QuickAddDraft.Fund, is QuickAddDraft.Ask, is QuickAddDraft.Change,
             is QuickAddDraft.Growth, is QuickAddDraft.Revalue -> EntryType.TASK to emptyMap()
         }
+    }
+
+    /** The medicine "won't take X today" means: an exact name first, then a close one. */
+    private fun skipAnswer(d: QuickAddDraft.SkipDose): Answer {
+        val med = cabinet.value.firstOrNull { it.title.equals(d.medicine, ignoreCase = true) }
+            ?: cabinet.value.firstOrNull { sameIngredient(it.title, d.medicine) || it.title.contains(d.medicine, ignoreCase = true) }
+            ?: return Answer("I can't find “${d.medicine}” in the medicines", listOf("Check its name in Things → Medicines."))
+        val day = if (d.day == LocalDate.now()) "today" else formatDate(d.day).lowercase()
+        return Answer("Skip ${med.title} $day?", listOf("No dose reminders $day, and the count of what's left won't go down."), skip = med.id to d.day)
+    }
+
+    /** Skips that day's doses; the card then says so. */
+    fun skipDose(id: String, day: LocalDate) {
+        val r = ctx ?: return
+        pantry.skipDose(r.household.id, id, day)
+        local.update { s -> s.copy(answer = s.answer?.copy(title = "Skipped ✓", lines = listOf("No reminders for it that day. Reminders pick up again after."), skip = null)) }
     }
 
     fun rememberNumber(name: String, number: String) {

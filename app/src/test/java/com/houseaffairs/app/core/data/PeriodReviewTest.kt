@@ -87,3 +87,35 @@ class PlanMonthsTest {
         assertEquals(FinishedGroup("📚", "Read", listOf("Dune", "Sapiens")), year.finished.first())
     }
 }
+
+class StoryHeadlineTest {
+    private fun d(m: Int, day: Int) = LocalDate.of(2026, m, day)
+    private fun review(spent: Long?, active: Int = 0, finished: Int = 0, previous: PeriodReview? = null) = PeriodReview(
+        d(11, 1), d(11, 30), spent, emptyList(), emptyList(), 0, null, 0, 0, 0,
+        if (finished > 0) listOf(FinishedGroup("📚", "Read", List(finished) { "Book $it" })) else emptyList(),
+        0, emptyList(), active, if (active > 0) 3 else 0, 0, 0, emptyList(), 30, previous,
+    )
+
+    @Test
+    fun `the best news leads`() {
+        assertEquals("Spent 20% less than October", storyHeadline(review(800_00, previous = review(1_000_00)), "October"))
+        assertEquals("Moved 50% more than October", storyHeadline(review(1_000_00, active = 90, previous = review(1_000_00, active = 60)), "October"))
+        assertEquals("Finished 3 things, more than October", storyHeadline(review(null, finished = 3, previous = review(null, finished = 1)), "October"))
+        assertEquals("Finished 2 things", storyHeadline(review(null, finished = 2), "October"))
+        assertEquals(null, storyHeadline(review(null), "October"))
+        // More spending isn't the headline.
+        assertEquals(null, storyHeadline(review(2_000_00, previous = review(1_000_00)), "October"))
+        assertEquals(-20, percentChange(80, 100))
+    }
+}
+
+class ComparedDaysTest {
+    @Test
+    fun `a month so far is compared with the same days before`() {
+        val nov1 = LocalDate.of(2026, 11, 1)
+        assertEquals(LocalDate.of(2026, 10, 1)..LocalDate.of(2026, 10, 5), comparedDays(nov1, LocalDate.of(2026, 11, 30), LocalDate.of(2026, 11, 5), year = false))
+        // A finished month is compared with all of the one before.
+        assertEquals(LocalDate.of(2026, 9, 1)..LocalDate.of(2026, 9, 30), comparedDays(LocalDate.of(2026, 10, 1), LocalDate.of(2026, 10, 31), LocalDate.of(2026, 11, 5), year = false))
+    }
+}
+

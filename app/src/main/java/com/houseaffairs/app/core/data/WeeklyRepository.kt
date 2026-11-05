@@ -209,7 +209,9 @@ class WeeklyRepository @Inject constructor(
      */
     suspend fun loadPeriod(householdId: String, me: Member, from: LocalDate, to: LocalDate, today: LocalDate = LocalDate.now()): PeriodReview {
         val uid = me.uid
-        fun inside(d: LocalDate?) = d != null && !d.isBefore(from) && !d.isAfter(to)
+        // Read from the period before too, so the story can compare.
+        val readFrom = if (from.dayOfYear == 1 && to == from.plusYears(1).minusDays(1)) from.minusYears(1) else from.minusMonths(1)
+        fun inside(d: LocalDate?) = d != null && !d.isBefore(readFrom) && !d.isAfter(to)
         fun DocumentSnapshot.involves(field: String): Boolean {
             val people = (get(field) as? List<*>)?.filterIsInstance<String>() ?: getString(field)?.let { listOf(it) }
             return if (people.isNullOrEmpty()) getString("createdBy") == uid else uid in people
@@ -233,7 +235,7 @@ class WeeklyRepository @Inject constructor(
         val kitchen = if (me.canAccess(AppModule.STOCK)) {
             val h = pantry.observeHistory(householdId, uid, StockKind.FOOD).first()
             // Enough months back to cover the whole period.
-            val months = ((today.year - from.year) * 12 + today.monthValue - from.monthValue + 1).coerceIn(1, 36)
+            val months = ((today.year - readFrom.year) * 12 + today.monthValue - readFrom.monthValue + 1).coerceIn(1, 36)
             kitchenMonths(h.bought, h.lives, h.wasted, spends?.filter { it.category == "Groceries" }, today, groceryBudget, months)
         } else {
             emptyList()
@@ -259,7 +261,12 @@ class WeeklyRepository @Inject constructor(
         // The diary is private: only my own lines.
         val diary = visible(householdId, "diary", uid).filter { it.getString("createdBy") == uid && !it.getString("note").isNullOrBlank() }
             .mapNotNull { d -> d.getString("date")?.let { runCatching { LocalDate.parse(it) }.getOrNull() }?.let { it to d.getString("mood") } }
-        return periodReview(from, to, today, PeriodInputs(spends, saved, kitchen, finished, tasks, goals, activities, meals, diary))
+        val inputs = PeriodInputs(spends, saved, kitchen, finished, tasks, goals, activities, meals, diary)
+        // The month or year before, the same length back, for "less than October".
+        val yearLong = from.dayOfYear == 1 && to == from.plusYears(1).minusDays(1)
+        val compared = comparedDays(from, to, today, yearLong)
+        val previous = periodReview(compared.start, compared.endInclusive, today, inputs)
+        return periodReview(from, to, today, inputs).copy(previous = previous)
     }
 
     /** Writes (or clears) the day's diary line and mood; private to the person. */

@@ -212,6 +212,11 @@ class MoneyRepository @Inject constructor(
                         budgetMinor = d.getLong("budgetMinor"),
                         dream = d.getString("forDream")?.takeIf { it != "Not linked" },
                         done = d.getBoolean("done") == true,
+                        // The planned stops; a new trip's "Places, in order" line is day one until it's edited.
+                        stops = (d.get("stops") as? List<*>)?.mapNotNull { raw ->
+                            val m = raw as? Map<*, *> ?: return@mapNotNull null
+                            Stop((m["day"] as? Number)?.toInt() ?: 1, m["title"] as? String ?: return@mapNotNull null, m["time"] as? String)
+                        } ?: stopsFrom(d.getString("places")),
                     )
                 }
             }
@@ -230,6 +235,16 @@ class MoneyRepository @Inject constructor(
                 ),
             )
         }
+    }
+
+    /** Saves the plan's stops (and drops the first "places" line, which they now replace). */
+    fun setStops(householdId: String, tripId: String, stops: List<Stop>) {
+        household(householdId).collection("trips").document(tripId).update(
+            mapOf(
+                "stops" to stops.map { mapOf("day" to it.day, "title" to it.title, "time" to it.time) },
+                "places" to com.google.firebase.firestore.FieldValue.delete(),
+            ),
+        )
     }
 
     fun reopenTrip(householdId: String, id: String) {
@@ -440,6 +455,26 @@ class MoneyRepository @Inject constructor(
 
     private fun visible(householdId: String, name: String, uid: String): Query =
         household(householdId).collection(name).whereArrayContainsAny("visibleTo", listOf(Visibility.EVERYONE, uid))
+
+    /**
+     * Only what [uid] spent, newest first: "My spends" for members without Money. Asked by
+     * creator, which the rules allow without seeing anyone else's spending.
+     */
+    fun observeMine(householdId: String, uid: String): Flow<List<Txn>> =
+        household(householdId).collection("transactions").whereEqualTo("createdBy", uid).observeSnapshots()
+            .map { snap ->
+                snap.documents.mapNotNull { doc ->
+                    Txn(
+                        id = doc.id,
+                        title = doc.getString("title") ?: doc.getString("merchant") ?: doc.getString("category") ?: "Expense",
+                        category = doc.getString("category") ?: "Other",
+                        amountMinor = doc.getLong("amountMinor") ?: return@mapNotNull null,
+                        date = doc.localDate("date") ?: return@mapNotNull null,
+                        planned = doc.getString("status") == "Planned",
+                    )
+                }.sortedByDescending { it.date }
+            }
+            .catch { emit(emptyList()) }
 
     private fun transactions(householdId: String, uid: String, since: LocalDate, currency: String): Flow<List<Txn>> =
         visible(householdId, "transactions", uid)

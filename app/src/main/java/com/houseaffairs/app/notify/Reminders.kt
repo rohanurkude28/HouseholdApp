@@ -29,6 +29,7 @@ import com.houseaffairs.app.core.data.SessionState
 import com.houseaffairs.app.core.data.plannedReminders
 import dagger.hilt.android.EntryPointAccessors
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.time.LocalDate
 import java.time.LocalTime
@@ -57,7 +58,12 @@ object Reminders {
     /** Plans this person's reminders from [data] and replaces whatever was set before. */
     fun sync(context: Context, data: HomeData, me: String) {
         val now = LocalTime.now()
-        val planned = plannedReminders(data.tasks, data.events, me, LocalDate.now(), now.hour * 60 + now.minute)
+        val minute = now.hour * 60 + now.minute
+        // Doses two days ahead: re-planned every few hours and on every change, so that's plenty.
+        val planned = (plannedReminders(data.tasks, data.events, me, LocalDate.now(), minute) +
+            com.houseaffairs.app.core.data.doseReminders(data.courses, me, LocalDate.now(), minute) +
+            com.houseaffairs.app.core.data.refillReminders(data.courses, me, LocalDate.now(), minute))
+            .sortedWith(compareBy({ it.date.toEpochDay() }, { it.minute }))
         schedule(context, planned)
     }
 
@@ -105,6 +111,17 @@ object Reminders {
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+        // A dose: "Taken" just clears it; "Skip today" stops today's reminders and the count down.
+        if (key.startsWith("dose:")) {
+            val parts = key.split(":")
+            fun action(what: String) = PendingIntent.getBroadcast(
+                context, (key + what).hashCode(),
+                Intent(context, DoseActionReceiver::class.java).setAction("dose:$what:$key")
+                    .putExtra("what", what).putExtra("medicine", parts.getOrNull(1)).putExtra("day", parts.getOrNull(2)?.toLongOrNull() ?: 0L).putExtra("notification", key.hashCode()),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            builder.addAction(0, "Taken ✓", action("taken")).addAction(0, "Skip today", action("skip"))
+        }
         // "Call mom": one tap from the notification to the dialer or WhatsApp.
         reachIntent(reach, phone)?.let { reachOut ->
             builder.addAction(0, reach, PendingIntent.getActivity(context, key.hashCode() + 1, reachOut.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_IMMUTABLE))
@@ -138,6 +155,29 @@ class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val key = intent.getStringExtra("key") ?: return
         Reminders.show(context, key, intent.getStringExtra("title").orEmpty(), intent.getStringExtra("body").orEmpty(), intent.getStringExtra("reach"), intent.getStringExtra("phone"))
+    }
+}
+
+/** "Taken ✓" or "Skip today" on a dose reminder. A skip is saved, then today's reminders are planned again without it. */
+class DoseActionReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        NotificationManagerCompat.from(context).cancel(intent.getIntExtra("notification", 0))
+        if (intent.getStringExtra("what") != "skip") return
+        val medicine = intent.getStringExtra("medicine") ?: return
+        val day = java.time.LocalDate.ofEpochDay(intent.getLongExtra("day", LocalDate.now().toEpochDay()))
+        val pending = goAsync()
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            try {
+                val deps = EntryPointAccessors.fromApplication(context.applicationContext, DigestEntryPoint::class.java)
+                val ready = withTimeoutOrNull(10_000) { deps.session().state.first { it is SessionState.Ready || it == SessionState.SignedOut } } as? SessionState.Ready
+                if (ready != null) {
+                    deps.pantry().skipDose(ready.household.id, medicine, day)
+                    Reminders.syncSoon(context)
+                }
+            } finally {
+                pending.finish()
+            }
+        }
     }
 }
 

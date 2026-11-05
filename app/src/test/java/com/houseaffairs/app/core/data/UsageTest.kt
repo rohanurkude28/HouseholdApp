@@ -113,3 +113,21 @@ class StockYearTest {
         assertEquals(30_00L, nov.wastedMinor)
     }
 }
+
+class PartWasteTest {
+    @Test
+    fun `throwing part away leaves the rest - all of it counts as the whole`() {
+        assertEquals(50, levelAfterWaste(100, 50))
+        assertEquals(15, levelAfterWaste(40, 25))
+        assertEquals(-10, levelAfterWaste(40, 50))
+        assertEquals("Milk · half", partLabel("Milk", 50))
+    }
+
+    @Test
+    fun `a part thrown away counts as waste the day it went`() {
+        val today = LocalDate.of(2026, 11, 5)
+        val nov = kitchenMonths(emptyList(), emptyList(), listOf(Expired("Milk · half", today, costMinor = 30_00, thrown = true)), null, today).first()
+        assertEquals(30_00L, nov.wastedMinor)
+    }
+}
+

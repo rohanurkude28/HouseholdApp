@@ -139,6 +139,8 @@ fun StockScreen(
     // A dish opened from an idea or a search: ingredients with ✓/✗.
     var viewing by remember { mutableStateOf<com.houseaffairs.app.core.data.DishIdea?>(null) }
     var showUsage by remember { mutableStateOf(false) }
+    var wasting by remember { mutableStateOf<com.houseaffairs.app.core.data.PantryStock?>(null) }
+    wasting?.let { item -> com.houseaffairs.app.core.ui.WasteDialog(item.title, onPick = { viewModel.wastePart(item, it); wasting = null }, onDismiss = { wasting = null }) }
     val query by viewModel.query.collectAsStateWithLifecycle()
     val groups: ListGroupsViewModel = hiltViewModel()
     val today = LocalDate.now()
@@ -203,7 +205,9 @@ fun StockScreen(
                 emptyTitle = "Your pantry is empty", emptyBody = "Add what you buy, or tick items off the shopping list and they land here.",
                 onToggle = { groups.toggle("pantry:$it") },
             ) { row ->
-                CompactRow(row.title, stockDetail(row.item, row.flag), row.flag, onClick = { onEdit(EntryType.GROCERY, row.item.id) }, actions = listOf("Finished" to { viewModel.usedUp(row.item) }, "Threw it away" to { viewModel.threwAway(row.item) }), leading = com.houseaffairs.app.feature.vault.photoLead(row.item.photos))
+                CompactRow(row.title, stockDetail(row.item, row.flag), row.flag, onClick = { onEdit(EntryType.GROCERY, row.item.id) }, actions = listOf("Used up" to { viewModel.usedUp(row.item) }, "Threw it away…" to { wasting = row.item }),
+                    // Gone off: binning it is the likely next step, so it's right there.
+                    quick = if (row.flag == com.houseaffairs.app.core.data.Flag.EXPIRED) "🗑️ Bin it" to { viewModel.threwAway(row.item) } else null, leading = com.houseaffairs.app.feature.vault.photoLead(row.item.photos))
             }
             StockTab.RECIPES -> {
                 // Find any dish, yours or the library's, and see what you have for it.

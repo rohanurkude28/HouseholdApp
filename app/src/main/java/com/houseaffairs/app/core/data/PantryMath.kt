@@ -20,7 +20,13 @@ data class PantryStock(
     val keptAt: String? = null,
     /** Photo ids (PhotoStore), newest last. */
     val photos: List<String> = emptyList(),
-)
+    /** "Remind to restock" as chosen; anything but Off means it's always kept, so it goes back on the list. */
+    val restock: String? = null,
+    /** For a medicine taken on a schedule: "2 a day · ~8 left · until 10 Nov". */
+    val schedule: String? = null,
+) {
+    val keptStocked: Boolean get() = restock != null && restock != "Off"
+}
 
 private enum class Dimension { MASS, VOLUME, COUNT }
 

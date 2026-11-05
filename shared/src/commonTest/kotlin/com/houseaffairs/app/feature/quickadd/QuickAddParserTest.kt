@@ -581,4 +581,53 @@ class QuickAddParserTest {
         assertEquals(QuickAddDraft.Question.SHARE_LOCATION, a.question)
         assertEquals("Ravi", a.subject)
     }
+
+    @Test
+    fun `a medicine with a schedule and a course`() {
+        val m = parser.parse("crocin twice a day for Riya for 5 days") as QuickAddDraft.Medicine
+        assertEquals("Twice a day", m.frequency)
+        assertEquals(localDate(2026, 11, 6), m.until)
+        assertEquals("Riya", m.forName)
+        assertEquals("Crocin", m.title)
+    }
+
+    @Test
+    fun `an outing with its places in order`() {
+        val t = parser.parse("Sunday outing to Cubbon Park, Lalbagh and MTR") as QuickAddDraft.Trip
+        assertEquals("Sunday outing", t.title)
+        assertEquals(localDate(2026, 11, 8), t.start)
+        assertEquals("Cubbon Park, Lalbagh and MTR", t.places)
+        // One place is still a plain trip ("trip to Goa").
+        assertEquals(null, (parser.parse("start trip to Goa") as QuickAddDraft.Trip).places)
+    }
+
+    @Test
+    fun `a time with a zone - and remind every day`() {
+        val t = parser.parse("Do this deployment around 6 PM IST") as QuickAddDraft.Task
+        assertEquals("Do this deployment", t.title)
+        assertEquals("6:00 pm", t.time)
+        assertEquals(localDate(2026, 11, 2), t.due)
+        val daily = parser.parse("Do this deployment around 6 PM IST and remind everyday") as QuickAddDraft.Task
+        assertEquals("Do this deployment", daily.title)
+        assertEquals("Daily", daily.repeat)
+        val water = parser.parse("remind everyday to drink water at 8 am") as QuickAddDraft.Task
+        assertEquals("Drink water", water.title)
+        assertEquals("Daily", water.repeat)
+        assertNull(water.forName)
+        // A reminder that mentions vitamins is still a reminder, not a medicine.
+        val vit = parser.parse("remind me every day at 9 pm to take vitamins") as QuickAddDraft.Task
+        assertEquals("Take vitamins", vit.title)
+        assertEquals("9:00 pm", vit.time)
+    }
+
+    @Test
+    fun `skipping a medicine for a day`() {
+        val s = parser.parse("won't take crocin today") as QuickAddDraft.SkipDose
+        assertEquals("Crocin", s.medicine)
+        assertEquals(localDate(2026, 11, 2), s.day)
+        assertEquals(localDate(2026, 11, 3), (parser.parse("skip my vitamins tomorrow") as QuickAddDraft.SkipDose).day)
+        // "Skip" alone with no day isn't enough.
+        assertTrue(parser.parse("skip rope") !is QuickAddDraft.SkipDose)
+    }
 }
+
