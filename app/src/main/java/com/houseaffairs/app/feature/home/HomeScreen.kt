@@ -39,6 +39,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.outlined.Cake
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -536,26 +537,20 @@ private data class Stat(val value: String, val label: String, val icon: ImageVec
 /** The day at a glance: budget left, the next birthday or anniversary, what's expiring. Tasks live in Today. */
 @Composable
 private fun StatsStrip(state: HomeUiState, onOpenTab: (String) -> Unit, onToggleHide: () -> Unit) {
-    val today = LocalDate.now()
-    val data = state.data
-    val stats = buildList {
-        if (state.canMoney) {
-            val b = state.budget
-            add(
-                when {
-                    b == null -> Stat("Set", "a budget", Icons.Outlined.AccountBalanceWallet, "money")
-                    state.hideAmounts -> Stat(HIDDEN_AMOUNT, "budget left", Icons.Outlined.AccountBalanceWallet, "money")
-                    b.leftMinor < 0 -> Stat(formatCompact(-b.leftMinor, b.currency), "over budget", Icons.Outlined.AccountBalanceWallet, "money")
-                    else -> Stat(formatCompact(b.leftMinor, b.currency), "budget left", Icons.Outlined.AccountBalanceWallet, "money")
-                },
-            )
+    val stats = heroPeek(
+        state.data, LocalDate.now(), state.canMoney, state.canStock, state.canMedicine,
+        budgetLeftMinor = state.budget?.leftMinor, hideAmounts = state.hideAmounts,
+    ) { formatCompact(it, state.budget?.currency ?: state.baseCurrency) }.map { p ->
+        val icon = when (p.kind) {
+            PeekKind.BUDGET -> Icons.Outlined.AccountBalanceWallet
+            PeekKind.SPENT -> Icons.Outlined.Receipt
+            PeekKind.TASKS -> Icons.Outlined.TaskAlt
+            PeekKind.EVENT -> Icons.Outlined.Cake
+            PeekKind.EXPIRING -> Icons.Outlined.Timer
+            PeekKind.SHOPPING -> Icons.Outlined.ShoppingCart
+            PeekKind.CALM -> Icons.Outlined.CheckCircle
         }
-        data.events.firstOrNull { !it.next.isAfter(today.plusDays(30)) }?.let { e ->
-            val days = java.time.temporal.ChronoUnit.DAYS.between(today, e.next)
-            add(Stat(if (days == 0L) "Today" else "${days}d", e.title, Icons.Outlined.Cake, "plans/EVENTS"))
-        }
-        val expiring = (data.pantry + data.medicines).count { s -> s.expiry?.let { !it.isAfter(today.plusDays(3)) } == true }
-        if ((state.canStock || state.canMedicine) && expiring > 0) add(Stat(expiring.toString(), "expiring soon", Icons.Outlined.Timer, "stock/PANTRY"))
+        Stat(p.value, p.label, icon, p.route)
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {

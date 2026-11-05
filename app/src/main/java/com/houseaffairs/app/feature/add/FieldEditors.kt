@@ -68,7 +68,7 @@ fun FieldEditor(
     dynamicOptions: Map<String, List<String>> = emptyMap(),
 ) {
     Column(Modifier.fillMaxWidth()) {
-        if (spec !is TextSpec && spec !is MoneySpec) {
+        if ((spec !is TextSpec || spec.isMacros) && spec !is MoneySpec) {
             Text(
                 spec.label,
                 style = MaterialTheme.typography.labelLarge,
@@ -77,7 +77,7 @@ fun FieldEditor(
             Spacer(Modifier.height(8.dp))
         }
         when (spec) {
-            is TextSpec -> TextEditor(spec, value as? String ?: "", onChange, showError)
+            is TextSpec -> if (spec.isMacros) MacrosEditor(value as? String, onChange) else TextEditor(spec, value as? String ?: "", onChange, showError)
             is MoneySpec -> MoneyEditor(spec, value as? MoneyValue ?: MoneyValue("", "USD"), onChange, showError)
             is ChoiceSpec -> {
                 val extra = spec.dynamicOptions?.let { dynamicOptions[it] }.orEmpty()
@@ -90,6 +90,7 @@ fun FieldEditor(
             is LevelSpec -> LevelEditor(spec, value as? Int ?: 0, onChange)
             is MembersSpec -> MembersEditor(spec, (value as? List<*>)?.filterIsInstance<String>().orEmpty(), onChange, members, accent)
             is IngredientsSpec -> IngredientsEditor((value as? List<*>)?.filterIsInstance<Ingredient>().orEmpty(), onChange)
+            is PhotosSpec -> com.houseaffairs.app.core.photo.PhotosEditor((value as? List<*>)?.filterIsInstance<String>().orEmpty(), onChange)
         }
         if (showError) {
             Text("Needed", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
@@ -105,7 +106,15 @@ private fun TextEditor(spec: TextSpec, value: String, onChange: (Any?) -> Unit, 
         label = { Text(spec.label) },
         placeholder = if (spec.placeholder.isNotEmpty()) ({ Text(spec.placeholder) }) else null,
         leadingIcon = if (spec.isLink) ({ Icon(Icons.Outlined.Link, contentDescription = null) }) else null,
-        trailingIcon = if (spec.isPhone) ({ ContactPickerButton(onChange) }) else null,
+        trailingIcon = when {
+            spec.isPhone -> ({ ContactPickerButton(onChange) })
+            // A saved link opens straight from the form too.
+            spec.isLink && (value.startsWith("http://") || value.startsWith("https://")) -> ({
+                val uri = androidx.compose.ui.platform.LocalUriHandler.current
+                IconButton(onClick = { runCatching { uri.openUri(value.trim()) } }) { Icon(Icons.Outlined.Link, contentDescription = "Open link") }
+            })
+            else -> null
+        },
         singleLine = !spec.multiline,
         minLines = if (spec.multiline) 2 else 1,
         isError = showError,
@@ -150,6 +159,32 @@ private fun MoneyEditor(spec: MoneySpec, value: MoneyValue, onChange: (Any?) -> 
 }
 
 private const val OTHER = "Other"
+
+/** Grams of protein, carbs, fat and fibre in one serving; empty boxes count as 0, all empty clears it. */
+@Composable
+private fun MacrosEditor(value: String?, onChange: (Any?) -> Unit) {
+    val parsed = com.houseaffairs.app.core.data.parseMacros(value)
+    val start = parsed?.let { listOf(it.protein, it.carbs, it.fat, it.fibre).map { g -> if (g % 1.0 == 0.0) g.toLong().toString() else g.toString() } } ?: List(4) { "" }
+    val boxes = remember { androidx.compose.runtime.mutableStateListOf(*start.toTypedArray()) }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf("Protein", "Carbs", "Fat", "Fibre").forEachIndexed { i, name ->
+            OutlinedTextField(
+                value = boxes[i],
+                onValueChange = { v ->
+                    boxes[i] = v.filter { it.isDigit() || it == '.' }.take(5)
+                    onChange(if (boxes.all { it.isBlank() }) null else boxes.joinToString(" · ") { "${it.ifBlank { "0" }}g" })
+                },
+                label = { Text(name, maxLines = 1) },
+                suffix = { Text("g") },
+                singleLine = true,
+                shape = MaterialTheme.shapes.medium,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+    Text("For one person's serving. Leave empty if you don't know.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
 
 @Composable
 private fun chipColors(accent: Accent) = FilterChipDefaults.filterChipColors(
@@ -320,16 +355,9 @@ private fun QuantityEditor(spec: QuantitySpec, value: QuantityValue, onChange: (
 
 @Composable
 private fun LevelEditor(spec: LevelSpec, value: Int, onChange: (Any?) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Slider(
-            value = value / 100f,
-            onValueChange = { onChange((it * 100).toInt()) },
-            steps = 3,
-            modifier = Modifier.weight(1f),
-        )
-        Spacer(Modifier.width(12.dp))
-        Text("$value${spec.suffix}", style = MaterialTheme.typography.labelLarge, modifier = Modifier.heightIn(min = 24.dp))
-    }
+    // "% left" is stock (Empty … Full); anything else is progress (Not started … Done).
+    val labels = if ("left" in spec.suffix) com.houseaffairs.app.core.ui.LEFT_STEPS else com.houseaffairs.app.core.ui.PROGRESS_STEPS
+    com.houseaffairs.app.core.ui.LevelPicker(value, labels, MaterialTheme.colorScheme.primary, onChange = { onChange(it) })
 }
 
 @OptIn(ExperimentalLayoutApi::class)

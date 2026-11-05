@@ -113,11 +113,13 @@ fun AddSheet(
     LaunchedEffect(request) {
         // Shared plain text lands in quick add, read like anything typed.
         (request.preset[QUICK_TEXT] as? String)?.let { viewModel.onTextChange(it) }
+        if (viewModel.restoreDraft(request)) return@LaunchedEffect
         val type = request.type ?: return@LaunchedEffect
         if (request.editId != null) viewModel.openEdit(type, request.editId) else viewModel.openForm(type, request.preset)
     }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
+    var opened by remember { androidx.compose.runtime.mutableStateOf(false) }
 
     val finish: (SavedEntry?) -> Unit = { saved ->
         if (saved != null) {
@@ -127,20 +129,34 @@ fun AddSheet(
     }
 
     ModalBottomSheet(
+        // Dragged down or tapped away: what was typed is kept for next time, not lost.
         onDismissRequest = {
-            viewModel.backToPicker()
+            viewModel.keepDraft()
             onDismiss()
         },
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
+        if (state.restored) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp).clip(MaterialTheme.shapes.medium).background(MaterialTheme.colorScheme.secondaryContainer).padding(start = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Picked up where you left off", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.weight(1f))
+                TextButton(onClick = viewModel::startOver) { Text("Start over") }
+            }
+        }
         AnimatedContent(
             targetState = state.form?.type,
             transitionSpec = { fadeIn() togetherWith fadeOut() },
             label = "add step",
         ) { formType ->
             val form = state.form
-            if (formType == null || form == null) {
+            // Opened for a kind ("Add a place"): show nothing for the moment before its form, not the + menu.
+            if (form != null) opened = true
+            if ((formType == null || form == null) && request.type != null && !opened) {
+                Spacer(Modifier.fillMaxWidth().height(320.dp))
+            } else if (formType == null || form == null) {
                 Picker(
                     state,
                     viewModel,
@@ -679,9 +695,25 @@ private fun CookCard(
             if (plan.toBuy.isNotEmpty()) {
                 Text("Adds to shopping: ${plan.toBuy.joinToString()}", style = MaterialTheme.typography.bodyMedium, color = accent.color)
             }
+            // Can't take out more than there is: name what's short instead.
+            if (!plan.enough) {
+                Text(
+                    listOfNotNull(
+                        plan.missing.takeIf { it.isNotEmpty() }?.let { "Missing: " + it.joinToString { i -> i.name.lowercase() } },
+                        plan.short.takeIf { it.isNotEmpty() }?.let { "Not enough " + it.joinToString().lowercase() },
+                    ).joinToString(" · "),
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error,
+                )
+            }
             Spacer(Modifier.height(12.dp))
-            Button(onClick = onCook, shape = CircleShape, modifier = Modifier.fillMaxWidth()) {
-                Text(if (cook.people == 0) "Update pantry" else "Update pantry for ${cook.people}")
+            Button(onClick = onCook, enabled = plan.enough, shape = CircleShape, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    when {
+                        !plan.enough -> "Not enough in the pantry"
+                        cook.people == 0 -> "Update pantry"
+                        else -> "Update pantry for ${cook.people}"
+                    },
+                )
             }
         }
     }
@@ -710,7 +742,7 @@ private fun EntryForm(form: FormState, state: AddUiState, viewModel: AddViewMode
     val accent = form.type.accent(LocalHouseColors.current)
     val startVoice = rememberVoiceInput(viewModel::fillByVoice, viewModel::onVoiceUnavailable)
     val visible = form.type.fields.filter { spec ->
-        spec.visibleWhen(form.values) &&
+        spec.key !in form.locked && spec.visibleWhen(form.values) &&
             !(spec is ChoiceSpec && spec.hideWithoutDynamic && state.dynamicOptions[spec.dynamicOptions].isNullOrEmpty())
     }
     val essential = visible.filter { it.essential }
@@ -730,7 +762,14 @@ private fun EntryForm(form: FormState, state: AddUiState, viewModel: AddViewMode
             IconBlob(form.type.icon, accent, size = 40.dp)
             Spacer(Modifier.width(12.dp))
             Text(
-                if (form.editId != null) "Edit ${form.type.label.lowercase()}" else form.type.formTitle,
+                when {
+                    form.editId != null -> "Edit ${form.type.label.lowercase()}"
+                    // "Add a gift idea", "Add to Books": the list it's going on.
+                    "template" in form.locked -> com.houseaffairs.app.feature.quickadd.ListTemplate.of(form.values["template"] as? String)?.let { t ->
+                        if (t == com.houseaffairs.app.feature.quickadd.ListTemplate.GIFTS) "Add a gift idea" else "Add to ${t.title}"
+                    } ?: form.type.formTitle
+                    else -> form.type.formTitle
+                },
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.weight(1f),
             )
@@ -739,6 +778,7 @@ private fun EntryForm(form: FormState, state: AddUiState, viewModel: AddViewMode
 
         essential.forEach { spec ->
             FieldEditor(spec, form.values[spec.key], { viewModel.update(spec.key, it) }, accent, state.members, spec.key in missingKeys, state.dynamicOptions)
+            if (spec is TextSpec && spec.isAddress) AddressHintsRow(spec.key, form.values[spec.key] as? String, viewModel)
         }
 
         TextButton(onClick = viewModel::toggleMore) {
@@ -751,6 +791,7 @@ private fun EntryForm(form: FormState, state: AddUiState, viewModel: AddViewMode
             Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
                 extra.forEach { spec ->
                     FieldEditor(spec, form.values[spec.key], { viewModel.update(spec.key, it) }, accent, state.members, spec.key in missingKeys, state.dynamicOptions)
+                    if (spec is TextSpec && spec.isAddress) AddressHintsRow(spec.key, form.values[spec.key] as? String, viewModel)
                 }
                 WhoCanSeeEditor(form, state, viewModel, accent)
             }
@@ -827,5 +868,29 @@ private fun WhoCanSeeEditor(form: FormState, state: AddUiState, viewModel: AddVi
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 6.dp),
         )
+    }
+}
+
+/** Full addresses for what's typed, and whether the map can find it, so "near me" works. */
+@Composable
+private fun AddressHintsRow(key: String, value: String?, viewModel: AddViewModel) {
+    val hints by viewModel.addresses.collectAsStateWithLifecycle()
+    val typed = value?.trim().orEmpty()
+    if (typed.length < 3 || hints.query.trim() != typed) return
+    val onMap = hints.lines.any { it.equals(typed, ignoreCase = true) }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        when {
+            !hints.checked -> Text("Looking it up on the map…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            onMap -> Text("📍 Found on the map", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            hints.lines.isEmpty() -> Text("Not found on the map, so “near me” may miss it. Add the city, or paste a Google Maps link below.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            else -> Text("Pick the right one:", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (!onMap) hints.lines.forEach { line ->
+            Text(
+                "📍 $line",
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).clickable { viewModel.pickAddress(key, line) }.padding(vertical = 8.dp, horizontal = 4.dp),
+            )
+        }
     }
 }

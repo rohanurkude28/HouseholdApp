@@ -40,7 +40,7 @@ fun yearOutlook(
     val paid = txns.filter { !it.planned }
     val months = mutableListOf<MonthSpend>()
     while (!cycle.start.isAfter(current.start)) {
-        months += MonthSpend(cycle.start.format(MONTH), paid.filter { it.date in cycle }.sumOf { it.amountMinor }, budget.limitMinor, cycle == current)
+        months += MonthSpend(cycle.start.format(MONTH), paid.filter { it.date in cycle }.sumOf { it.amountMinor }, budget.limitFor(cycle.start), cycle == current)
         cycle = cycleFor(cycle.endExclusive, budget.cycleStartDay)
     }
     val finished = months.filter { !it.current }
@@ -58,7 +58,7 @@ fun yearOutlook(
         // No finished month yet: this month's leftover at today's pace.
         val spent = months.lastOrNull()?.spentMinor ?: 0
         val day = current.dayOf(today).coerceAtLeast(1)
-        budget.limitMinor - spent * current.days / day
+        budget.limitFor(current.start) - spent * current.days / day
     }
     val horizon = today.plusYears(1)
     val upcoming = (

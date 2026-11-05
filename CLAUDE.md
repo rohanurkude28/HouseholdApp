@@ -57,7 +57,7 @@ firebase emulators:start --project demo-houseaffairs --only auth,firestore   # U
 - Repositories wrap Firestore and expose `Flow`s via `observeSnapshots()` (`FirestoreFlows.kt`).
 - Business rules are pure Kotlin functions in separate files, unit-tested with fixed dates: `BudgetMath`, `Envelopes`, `PantryMath`, `Attention`, `Digest`, `Trips`, `Cards`, `Geo`, `RightNow`, `LiveWell` and others. Put new money, kitchen or ranking logic in a pure function next to these and test it, rather than in a ViewModel or composable. Pass `today: LocalDate` in instead of calling `LocalDate.now()` inside the function.
 - Money is `Long` minor units plus a currency code (`core/util/Money.kt`).
-- Rollover and savings are never stored: `envelopes()` recomputes them from transactions and transfers since the budget's `startedOn`. Backdated expenses therefore correct past months automatically.
+- Rollover and savings are never stored: `envelopes()` recomputes them from transactions and transfers since the budget's `startedOn`. Backdated expenses therefore correct past months automatically. Each month uses its own amount (`Budget.limitFor`, from `limitHistory` on the budget doc), so a raise applies from this or next month unless the person chooses "to every month" to fix a mistake. Planned spends count in the month they're dated for.
 
 **Adding things: one parser, one form engine.**
 - `feature/quickadd/QuickAddParser` turns a typed or spoken line into a `QuickAddDraft`.
@@ -106,9 +106,11 @@ firebase emulators:start --project demo-houseaffairs --only auth,firestore   # U
   - `planSync()` is the pure two-way rule set: the app wins when both sides changed; deleting in Google only stops syncing that item.
   - `CalendarSyncer` applies the plan. `CalendarStore` keeps the agreed state per phone, and `CalendarWorker` runs every 6 hours.
   - It needs a real Firebase/Google Cloud project with the Calendar API enabled and the scope on the OAuth consent screen. It can't run against the emulator's demo project.
+- **Google Drive** (`core/drive`): `drive.file` scope only, so the app sees just what it made under "HouseAffairs". Backups go to HouseAffairs/Backups (`DriveRepository.backup`/`restore`; restore puts entries back, recreating deleted ones as the restorer since rules fix `createdBy`). Uploaded documents go to HouseAffairs/Documents/<type> and become `keptAt` entries with `docType`, `driveLink`, `driveFileId`. Pure parts in `core/data/DriveLayout.kt`. Needs the Drive API enabled in the Google Cloud project.
+- **Your data** (Settings): "Download my data" (`HouseholdRepository.exportEntries` → pure `exportJson`/`expensesCsv` in `Export.kt`, shared through the FileProvider's `export/` path). "Delete my account" (`HouseholdRepository.eraseMe`, then `AuthRepository.deleteAccount`): private entries always go, shared ones only if asked; an owner hands over to `successorOf` (first adult who joined); the last member deletes the whole home (owner-only `delete` rules on the household and `phrases`). `DATA_COLLECTIONS` must match `moduleOf()`.
 - **Family service keys:** OMDb and TMDB keys are set by the owner in Settings → Connections and stored on the household doc (`integrations`). `WatchRepository` uses them, falling back to `local.properties`.
 - **Follow-ups:** after "bought", "watched" or "finished", a quick-options sheet appears (`FollowUps.show(...)`, hosted in `MainScaffold`). The builders are pure functions in `core/data/FollowUps.kt`.
-- **Recipe fit:** `RecipeFit.missing` and `short` drive what's shown: "Missing: …" and "need more …", never "2 of 4". Ideas only list dishes you can cook, or ones that rescue expiring food.
+- **Recipe fit:** `RecipeFit.missing` and `short` drive what's shown: "Missing: …" and "need more …", never "2 of 4". Ideas only list dishes you can cook, or ones that rescue expiring food. Every suggestion (ideas, "what can I cook", cravings, macros) comes only from the family's saved recipes; `SAMPLE_RECIPES` exists just to seed the demo home. Cooking is blocked when `CookPlan.enough` is false.
 - **Demo mode:** "Try the demo" signs in anonymously, creates "Demo home" and seeds it (`DemoSeeder`). It needs Anonymous sign-in enabled in the Firebase project.
 - **Optional keys** in `local.properties`: `tmdb.apiKey` and `omdb.apiKey` (IMDb and Rotten Tomatoes).
 

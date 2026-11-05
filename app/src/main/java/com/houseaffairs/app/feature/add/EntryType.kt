@@ -118,6 +118,7 @@ enum class EntryType(
         "Grocery", "Add to pantry", Icons.Outlined.Kitchen, { it.stock }, AppModule.STOCK, "stock", "title",
         listOf(
             TextSpec("title", "Item", "Paneer, rice, olive oil…", required = true),
+            PhotosSpec(essential = false),
             QuantitySpec(units = listOf("pcs", "g", "kg", "ml", "L", "pack")),
             DateSpec("expiry", "Best before"),
             // Guessed from the name when left empty, so only needed to correct a guess.
@@ -138,6 +139,8 @@ enum class EntryType(
         "Medicine", "Add medicine", Icons.Outlined.LocalHospital, { it.vault }, AppModule.MEDICINE, "medicines", "title",
         listOf(
             TextSpec("title", "Medicine", "Crocin, cough syrup…", required = true),
+            // The strip or box, so the right one is easy to find.
+            PhotosSpec(),
             // Expiry and who it's for come first: an expired or wrong-person medicine is the risk.
             DateSpec("expiry", "Expires"),
             MembersSpec("forWhom", "For"),
@@ -235,6 +238,7 @@ enum class EntryType(
         "Recipe", "Save a recipe", Icons.Outlined.RestaurantMenu, { it.stock }, AppModule.STOCK, "recipes", "title",
         listOf(
             TextSpec("title", "Dish", "Paneer tikka…", required = true),
+            PhotosSpec(),
             IngredientsSpec(),
             // Quantities are written for this many people; cooking scales them to who's eating.
             ChoiceSpec("servings", "Quantities above are for (people)", listOf("1", "2", "4"), required = true),
@@ -242,7 +246,8 @@ enum class EntryType(
             TextSpec("link", "Reel or recipe link", isLink = true),
             ChoiceSpec("mealType", "Meal", listOf("Breakfast", "Lunch", "Dinner", "Snack", "Dessert"), essential = false),
             TextSpec("prepTime", "Prep time", "20 min", essential = false),
-            TextSpec("macros", "Protein · carbs · fat · fibre", "e.g. 25g · 30g · 12g · 4g", essential = false),
+            // Per serving, i.e. one person's plate; the live-well wheel adds up servings eaten.
+            TextSpec("macros", "Nutrition per serving (one person)", isMacros = true, essential = false),
             ChoiceSpec("rating", "How was it?", RATING, essential = false),
         ),
     ),
@@ -251,7 +256,8 @@ enum class EntryType(
         listOf(
             TextSpec("title", "Name", "Toit, Spar, Dr. Mehta's clinic…", required = true),
             ChoiceSpec("kind", "Kind", PLACE_KINDS, required = true),
-            TextSpec("area", "Area or address", "Indiranagar"),
+            // Picked from suggestions, it's a full address the map can find, so "near me" works.
+            TextSpec("area", "Area or address", "Indiranagar, Bengaluru", isAddress = true),
             ChoiceSpec("rating", "How is it?", listOf("❤️ Love it", "👍 Good", "👎 Not great", "Want to try"), essential = false),
             TextSpec("goodFor", "Things to try or buy there", "Butter chicken, fresh paneer…", multiline = true, essential = false),
             TextSpec("phone", "Phone", essential = false),
@@ -264,7 +270,11 @@ enum class EntryType(
         listOf(
             TextSpec("title", "What", "Gold necklace, spare car keys, passports…", required = true),
             TextSpec("location", "Where", "Bank locker, blue drawer in the bedroom…", required = true),
+            // A photo of the thing, or of where it is, says more than words.
+            PhotosSpec(),
             ChoiceSpec("kind", "Kind", KEPT_KINDS),
+            // Documents are grouped by this, the same folders as in Google Drive.
+            ChoiceSpec("docType", "Type of document", com.houseaffairs.app.core.data.DOC_TYPES, allowCustom = true, visibleWhen = { it["kind"] == "Documents" }),
             ChoiceSpec("room", "Room or place", listOf("Bedroom", "Wardrobe", "Locker", "Bank locker", "Kitchen", "Storeroom", "Car", "Office"), allowCustom = true, essential = false),
             MembersSpec("knows", "Who else should know", essential = false),
             TextSpec("note", "Note", essential = false),
@@ -274,6 +284,7 @@ enum class EntryType(
         "Supplies", "Add household supplies", Icons.Outlined.Handyman, { it.stock }, AppModule.STOCK, "stock", "title",
         listOf(
             TextSpec("title", "Item", "AAA batteries, sunscreen, detergent…", required = true),
+            PhotosSpec(essential = false),
             QuantitySpec(units = listOf("units", "pcs", "packs", "boxes", "rolls", "L", "kg")),
             ChoiceSpec("supplyType", "Type", SUPPLY_TYPES, allowCustom = true),
             DateSpec("expiry", "Expires"),

@@ -25,6 +25,7 @@ data class Recipe(
     val meal: String? = null,
     /** Per serving, as "protein · carbs · fat · fibre" in grams ("25g · 30g · 12g · 4g"); approximate for library dishes. */
     val macros: String? = null,
+    val photos: List<String> = emptyList(),
 )
 
 /** What ticking a shopping item off did: the pantry item it filled, and how to undo it. */
@@ -148,6 +149,7 @@ class PantryRepository @Inject constructor(
                     "quantity" to mapOf("amount" to d.after, "unit" to d.stock.unit),
                     "level" to d.level,
                     "status" to if (d.usedUp) "USED_UP" else "IN_STOCK",
+                    "usedUpAt" to if (d.usedUp) com.google.firebase.firestore.FieldValue.serverTimestamp() else com.google.firebase.firestore.FieldValue.delete(),
                 ),
             )
             restore += d.stock.id to mapOf(
@@ -270,6 +272,18 @@ class PantryRepository @Inject constructor(
             (bought + added) to memory
         }.catch { emit(emptyList<Purchase>() to emptyList()) }
 
+    /** Every pack of pantry food and supplies, bought and finished, for how long things last. */
+    fun observeLives(householdId: String, uid: String): Flow<List<StockLife>> =
+        visible(householdId, "stock", uid).observeSnapshots().map { snap ->
+            snap.documents.mapNotNull { d ->
+                val start = d.localDate("boughtOn") ?: d.localDate("createdAt") ?: return@mapNotNull null
+                val used = d.getString("status") == "USED_UP"
+                // Finished before the date was recorded: nothing to count.
+                val end = if (used) d.localDate("usedUpAt") ?: return@mapNotNull null else null
+                StockLife(d.getString("title").orEmpty(), start, end)
+            }
+        }.catch { emit(emptyList()) }
+
     /** Puts [title] on the shopping list; the returned undo takes it off again. */
     fun addToShopping(householdId: String, uid: String, title: String): () -> Unit {
         val ref = collection(householdId, "shopping").document()
@@ -283,7 +297,8 @@ class PantryRepository @Inject constructor(
      */
     fun usedUp(householdId: String, uid: String, stock: PantryStock, openShopping: List<String>, from: String = "stock"): String? {
         val batch = db.batch()
-        batch.update(collection(householdId, from).document(stock.id), mapOf("status" to "USED_UP", "level" to 0))
+        // When it ran out, so "how long did it last?" has an answer.
+        batch.update(collection(householdId, from).document(stock.id), mapOf("status" to "USED_UP", "level" to 0, "usedUpAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()))
         val added = if (openShopping.none { sameIngredient(it, stock.title) }) collection(householdId, "shopping").document() else null
         added?.let { batch.set(it, common(uid, "pantry") + mapOf("title" to stock.title, "done" to false)) }
         batch.commit()
@@ -334,6 +349,7 @@ class PantryRepository @Inject constructor(
             category = doc.getString("groceryType") ?: doc.getString("supplyType")
                 ?: (doc.get("usedFor") as? List<*>)?.filterIsInstance<String>()?.firstOrNull(),
             keptAt = doc.getString("keptAt")?.takeIf { it.isNotBlank() },
+            photos = (doc.get("photos") as? List<*>).orEmpty().filterIsInstance<String>(),
         )
     }
 
@@ -354,5 +370,6 @@ class PantryRepository @Inject constructor(
         link = doc.getString("link"),
         meal = doc.getString("mealType"),
         macros = doc.getString("macros")?.takeIf { it.isNotBlank() },
+        photos = (doc.get("photos") as? List<*>).orEmpty().filterIsInstance<String>(),
     )
 }

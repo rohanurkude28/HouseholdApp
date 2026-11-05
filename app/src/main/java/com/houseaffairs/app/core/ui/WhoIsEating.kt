@@ -32,6 +32,8 @@ fun WhoIsEating(
     onSelected: (List<String>) -> Unit,
     onGuests: (Int) -> Unit,
     showError: Boolean = false,
+    /** False once the pantry can't feed one more: + is greyed out. */
+    canAddMore: Boolean = true,
 ) {
     Column {
         Text(
@@ -62,7 +64,7 @@ fun WhoIsEating(
             Text("Guests", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
             IconButton(onClick = { if (guests > 0) onGuests(guests - 1) }) { Icon(Icons.Outlined.Remove, contentDescription = "Fewer guests") }
             Text("$guests", style = MaterialTheme.typography.titleMedium)
-            IconButton(onClick = { onGuests(guests + 1) }) { Icon(Icons.Outlined.Add, contentDescription = "More guests") }
+            IconButton(onClick = { onGuests(guests + 1) }, enabled = canAddMore) { Icon(Icons.Outlined.Add, contentDescription = "More guests") }
         }
         if (showError) Text("Pick who's eating so the right amounts come out of the pantry.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
     }

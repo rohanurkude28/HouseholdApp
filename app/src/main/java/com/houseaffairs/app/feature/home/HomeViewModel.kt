@@ -384,7 +384,7 @@ class HomeViewModel @Inject constructor(
         val r = session.state.value as? SessionState.Ready ?: return
         val task = state.value.data.tasks.firstOrNull { it.id == id } ?: return
         val undo = home.completeTask(r.household.id, r.user.uid, task)
-        onDone(com.houseaffairs.app.feature.add.SavedEntry(doneMessage(task, state.value.members)) { undo() })
+        onDone(com.houseaffairs.app.feature.add.SavedEntry(doneMessage(task, state.value.members), celebrate = true) { undo() })
     }
 
     /** "Time to buy rice": due from the family's buying rhythm, as Today items with "+ List". */
@@ -446,7 +446,7 @@ class HomeViewModel @Inject constructor(
     fun markBillPaid(key: String, onDone: (com.houseaffairs.app.feature.add.SavedEntry) -> Unit) {
         val r = session.state.value as? SessionState.Ready ?: return
         money.setBillPaid(r.household.id, key, true)
-        onDone(com.houseaffairs.app.feature.add.SavedEntry("${key.substringBefore('|')} card bill · paid") { money.setBillPaid(r.household.id, key, false) })
+        onDone(com.houseaffairs.app.feature.add.SavedEntry("${key.substringBefore('|')} card bill · paid", celebrate = true) { money.setBillPaid(r.household.id, key, false) })
     }
 
     /** Ticking an item off moves it into the pantry; Undo takes it back out. */
@@ -469,7 +469,7 @@ class HomeViewModel @Inject constructor(
         val undo = watchRepo.markWatched(r.household.id, id)
         // "Dune 2 · marked watched", so it's clear what the ✓ did.
         val what = item?.template?.markLabel?.replaceFirstChar { it.lowercase() }?.replace("mark ", "marked ") ?: "done"
-        onDone(com.houseaffairs.app.feature.add.SavedEntry("${item?.title ?: "Item"} · $what") { undo() })
+        onDone(com.houseaffairs.app.feature.add.SavedEntry("${item?.title ?: "Item"} · $what", celebrate = true) { undo() })
         com.houseaffairs.app.core.ui.FollowUps.show(com.houseaffairs.app.core.data.ratedFollowUp(item?.title ?: "it") { liked -> watchRepo.rate(r.household.id, id, liked) })
     }
 

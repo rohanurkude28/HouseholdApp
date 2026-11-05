@@ -87,7 +87,7 @@ class WeeklyRepository @Inject constructor(
             (d.getString("title") ?: "").lowercase() to (d.get("ingredients") as? List<*>).orEmpty().mapNotNull { raw ->
                 (raw as? Map<*, *>)?.let { Ingredient((it["name"] as? String).orEmpty(), (it["amount"] as? Number)?.toDouble(), (it["unit"] as? String) ?: "g") }
             }
-        } + RECIPE_LIBRARY.map { it.title.lowercase() to it.ingredients }).toMap()
+        }).toMap()
         val mealDocs = if (me.canAccess(AppModule.STOCK)) visible(householdId, "cookLog", uid).filter { inWeek(it.created()) && it.involves("eaters") } else emptyList()
         // Today's plate: one serving of each dish this person ate today.
         val savedRecipes = visible(householdId, "recipes", uid).map { d -> Recipe(d.id, d.getString("title").orEmpty(), emptyList(), 2, emptyList(), null, macros = d.getString("macros")) }

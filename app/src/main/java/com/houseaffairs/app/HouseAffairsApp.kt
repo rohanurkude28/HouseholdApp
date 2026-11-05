@@ -54,7 +54,18 @@ class HouseAffairsApp : Application() {
                     }
                 }
                 .debounce(1_500)
-                .collect { pair -> if (pair != null) Reminders.sync(this@HouseAffairsApp, pair.first, pair.second) else Reminders.schedule(this@HouseAffairsApp, emptyList()) }
+                .collect { pair ->
+                    if (pair != null) Reminders.sync(this@HouseAffairsApp, pair.first, pair.second) else Reminders.schedule(this@HouseAffairsApp, emptyList())
+                    // The home-screen widget follows the same changes.
+                    com.houseaffairs.app.widget.HomeWidget.refreshSoon(this@HouseAffairsApp)
+                }
+        }
+        // Daily automatic backup while it's chosen, on Wi-Fi only or any network.
+        scope.launch {
+            settings.backupPrefs.distinctUntilChanged { a, b -> a.mode == b.mode && a.wifiOnly == b.wifiOnly }.collect { b ->
+                if (b.mode == com.houseaffairs.app.core.data.BackupMode.AUTO) com.houseaffairs.app.core.drive.BackupWorker.schedule(this@HouseAffairsApp, b.wifiOnly)
+                else com.houseaffairs.app.core.drive.BackupWorker.cancel(this@HouseAffairsApp)
+            }
         }
         // Keep the daily digest scheduled at the chosen hour (or off).
         scope.launch {

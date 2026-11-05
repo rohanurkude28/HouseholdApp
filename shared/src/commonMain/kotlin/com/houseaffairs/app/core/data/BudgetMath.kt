@@ -21,7 +21,61 @@ data class Budget(
     val incomeMinor: Long = 0,
     /** The family's own categories ("Cook", "Maid", "Insurance"), with or without a limit. */
     val customCategories: List<String> = emptyList(),
+    /**
+     * Each change to the monthly amount and the month it applies from, so raising the budget
+     * today doesn't rewrite what past months had (and the gullak). Empty: [limitMinor] always.
+     */
+    val limitHistory: List<LimitChange> = emptyList(),
+    /** Set aside for dreams every month, straight from the budget ("₹10k a month for Bali"). */
+    val dreamAllocations: List<DreamAllocation> = emptyList(),
 )
+
+/** [monthlyMinor] goes to dream [dreamId] each budget month from the one starting [from]. */
+data class DreamAllocation(val dreamId: String, val monthlyMinor: Long, val from: LocalDate)
+
+/** What this budget month sets aside for dreams, by dream id. */
+fun Budget.allocatedFor(cycleStart: LocalDate): Map<String, Long> =
+    // The latest change wins, so an amount set to 0 stops it from then on.
+    dreamAllocations.filter { !it.from.isAfter(cycleStart) }.groupBy { it.dreamId }
+        .mapValues { (_, a) -> a.maxByOrNull { it.from.toEpochDay() }!!.monthlyMinor }
+        .filterValues { it > 0 }
+
+/**
+ * The allocations after setting this month's amounts ([amounts], by dream id): changes apply
+ * from the budget month starting [from], earlier months keep theirs.
+ */
+fun allocationsAfter(old: List<DreamAllocation>, amounts: Map<String, Long>, from: LocalDate): List<DreamAllocation> {
+    val budget = Budget(0, "", dreamAllocations = old)
+    val now = budget.allocatedFor(from)
+    val changed = (amounts.keys + now.keys).filter { (amounts[it] ?: 0) != (now[it] ?: 0) }
+    return old.filterNot { it.dreamId in changed && !it.from.isBefore(from) } + changed.map { DreamAllocation(it, amounts[it] ?: 0, from) }
+}
+
+/** The monthly amount from the budget month starting [from] until the next change. */
+data class LimitChange(val from: LocalDate, val limitMinor: Long)
+
+/** The monthly amount for the budget month starting [cycleStart]. */
+fun Budget.limitFor(cycleStart: LocalDate): Long =
+    limitHistory.filter { !it.from.isAfter(cycleStart) }.maxByOrNull { it.from.toEpochDay() }?.limitMinor
+        // Months before the first recorded change had that first amount.
+        ?: limitHistory.minByOrNull { it.from.toEpochDay() }?.limitMinor
+        ?: limitMinor
+
+/** When a new monthly amount applies: this budget month on, next month on, or every month (a correction). */
+enum class LimitFrom { THIS_MONTH, NEXT_MONTH, ALWAYS }
+
+/**
+ * The history after setting the monthly amount to [newLimit]. Months before the change keep what
+ * they had; a budget without history gets its old amount recorded from [startedOn] first.
+ */
+fun limitHistoryAfter(old: Budget?, newLimit: Long, from: LimitFrom, startedOn: LocalDate?, today: LocalDate, cycleStartDay: Int): List<LimitChange> {
+    if (old == null || from == LimitFrom.ALWAYS) return emptyList()
+    val current = cycleFor(today, cycleStartDay)
+    val effective = if (from == LimitFrom.NEXT_MONTH) current.endExclusive else current.start
+    val base = old.limitHistory.ifEmpty { listOf(LimitChange(startedOn ?: effective, old.limitMinor)) }
+    if (base.maxByOrNull { it.from.toEpochDay() }?.limitMinor == newLimit && base.none { !it.from.isBefore(effective) }) return base
+    return (base.filter { it.from.isBefore(effective) } + LimitChange(effective, newLimit)).sortedBy { it.from.toEpochDay() }
+}
 
 /** Every category to pick from: the fixed ones, then the family's own, with "Other" last. */
 fun expenseCategories(budget: Budget?): List<String> {
@@ -31,6 +85,19 @@ fun expenseCategories(budget: Budget?): List<String> {
         .filter { c -> c.isNotEmpty() && !c.equals("Other", ignoreCase = true) && fixed.none { it.equals(c, ignoreCase = true) } }
         .distinctBy { it.lowercase() }
     return fixed + own + "Other"
+}
+
+/**
+ * The budget with category [from] renamed to [to] (or folded into it when [to] exists already:
+ * limits add up). With [to] null the category is gone, its limit too.
+ */
+fun budgetWithCategory(budget: Budget, from: String, to: String?): Budget {
+    val limit = budget.categories[from]
+    val categories = budget.categories - from + (if (to != null && limit != null) mapOf(to to (budget.categories[to] ?: 0) + limit) else emptyMap())
+    val fixed = com.houseaffairs.app.feature.quickadd.EXPENSE_CATEGORIES
+    val custom = budget.customCategories.filterNot { it.equals(from, ignoreCase = true) } +
+        listOfNotNull(to?.takeIf { t -> fixed.none { it.equals(t, ignoreCase = true) } && budget.customCategories.none { it.equals(t, ignoreCase = true) && !it.equals(from, ignoreCase = true) } })
+    return budget.copy(categories = categories, customCategories = custom.distinctBy { it.lowercase() })
 }
 
 /** True when [name] isn't one of the fixed categories, so saving it makes it the family's own. */
@@ -108,6 +175,8 @@ data class BudgetSummary(
     val plannedMinor: Long,
     /** Subscriptions and bills still due this cycle. */
     val committedMinor: Long,
+    /** Set aside for dreams this month; not for spending. */
+    val allocatedMinor: Long = 0,
     val day: Int,
     val pace: Pace,
     /** How much spending "should" have happened by today to finish on target. */
@@ -118,7 +187,7 @@ data class BudgetSummary(
     val paid: List<Txn>,
 ) {
     /** Budget not yet spent, planned or committed. */
-    val leftMinor: Long get() = limitMinor - spentMinor - plannedMinor - committedMinor
+    val leftMinor: Long get() = limitMinor - spentMinor - plannedMinor - committedMinor - allocatedMinor
     /** What can still be spent while keeping the savings goal. */
     val safeToSpendMinor: Long get() = leftMinor - savingsGoalMinor
     val daysLeft: Int get() = cycle.days - day + 1
@@ -152,7 +221,8 @@ fun summarize(budget: Budget, txns: List<Txn>, due: List<DuePayment>, today: Loc
     val day = cycle.dayOf(today)
     val stillDue = due.filter { !it.date.isBefore(today) && it.date.isBefore(cycle.endExclusive) }
 
-    val spendCap = (budget.limitMinor - budget.savingsGoalMinor).coerceAtLeast(0)
+    val limit = budget.limitFor(cycle.start)
+    val spendCap = (limit - budget.savingsGoalMinor).coerceAtLeast(0)
     val spent = paid.sumOf { it.amountMinor }
     val fixedSpent = paid.filter { it.category in FIXED_CATEGORIES }.sumOf { it.amountMinor }
     // What fixed costs take this month: their limits if set, otherwise what's been paid.
@@ -160,24 +230,25 @@ fun summarize(budget: Budget, txns: List<Txn>, due: List<DuePayment>, today: Loc
     val names = (budget.categories.keys + inCycle.map { it.category }).distinct()
     val categories = names.map { name ->
         val catSpent = paid.filter { it.category == name }.sumOf { it.amountMinor }
-        val limit = budget.categories[name]
+        val catLimit = budget.categories[name]
         CategoryStatus(
             name = name,
-            limitMinor = limit,
+            limitMinor = catLimit,
             spentMinor = catSpent,
             plannedMinor = planned.filter { it.category == name }.sumOf { it.amountMinor },
-            pace = if (name in FIXED_CATEGORIES) Pace.ON_TRACK else limit?.let { paceOf(catSpent, it, day, cycle.days) } ?: Pace.ON_TRACK,
+            pace = if (name in FIXED_CATEGORIES) Pace.ON_TRACK else catLimit?.let { paceOf(catSpent, it, day, cycle.days) } ?: Pace.ON_TRACK,
         )
     }.sortedWith(compareByDescending<CategoryStatus> { it.over }.thenByDescending { it.spentMinor.toDouble() / (it.limitMinor ?: Long.MAX_VALUE) }.thenByDescending { it.spentMinor })
 
     return BudgetSummary(
         cycle = cycle,
         currency = budget.currency,
-        limitMinor = budget.limitMinor,
+        limitMinor = limit,
         savingsGoalMinor = budget.savingsGoalMinor,
         spentMinor = spent,
         plannedMinor = planned.sumOf { it.amountMinor },
         committedMinor = stillDue.sumOf { it.amountMinor },
+        allocatedMinor = budget.allocatedFor(cycle.start).values.sum(),
         day = day,
         // Pace only the day-to-day part: fixed costs count in full from day one.
         pace = paceOf(spent - fixedSpent, (spendCap - fixedShare).coerceAtLeast(0), day, cycle.days),

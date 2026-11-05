@@ -138,6 +138,14 @@ fun VaultScreen(
     val tabs by viewModel.tabs.collectAsStateWithLifecycle()
     val picked by viewModel.tab.collectAsStateWithLifecycle()
     val stockState by stock.state.collectAsStateWithLifecycle()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // Documents: pick a file, then name it and choose its Drive folder.
+    val drive: com.houseaffairs.app.core.drive.DriveViewModel = hiltViewModel()
+    var pickedFile by remember { mutableStateOf<android.net.Uri?>(null) }
+    val pickFile = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { pickedFile = it }
+    var showUsage by remember { mutableStateOf(false) }
+    if (showUsage) com.houseaffairs.app.core.ui.UsageSheet(onDismiss = { showUsage = false })
+    pickedFile?.let { uri -> com.houseaffairs.app.core.drive.UploadDocumentSheet(uri, drive) { pickedFile = null; drive.clearMessage() } }
     LaunchedEffect(requestedTab) {
         ThingsTab.entries.firstOrNull { it.name == requestedTab }?.let { viewModel.tab.value = it; onTabShown() }
     }
@@ -173,8 +181,10 @@ fun VaultScreen(
     val docControls = rememberListControls()
     val docs = rememberOrganized(
         "documents",
-        remember(kept) { kept.filter { keptCategory(it) == "Documents" }.map { ListRow(it, it.id, it.title, "Documents", searchText = it.location) } },
+        // Grouped by Drive folder (IDs, Insurance…); papers noted without a file sit under "Kept at home".
+        remember(kept) { kept.filter { keptCategory(it) == "Documents" }.map { ListRow(it, it.id, it.title, it.docType ?: "Kept at home", searchText = listOfNotNull(it.location, it.note, it.docType).joinToString(" ")) } },
         docControls,
+        order = com.houseaffairs.app.core.data.DOC_TYPES,
         groups = groups,
         search = { q -> findKept(kept, q).map { it.id }.toSet() },
     )
@@ -203,6 +213,9 @@ fun VaultScreen(
                 }
             }
         }
+        if (tab == ThingsTab.SUPPLIES) item {
+                androidx.compose.material3.TextButton(onClick = { showUsage = true }, modifier = Modifier.padding(start = 8.dp)) { Text("📊 How long things last") }
+            }
         when (tab) {
             null -> Unit
             ThingsTab.MEDICINES -> itemList(
@@ -211,7 +224,7 @@ fun VaultScreen(
                 emptyTitle = "No medicines", emptyBody = "Track what's in the cabinet, who it's for, and when it expires.",
                 onToggle = { groups.toggle("medicines:$it") },
             ) { row ->
-                CompactRow(row.title, stockDetail(row.item, row.flag), row.flag, onClick = { onEdit(EntryType.MEDICINE, row.item.id) }, actions = listOf("Finished" to { stock.usedUp(row.item, from = "medicines") }))
+                CompactRow(row.title, stockDetail(row.item, row.flag), row.flag, onClick = { onEdit(EntryType.MEDICINE, row.item.id) }, actions = listOf("Finished" to { stock.usedUp(row.item, from = "medicines") }), leading = photoLead(row.item.photos))
             }
             ThingsTab.SUPPLIES -> itemList(
                 "supplies", supplies, supControls, vault,
@@ -223,6 +236,7 @@ fun VaultScreen(
                     row.title, stockDetail(row.item, row.flag), row.flag,
                     onClick = { onEdit(EntryType.HOUSEHOLD, row.item.id) },
                     actions = listOf("Used 1" to { stock.useOne(row.item) }, "Finished" to { stock.usedUp(row.item) }),
+                    leading = photoLead(row.item.photos),
                 )
             }
             ThingsTab.KEPT -> itemList(
@@ -234,19 +248,33 @@ fun VaultScreen(
                 label = ::keptKindLabel,
                 footer = "Only adults in your home see this.",
             ) { row ->
-                CompactRow(row.title, "📍 ${row.item.location}", null, onClick = { onEdit(EntryType.KEPT, row.item.id) })
+                CompactRow(row.title, "📍 ${row.item.location}", null, onClick = { onEdit(EntryType.KEPT, row.item.id) }, leading = photoLead(row.item.photos))
             }
             // Where each paper document is kept, until scans can be filed into Google Drive.
             ThingsTab.DOCUMENTS -> itemList(
                 "documents", docs, docControls, vault,
-                addLabel = "Remember where a document is kept", onAdd = onAddDocument, searchHint = "Find a document…",
-                emptyTitle = "No documents yet", emptyBody = "Say “passports are in the blue file in the wardrobe”, then ask “where are the passports?”.",
+                addLabel = "Upload a document to Google Drive", onAdd = { pickFile.launch(arrayOf("*/*")) }, searchHint = "Find a document…",
+                emptyTitle = "No documents yet", emptyBody = "Upload passports, policies and bills into Drive › HouseAffairs, or note where a paper is kept: “passports are in the blue file”.",
                 onToggle = { groups.toggle("documents:$it") },
                 flags = false,
-                footer = "Only adults in your home see this. Coming soon: scan bills, warranties and prescriptions into your Google Drive.",
+                footer = "Files go to Google Drive › HouseAffairs › Documents, one folder per type. Tap one to open it.",
             ) { row ->
-                CompactRow(row.title, "📍 ${row.item.location}", null, onClick = { onEdit(EntryType.KEPT, row.item.id) })
+                val link = row.item.link
+                CompactRow(
+                    row.title, if (link != null) "📄 Drive · ${row.item.docType ?: "Documents"}" else "📍 ${row.item.location}", null,
+                    // A Drive file opens in Drive; a paper note opens its form.
+                    onClick = { if (link != null) context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(link))) else onEdit(EntryType.KEPT, row.item.id) },
+                    actions = listOfNotNull(
+                        link?.let { l -> "Share link" to { context.startActivity(android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain").putExtra(android.content.Intent.EXTRA_TEXT, "${row.title}: $l"), null)) } },
+                        "Edit" to { onEdit(EntryType.KEPT, row.item.id) },
+                        "Note a paper copy" to onAddDocument,
+                    ),
+                )
             }
         }
     }
 }
+
+/** A small photo at the start of a row when the item has one; tapping it opens it full screen. */
+internal fun photoLead(ids: List<String>): (@Composable () -> Unit)? =
+    if (ids.isEmpty()) null else ({ com.houseaffairs.app.core.photo.RowPhotos(ids) })

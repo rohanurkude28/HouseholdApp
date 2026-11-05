@@ -167,7 +167,7 @@ class PlansViewModel @Inject constructor(
         val r = session.state.value as? SessionState.Ready ?: return null
         val undo = watchRepo.markWatched(r.household.id, id)
         com.houseaffairs.app.core.ui.FollowUps.show(com.houseaffairs.app.core.data.ratedFollowUp(title) { liked -> watchRepo.rate(r.household.id, id, liked) })
-        return SavedEntry("$title · done") { undo() }
+        return SavedEntry("$title · done", celebrate = true) { undo() }
     }
 
     fun setGoalProgress(id: String, progress: Int) {
@@ -216,7 +216,7 @@ class PlansViewModel @Inject constructor(
     fun markTripDone(trip: com.houseaffairs.app.core.data.Trip): SavedEntry? {
         val r = session.state.value as? SessionState.Ready ?: return null
         val undo = moneyRepo.setTripDone(r.household.id, trip)
-        return SavedEntry("${trip.title} · done") { undo() }
+        return SavedEntry("${trip.title} · done", celebrate = true) { undo() }
     }
 
     fun setAchieved(dream: Dream, achieved: Boolean) {
@@ -235,6 +235,6 @@ class PlansViewModel @Inject constructor(
     fun completeTask(task: TaskItem): SavedEntry? {
         val r = session.state.value as? SessionState.Ready ?: return null
         val undo = home.completeTask(r.household.id, r.user.uid, task)
-        return SavedEntry(com.houseaffairs.app.feature.home.doneMessage(task, members.value)) { undo() }
+        return SavedEntry(com.houseaffairs.app.feature.home.doneMessage(task, members.value), celebrate = true) { undo() }
     }
 }

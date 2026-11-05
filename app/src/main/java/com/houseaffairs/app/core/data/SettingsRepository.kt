@@ -14,6 +14,9 @@ import javax.inject.Singleton
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
+/** Off; a once-a-day "back up today?" when you open the app; or automatically every day. */
+enum class BackupMode { OFF, REMIND, AUTO }
+
 /** Per-device preferences. Household-wide settings (currency, budget cycle) live in Firestore. */
 @Singleton
 class SettingsRepository @Inject constructor(
@@ -53,10 +56,10 @@ class SettingsRepository @Inject constructor(
     }
 
     /**
-     * Smart understanding: lines quick add isn't sure about are sent to Gemini. Off until the
-     * person turns it on, since the typed line leaves the phone.
+     * Smart understanding: lines quick add isn't sure about are sent to Gemini. On unless the
+     * person turns "Smart help" off: it's free (Gemini Developer API) and only the line is sent.
      */
-    val smartAdd: Flow<Boolean> = dataStore.data.map { it[SMART_ADD] == true }
+    val smartAdd: Flow<Boolean> = dataStore.data.map { it[SMART_ADD] != false }
 
     suspend fun setSmartAdd(on: Boolean) {
         dataStore.edit { it[SMART_ADD] = on }
@@ -64,9 +67,9 @@ class SettingsRepository @Inject constructor(
 
     /**
      * Smart suggestions: Gemini ranks what to cook and watch and words the daily live-well tip.
-     * Off until turned on; sends dish and show titles and habit scores, never amounts.
+     * On with Smart help; sends dish and show titles and habit scores, never amounts.
      */
-    val smartSuggest: Flow<Boolean> = dataStore.data.map { it[SMART_SUGGEST] == true }
+    val smartSuggest: Flow<Boolean> = dataStore.data.map { it[SMART_SUGGEST] != false }
 
     suspend fun setSmartSuggest(on: Boolean) {
         dataStore.edit { it[SMART_SUGGEST] = on }
@@ -136,6 +139,33 @@ class SettingsRepository @Inject constructor(
         }
     }
 
+    /**
+     * Drive backups on this phone: how ([BackupMode]), on which network, the day of the last one,
+     * and the day the "back up today?" reminder last showed (it shows once a day).
+     */
+    data class BackupPrefs(val mode: BackupMode = BackupMode.REMIND, val wifiOnly: Boolean = true, val lastDay: String? = null, val remindedDay: String? = null)
+
+    val backupPrefs: Flow<BackupPrefs> = dataStore.data.map { p ->
+        BackupPrefs(
+            mode = p[BACKUP_MODE]?.let { runCatching { BackupMode.valueOf(it) }.getOrNull() } ?: BackupMode.REMIND,
+            wifiOnly = p[BACKUP_WIFI] != false,
+            lastDay = p[BACKUP_LAST],
+            remindedDay = p[BACKUP_REMINDED],
+        )
+    }
+
+    suspend fun setBackupMode(mode: BackupMode) = dataStore.edit { it[BACKUP_MODE] = mode.name }
+    suspend fun setBackupWifiOnly(on: Boolean) = dataStore.edit { it[BACKUP_WIFI] = on }
+    suspend fun markBackedUp(day: String) = dataStore.edit { it[BACKUP_LAST] = day }
+    suspend fun markBackupReminded(day: String) = dataStore.edit { it[BACKUP_REMINDED] = day }
+
+    /** Sounds and vibration on save, done and undo. On unless switched off. */
+    val feedbackOn: Flow<Boolean> = dataStore.data.map { it[FEEDBACK] != false }
+
+    suspend fun setFeedback(on: Boolean) {
+        dataStore.edit { it[FEEDBACK] = on }
+    }
+
     suspend fun markQuickAddTried() {
         dataStore.edit { it[QUICK_ADD_TRIED] = true }
     }
@@ -155,5 +185,10 @@ class SettingsRepository @Inject constructor(
         val DIGEST_AREAS_OFF = stringSetPreferencesKey("digest_areas_off")
         val TOUR_STEP = intPreferencesKey("tour_step")
         val TOUR_DONE = booleanPreferencesKey("tour_done")
+        val FEEDBACK = booleanPreferencesKey("feedback_on")
+        val BACKUP_MODE = stringPreferencesKey("backup_mode")
+        val BACKUP_WIFI = booleanPreferencesKey("backup_wifi_only")
+        val BACKUP_LAST = stringPreferencesKey("backup_last_day")
+        val BACKUP_REMINDED = stringPreferencesKey("backup_reminded_day")
     }
 }

@@ -27,8 +27,11 @@ private val LIBRARY_MACROS = mapOf(
     "Sambar" to "7g · 20g · 4g · 6g",
 )
 
-/** Everyday dishes so suggestions work from day one, before the family has saved any recipes. */
-val RECIPE_LIBRARY: List<Recipe> = listOf(
+/**
+ * Everyday dishes the demo home starts with, as saved recipes. Suggestions only ever use the
+ * family's own recipes: nothing here is shown to a real home.
+ */
+val SAMPLE_RECIPES: List<Recipe> = listOf(
     r("Paneer bhurji", 2, listOf("Spicy", "Savoury"), i("Paneer", 200.0, "g"), i("Onion", 1.0, "pcs"), i("Tomato", 1.0, "pcs"), i("Capsicum", 1.0, "pcs")),
     r("Palak paneer", 3, listOf("Healthy"), i("Paneer", 200.0, "g"), i("Spinach", 250.0, "g"), i("Onion", 1.0, "pcs"), i("Cream", 50.0, "ml")),
     r("Paneer tikka", 2, listOf("Spicy", "Crispy"), i("Paneer", 250.0, "g"), i("Curd", 100.0, "g"), i("Capsicum", 1.0, "pcs"), i("Onion", 1.0, "pcs")),
@@ -78,11 +81,10 @@ val RECIPE_LIBRARY: List<Recipe> = listOf(
 
 /** Dishes for a meal, best fit with the pantry first; saved recipes win ties. Unlike [cookIdeas], nothing is filtered out. */
 fun mealIdeas(meal: String, pantry: List<PantryStock>, saved: List<Recipe>, today: LocalDate): List<DishIdea> {
-    val savedTitles = saved.map { it.title.lowercase() }.toSet()
     fun fits(r: Recipe) = r.meal == null || r.meal == meal || (r.meal == "Lunch or dinner" && meal in setOf("Lunch", "Dinner")) ||
         (meal in setOf("Lunch", "Dinner") && r.meal in setOf("Lunch", "Dinner"))
     val expiring = useItUp(pantry, saved, today).associateBy { it.recipe.title }
-    return (saved.filter(::fits).map { it to true } + RECIPE_LIBRARY.filter { fits(it) && it.title.lowercase() !in savedTitles }.map { it to false })
+    return (saved.filter(::fits).map { it to true })
         .map { (r, isSaved) -> DishIdea(r, isSaved, recipeFit(r.ingredients, pantry, today), expiring[r.title]?.rescues.orEmpty()) }
         .sortedWith(
             compareByDescending<DishIdea> { it.rescues.size }
@@ -138,8 +140,7 @@ fun lastMadeText(lastMade: LocalDate?, today: LocalDate): String? {
 fun useItUp(pantry: List<PantryStock>, saved: List<Recipe>, today: LocalDate, withinDays: Long = 3): List<DishIdea> {
     val expiring = pantry.filter { s -> s.expiry?.let { ChronoUnit.DAYS.between(today, it) in 0..withinDays } == true }
     if (expiring.isEmpty()) return emptyList()
-    val savedTitles = saved.map { it.title.lowercase() }.toSet()
-    val candidates = saved.map { it to true } + RECIPE_LIBRARY.filter { it.title.lowercase() !in savedTitles }.map { it to false }
+    val candidates = saved.map { it to true }
     return candidates.mapNotNull { (recipe, isSaved) ->
         val rescues = expiring.filter { stock -> recipe.ingredients.any { sameIngredient(it.name, stock.title) } }.map { it.title }.distinct()
         if (rescues.isEmpty()) return@mapNotNull null
@@ -153,9 +154,8 @@ fun useItUp(pantry: List<PantryStock>, saved: List<Recipe>, today: LocalDate, wi
 
 /** General ideas (not tied to expiry): dishes you can mostly make with what's in the pantry. */
 fun cookIdeas(pantry: List<PantryStock>, saved: List<Recipe>, today: LocalDate, mood: String? = null): List<DishIdea> {
-    val savedTitles = saved.map { it.title.lowercase() }.toSet()
     val expiringSoon = useItUp(pantry, saved, today).associateBy { it.recipe.title }
-    return (saved.map { it to true } + RECIPE_LIBRARY.filter { it.title.lowercase() !in savedTitles }.map { it to false })
+    return (saved.map { it to true })
         .filter { (recipe, _) -> mood == null || mood in recipe.mood }
         .map { (recipe, isSaved) -> DishIdea(recipe, isSaved, recipeFit(recipe.ingredients, pantry, today), expiringSoon[recipe.title]?.rescues.orEmpty()) }
         // Only dishes you can actually make, or that use up something about to expire.

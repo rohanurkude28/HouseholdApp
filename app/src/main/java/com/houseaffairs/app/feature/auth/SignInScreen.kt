@@ -55,6 +55,7 @@ class SignInViewModel @Inject constructor(
     private val auth: AuthRepository,
     private val households: com.houseaffairs.app.core.data.HouseholdRepository,
     private val demo: com.houseaffairs.app.core.data.DemoSeeder,
+    private val settings: com.houseaffairs.app.core.data.SettingsRepository,
 ) : ViewModel() {
     private val _state = MutableStateFlow(SignInUiState())
     val state = _state.asStateFlow()
@@ -84,6 +85,8 @@ class SignInViewModel @Inject constructor(
                 auth.signInDemo().getOrThrow()
                 val home = households.createHousehold("Demo home", "INR")
                 demo.seed(home, checkNotNull(com.google.firebase.auth.FirebaseAuth.getInstance().currentUser).uid)
+                // The demo is for learning: walk through it from the start.
+                settings.restartTour()
             }.exceptionOrNull()
             _state.value = SignInUiState(
                 error = error?.let {

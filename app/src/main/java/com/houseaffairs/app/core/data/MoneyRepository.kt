@@ -9,6 +9,7 @@ import com.houseaffairs.app.core.model.Visibility
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -86,6 +87,16 @@ class MoneyRepository @Inject constructor(
                     paidBills = (doc.get("paidBills") as? List<*>).orEmpty().filterIsInstance<String>().toSet(),
                     incomeMinor = doc.getLong("incomeMinor") ?: 0,
                     customCategories = (doc.get("customCategories") as? List<*>).orEmpty().filterIsInstance<String>(),
+                    dreamAllocations = (doc.get("dreamAllocations") as? List<*>).orEmpty().mapNotNull { raw ->
+                        val m = raw as? Map<*, *> ?: return@mapNotNull null
+                        val from = (m["from"] as? com.google.firebase.Timestamp)?.toDate()?.toInstant()?.atZone(ZoneId.systemDefault())?.toLocalDate() ?: return@mapNotNull null
+                        DreamAllocation((m["dreamId"] as? String) ?: return@mapNotNull null, (m["monthlyMinor"] as? Number)?.toLong() ?: 0, from)
+                    },
+                    limitHistory = (doc.get("limitHistory") as? List<*>).orEmpty().mapNotNull { raw ->
+                        val m = raw as? Map<*, *> ?: return@mapNotNull null
+                        val from = (m["from"] as? com.google.firebase.Timestamp)?.toDate()?.toInstant()?.atZone(ZoneId.systemDefault())?.toLocalDate() ?: return@mapNotNull null
+                        LimitChange(from, (m["limitMinor"] as? Number)?.toLong() ?: return@mapNotNull null)
+                    },
                 )
                 // Rollover counts from the budget month the family started tracking.
                 val started = doc.localDate("startedOn") ?: doc.localDate("createdAt") ?: LocalDate.now()
@@ -95,8 +106,12 @@ class MoneyRepository @Inject constructor(
             .retryWhen { _, attempt -> (attempt < 3).also { if (it) delay(1_000L * (attempt + 1)) } }
             .catch { emit(null) }
 
-    suspend fun saveBudget(householdId: String, uid: String, budget: Budget) {
+    /** Saves the budget; a new monthly amount applies [from] this month, next month or always. */
+    suspend fun saveBudget(householdId: String, uid: String, budget: Budget, from: LimitFrom = LimitFrom.THIS_MONTH) {
+        val old = observeBudgetDoc(householdId).first()
+        val history = limitHistoryAfter(old?.budget, budget.limitMinor, from, old?.startedOn, LocalDate.now(), budget.cycleStartDay)
         val fields = mapOf(
+            "limitHistory" to history.map { mapOf("from" to it.from.toTimestamp(), "limitMinor" to it.limitMinor) },
             "limitMinor" to budget.limitMinor,
             "currency" to budget.currency,
             "cycleStartDay" to budget.cycleStartDay,
@@ -104,6 +119,7 @@ class MoneyRepository @Inject constructor(
             "incomeMinor" to budget.incomeMinor,
             "categories" to budget.categories,
             "customCategories" to budget.customCategories,
+            "dreamAllocations" to budget.dreamAllocations.map { mapOf("dreamId" to it.dreamId, "monthlyMinor" to it.monthlyMinor, "from" to it.from.toTimestamp()) },
             "cards" to budget.cards.map { mapOf("name" to it.name.trim(), "statementDay" to it.statementDay, "dueDay" to it.dueDay) },
             "updatedAt" to FieldValue.serverTimestamp(),
         )
@@ -314,6 +330,48 @@ class MoneyRepository @Inject constructor(
     }
 
     /** Turns a planned spend into a real one dated today. */
+    /** How many expenses and subscriptions are filed under [name], all time. */
+    suspend fun categoryUse(householdId: String, uid: String, name: String): Int =
+        listOf("transactions", "recurring").sumOf { col ->
+            visible(householdId, col, uid).get().await().documents.count { it.getString("category") == name }
+        }
+
+    /**
+     * Files everything under [from] as [to] instead (a rename, or a merge into an existing one),
+     * or with [to] null removes the category. Returns how many entries moved.
+     */
+    suspend fun moveCategory(householdId: String, uid: String, from: String, to: String?): Int {
+        var moved = 0
+        if (to != null) {
+            for (col in listOf("transactions", "recurring")) {
+                visible(householdId, col, uid).get().await().documents.filter { it.getString("category") == from }.chunked(400).forEach { chunk ->
+                    val batch = db.batch()
+                    chunk.forEach { batch.update(it.reference, "category", to) }
+                    batch.commit().await()
+                    moved += chunk.size
+                }
+            }
+        }
+        val doc = budgetDoc(householdId).get().await()
+        if (doc.exists()) {
+            val budget = observeBudget(householdId).first() ?: return moved
+            val next = budgetWithCategory(budget, from, to)
+            budgetDoc(householdId).update(mapOf("categories" to next.categories, "customCategories" to next.customCategories)).await()
+        }
+        return moved
+    }
+
+    /** Deletes the expenses filed under [name] and the category; returns an undo that puts them back. */
+    suspend fun deleteCategoryWithHistory(householdId: String, uid: String, name: String): () -> Unit {
+        val gone = listOf("transactions", "recurring").flatMap { col ->
+            visible(householdId, col, uid).get().await().documents.filter { it.getString("category") == name }
+        }
+        val saved = gone.map { it.reference to it.data.orEmpty() }
+        saved.chunked(400).forEach { chunk -> db.batch().also { b -> chunk.forEach { (ref, _) -> b.delete(ref) } }.commit().await() }
+        moveCategory(householdId, uid, name, null)
+        return { saved.chunked(400).forEach { chunk -> db.batch().also { b -> chunk.forEach { (ref, data) -> b.set(ref, data) } }.commit() } }
+    }
+
     /** A category typed in a form ("Cook") joins the family's own, so it's offered next time. */
     fun addCustomCategory(householdId: String, name: String) {
         budgetDoc(householdId).update("customCategories", FieldValue.arrayUnion(name.trim()))

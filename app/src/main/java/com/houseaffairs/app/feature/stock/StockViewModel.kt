@@ -67,7 +67,16 @@ class StockViewModel @Inject constructor(
     private val session: SessionManager,
     private val pantryRepo: PantryRepository,
     households: HouseholdRepository,
+    private val entries: com.houseaffairs.app.core.data.EntryRepository,
 ) : ViewModel() {
+    /** Deletes a saved recipe; the snackbar's Undo brings it back as it was. */
+    fun deleteRecipe(recipe: Recipe, onSaved: (com.houseaffairs.app.feature.add.SavedEntry) -> Unit) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        viewModelScope.launch {
+            val undo = runCatching { entries.removeById(r.household.id, com.houseaffairs.app.feature.add.EntryType.RECIPE, recipe.id) }.getOrNull() ?: return@launch
+            onSaved(com.houseaffairs.app.feature.add.SavedEntry("${recipe.title} · deleted") { undo() })
+        }
+    }
     private data class Scope(val householdId: String, val uid: String, val canMedicine: Boolean, val ownMedicines: Boolean)
 
     private val scope = session.state.filterIsInstance<SessionState.Ready>()
@@ -154,7 +163,10 @@ class StockViewModel @Inject constructor(
         val r = session.state.value as? SessionState.Ready ?: return null
         val people = eaters.size + guests
         if (people == 0) return null
-        return pantryRepo.cook(r.household.id, r.user.uid, recipe.title, planFor(recipe, people), state.value.shopping.map { it.title }, eaters, people)
+        val plan = planFor(recipe, people)
+        // Never more out of the pantry than it holds.
+        if (!plan.enough) return null
+        return pantryRepo.cook(r.household.id, r.user.uid, recipe.title, plan, state.value.shopping.map { it.title }, eaters, people)
     }
 
     /** Ticks a shopping item into the pantry and hands back an Undo. */
@@ -187,8 +199,7 @@ class StockViewModel @Inject constructor(
 fun searchDishes(query: String, pantry: List<PantryStock>, saved: List<Recipe>, today: LocalDate): List<DishIdea> {
     val q = query.trim().lowercase()
     if (q.length < 2) return emptyList()
-    val savedTitles = saved.map { it.title.lowercase() }.toSet()
-    return (saved.map { it to true } + com.houseaffairs.app.core.data.RECIPE_LIBRARY.filter { it.title.lowercase() !in savedTitles }.map { it to false })
+    return (saved.map { it to true })
         .filter { (r, _) -> r.title.lowercase().contains(q) || r.ingredients.any { it.name.lowercase().contains(q) } }
         .map { (r, isSaved) -> DishIdea(r, isSaved, recipeFit(r.ingredients, pantry, today), emptyList()) }
         .sortedWith(compareByDescending<DishIdea> { it.fit.canCook }.thenBy { it.fit.missing.size }.thenByDescending { it.saved })

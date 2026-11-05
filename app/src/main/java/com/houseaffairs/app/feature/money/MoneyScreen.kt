@@ -253,9 +253,13 @@ fun MoneyScreen(
     if (editing) {
         BudgetSetupSheet(
             existing = state.budget,
+            dreams = state.money?.dreams?.map { it.dream }.orEmpty(),
             currency = state.currency,
-            onSave = { viewModel.saveBudget(it) { editing = false } },
+            onSave = { budget, from -> viewModel.saveBudget(budget, from) { editing = false } },
             onDismiss = { editing = false },
+            onCategoryUse = viewModel::categoryUse,
+            onMoveCategory = viewModel::moveCategory,
+            onDeleteWithHistory = { name, done -> viewModel.deleteCategoryWithHistory(name, onSaved, done) },
         )
     }
     state.error?.let {

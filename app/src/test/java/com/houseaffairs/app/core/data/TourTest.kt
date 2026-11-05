@@ -10,7 +10,7 @@ class TourTest {
     @Test
     fun `everyone sees welcome - reminders and the end`() {
         val ids = tourSteps { false }.map { it.id }
-        assertEquals(listOf("welcome", "quickadd", "reminders", "done"), ids)
+        assertEquals(listOf("welcome", "setup", "quickadd", "done"), ids)
     }
 
     @Test

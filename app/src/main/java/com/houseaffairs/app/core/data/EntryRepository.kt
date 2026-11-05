@@ -10,6 +10,7 @@ import com.houseaffairs.app.feature.add.DateSpec
 import com.houseaffairs.app.feature.add.EntryType
 import com.houseaffairs.app.feature.add.FormValues
 import com.houseaffairs.app.feature.add.IngredientsSpec
+import com.houseaffairs.app.feature.add.PhotosSpec
 import com.houseaffairs.app.feature.add.LevelSpec
 import com.houseaffairs.app.feature.add.MembersSpec
 import com.houseaffairs.app.feature.add.MoneySpec
@@ -156,6 +157,7 @@ class EntryRepository @Inject constructor(
                 is QuantitySpec -> (value as QuantityValue).let { doc[spec.key] = mapOf("amount" to it.parsed, "unit" to it.unit) }
                 is LevelSpec -> doc[spec.key] = value
                 is MembersSpec -> doc[spec.key] = if (spec.multi) value else (value as List<*>).first()
+                is PhotosSpec -> doc[spec.key] = (value as List<*>).filterIsInstance<String>()
                 is IngredientsSpec -> doc[spec.key] = (value as List<*>).filterIsInstance<Ingredient>()
                     .filter { it.name.isNotBlank() }
                     .map { mapOf("name" to it.name.trim(), "amount" to it.amount, "unit" to it.unit) }
@@ -180,6 +182,11 @@ class EntryRepository @Inject constructor(
         ownedKeys(type).forEach { key -> changes[key] = if (key in fields) fields[key] else FieldValue.delete() }
         if (type in setOf(EntryType.GROCERY, EntryType.MEDICINE, EntryType.HOUSEHOLD)) {
             (values["quantity"] as? QuantityValue)?.parsed?.let { changes["initialAmount"] = it }
+        }
+        // The address or link may have changed: find the place on the map again.
+        if (type == EntryType.PLACE) {
+            changes["lat"] = FieldValue.delete()
+            changes["lng"] = FieldValue.delete()
         }
         db.collection("households").document(householdId).collection(type.collection).document(id).update(changes)
     }
@@ -210,6 +217,7 @@ class EntryRepository @Inject constructor(
                 }
                 is LevelSpec -> doc.getLong(spec.key)?.toInt()
                 is MembersSpec -> (doc.get(spec.key) as? List<*>)?.filterIsInstance<String>() ?: doc.getString(spec.key)?.let { listOf(it) }
+                is PhotosSpec -> (doc.get(spec.key) as? List<*>)?.filterIsInstance<String>()
                 is IngredientsSpec -> (doc.get(spec.key) as? List<*>)?.mapNotNull { raw ->
                     (raw as? Map<*, *>)?.let { Ingredient((it["name"] as? String).orEmpty(), (it["amount"] as? Number)?.toDouble(), (it["unit"] as? String) ?: "g") }
                 }

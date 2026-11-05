@@ -106,4 +106,14 @@ class PantryMathTest {
         val plan = planCooking(listOf(Ingredient("Onion", 150.0, "g")), 1.0, stock)
         assertEquals(2.0, plan.deductions.single().after!!, 1e-9)
     }
+
+    @Test
+    fun `the pantry decides how many people a dish can feed`() {
+        val tikka = Recipe("t", "Paneer tikka", listOf(Ingredient("Paneer", 200.0, "g"), Ingredient("Salt", null, "g")), 2, emptyList(), null)
+        val pantry = listOf(PantryStock("p", "Paneer", 250.0, "g", 250.0))
+        // 100 g a person, 250 g at home.
+        assertEquals(2, servingsPossible(tikka, pantry))
+        assertEquals(0, servingsPossible(tikka, emptyList()))
+        assertEquals(null, servingsPossible(tikka.copy(ingredients = listOf(Ingredient("Salt", null, "g"))), pantry))
+    }
 }

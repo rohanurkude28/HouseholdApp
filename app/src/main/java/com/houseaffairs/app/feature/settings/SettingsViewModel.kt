@@ -60,6 +60,7 @@ class SettingsViewModel @Inject constructor(
     private val calendarAuth: com.houseaffairs.app.core.calendar.CalendarAuth,
     @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context,
     private val watch: com.houseaffairs.app.core.data.WatchRepository,
+    private val demo: com.houseaffairs.app.core.data.DemoSeeder,
 ) : ViewModel() {
     private val keyStatus = MutableStateFlow<Map<String, String>>(emptyMap())
 
@@ -196,6 +197,62 @@ class SettingsViewModel @Inject constructor(
             onDone(households.resetHousehold(hid))
             // A fresh start gets the tour again, to set things up one at a time.
             settings.restartTour()
+        }
+    }
+
+    /**
+     * "Download my data": writes the JSON and expenses CSV into the app's cache and hands back a
+     * share intent, so the person picks where they go (Drive, email, Files).
+     */
+    fun exportData(onReady: (android.content.Intent) -> Unit) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        withHousehold { hid ->
+            val entries = households.exportEntries(hid, r.me)
+            val names = state.value.members.associate { it.uid to it.displayName }
+            val today = java.time.LocalDate.now().toString()
+            val dir = java.io.File(context.cacheDir, "export").apply { deleteRecursively(); mkdirs() }
+            val json = java.io.File(dir, "HouseAffairs-$today.json").apply { writeText(com.houseaffairs.app.core.data.exportJson(r.household.name, today, entries)) }
+            val csv = java.io.File(dir, "HouseAffairs-expenses-$today.csv").apply {
+                writeText(com.houseaffairs.app.core.data.expensesCsv(entries["transactions"].orEmpty(), names))
+            }
+            val uris = arrayListOf(json, csv).map { androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", it) }
+            onReady(
+                android.content.Intent(android.content.Intent.ACTION_SEND_MULTIPLE)
+                    .setType("*/*")
+                    .putParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM, ArrayList(uris))
+                    .putExtra(android.content.Intent.EXTRA_SUBJECT, "HouseAffairs data, $today")
+                    .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION),
+            )
+        }
+    }
+
+    /**
+     * Deletes the account: entries and membership first (the rules need a signed-in member for
+     * that), then the sign-in. Runs outside this screen's scope, which closes once membership goes.
+     */
+    fun deleteAccount(activity: android.content.Context, keepShared: Boolean, onError: (String) -> Unit) {
+        val hid = (session.state.value as? SessionState.Ready)?.household?.id ?: return
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main).launch {
+            runCatching {
+                households.eraseMe(hid, keepShared)
+                auth.deleteAccount(activity)
+            }.onFailure { onError((it as? IllegalStateException)?.message ?: "Your account couldn't be deleted. Check your connection and try again.") }
+        }
+    }
+
+    /**
+     * Switches to a demo home full of sample data, to learn the app without touching the family's.
+     * Runs outside this screen's scope: signing out closes Settings mid-way.
+     */
+    fun tryDemo(onError: (String) -> Unit) {
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main).launch {
+            runCatching {
+                auth.signOut()
+                auth.signInDemo().getOrThrow()
+                val home = households.createHousehold("Demo home", "INR")
+                demo.seed(home, checkNotNull(com.google.firebase.auth.FirebaseAuth.getInstance().currentUser).uid)
+                settings.restartTour()
+            }.onFailure { onError("The demo couldn't start. Sign in again and try from the sign-in screen.") }
         }
     }
 

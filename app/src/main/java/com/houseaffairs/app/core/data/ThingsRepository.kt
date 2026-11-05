@@ -8,7 +8,18 @@ import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 
-data class KeptItem(val id: String, val title: String, val location: String, val kind: String?, val room: String?, val note: String?)
+data class KeptItem(
+    val id: String,
+    val title: String,
+    val location: String,
+    val kind: String?,
+    val room: String?,
+    val note: String?,
+    /** For documents filed in Google Drive: the folder ("Insurance") and the link that opens the file. */
+    val docType: String? = null,
+    val link: String? = null,
+    val photos: List<String> = emptyList(),
+)
 
 data class PlaceItem(
     val id: String,
@@ -38,7 +49,11 @@ class ThingsRepository @Inject constructor(
         visible(householdId, "keptAt", uid).observeSnapshots()
             .map { snap ->
                 snap.documents.map { d ->
-                    KeptItem(d.id, d.getString("title").orEmpty(), d.getString("location").orEmpty(), d.getString("kind"), d.getString("room"), d.getString("note"))
+                    KeptItem(
+                        d.id, d.getString("title").orEmpty(), d.getString("location").orEmpty(), d.getString("kind"), d.getString("room"), d.getString("note"),
+                        docType = d.getString("docType"), link = d.getString("driveLink"),
+                        photos = (d.get("photos") as? List<*>).orEmpty().filterIsInstance<String>(),
+                    )
                 }.sortedBy { it.title.lowercase() }
             }
             .catch { emit(emptyList()) }
@@ -70,6 +85,7 @@ class ThingsRepository @Inject constructor(
                         status = d.getString("status") ?: "IDEA",
                         votes = (d.get("votes") as? List<*>).orEmpty().filterIsInstance<String>(),
                         event = d.getString("event"),
+                        link = d.getString("link")?.takeIf { it.isNotBlank() },
                     )
                 }
             }

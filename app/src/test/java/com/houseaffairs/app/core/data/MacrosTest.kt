@@ -14,9 +14,11 @@ class MacrosTest {
     }
 
     @Test
-    fun `a day adds up the dishes eaten, own recipes first`() {
+    fun `a day adds up the dishes eaten from the family's recipes`() {
         val mine = Recipe("r", "Dal tadka", emptyList(), 2, emptyList(), null, macros = "12g · 30g · 5g · 8g")
-        val day = dayMacros(listOf("Dal tadka", "Aloo tikki", "Mystery dish"), listOf(mine))!!
+        val tikki = SAMPLE_RECIPES.first { it.title == "Aloo tikki" }
+        // A dish with no saved recipe ("Mystery dish") adds nothing.
+        val day = dayMacros(listOf("Dal tadka", "Aloo tikki", "Mystery dish"), listOf(mine, tikki))!!
         assertEquals(Macros(16.0, 58.0, 14.0, 11.0), day)
         assertEquals(16 * 4 + 58 * 4 + 14 * 9, day.kcal)
     }

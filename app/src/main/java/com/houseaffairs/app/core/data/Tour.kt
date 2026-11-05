@@ -3,7 +3,7 @@ package com.houseaffairs.app.core.data
 import com.houseaffairs.app.core.model.AppModule
 
 /** Something a tour step can do besides explain: ask for notifications, or open a tab to set it up. */
-enum class TourAction { NOTIFICATIONS, OPEN_MONEY, OPEN_KITCHEN }
+enum class TourAction { SETUP, OPEN_MONEY, OPEN_KITCHEN }
 
 /** One screen of the first-run tour: one feature, with a line to try in quick add. */
 data class TourStep(
@@ -19,6 +19,8 @@ data class TourStep(
 
 private val STEPS = listOf(
     TourStep("welcome", "🏠", "Welcome home", "One place for your family's money, kitchen, medicines, plans and the things you keep. Here's a quick look, one thing at a time."),
+    // Permissions and the widget first, all on one screen, so nothing interrupts the tour later.
+    TourStep("setup", "📲", "Set up your phone", "A few switches so reminders ring on time, “near me” works and your day shows on the home screen. Each one can be changed later in Settings.", action = TourAction.SETUP),
     TourStep("quickadd", "➕", "Just say it", "Tap + and type or speak one line. The app works out what it is and fills the form for you.", "450 groceries DMart · milk over · call mom at 5 pm"),
     TourStep("budget", "💰", "Budget and spending", "Set a monthly budget with your own categories, like cook, maid or insurance. Every expense shows what's left.", "paid cook 6000 cash", TourAction.OPEN_MONEY, AppModule.MONEY),
     TourStep("gullak", "🐷", "Gullak and dreams", "Money left at the end of the month goes to the gullak. Save it toward a dream, like a trip or a new car.", "save 5000 for Bali", module = AppModule.MONEY),
@@ -27,8 +29,7 @@ private val STEPS = listOf(
     TourStep("plans", "✅", "Tasks and events", "Tasks can repeat, take turns and ring at the time you pick. Birthdays remind you a day before.", "call mom at 5:30 pm", module = AppModule.PLANS),
     TourStep("lists", "🎬", "Family lists", "Movies, books, music, trips and wishes, with covers and ratings looked up for you.", "want to read Atomic Habits", module = AppModule.PLANS),
     TourStep("things", "📦", "Where things are kept", "Note where things are, then just ask when you can't find them.", "where is the passport?", module = AppModule.VAULT),
-    TourStep("reminders", "🔔", "Reminders", "Allow notifications so tasks ring on time, plus one short summary a day. You can change this in Settings.", action = TourAction.NOTIFICATIONS),
-    TourStep("done", "🎉", "You're all set", "Start with one thing you need today. You can see this tour again from Settings."),
+    TourStep("done", "🎉", "You're all set", "Start with one thing you need today. To practise first, Settings has a demo home full of sample data, and this tour again."),
 )
 
 /** The tour for someone who can open [canAccess] parts of the app. */

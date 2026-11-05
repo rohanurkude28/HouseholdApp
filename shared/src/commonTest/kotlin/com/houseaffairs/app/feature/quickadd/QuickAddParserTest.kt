@@ -509,4 +509,22 @@ class QuickAddParserTest {
         assertEquals(localDate(2026, 11, 3), (late.parse("call mom at 9 am") as QuickAddDraft.Task).due)
         assertNull((parser.parse("call 2 plumbers") as QuickAddDraft.Task).time)
     }
+
+    @Test
+    fun `can I cook a dish for some people`() {
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.CAN_COOK, "Paneer tikka", count = 3), parser.parse("can I cook paneer tikka for 3 people?"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.CAN_COOK, "Dal", count = null), parser.parse("can we make dal"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.CAN_COOK, "Biryani", count = 6), parser.parse("is there enough to cook biryani for 6"))
+        // "What can I cook" is still the open question.
+        assertEquals(QuickAddDraft.Question.COOK, (parser.parse("what can I cook") as QuickAddDraft.Ask).question)
+    }
+
+    @Test
+    fun `when can we reach a dream - and how long things last`() {
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.WHEN_DREAM, "Bali"), parser.parse("by when can we go to Bali?"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.WHEN_DREAM, "New car"), parser.parse("when can I buy a new car"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.WHEN_DREAM, "Bali trip"), parser.parse("how long until the Bali trip"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.LASTED, "Detergent"), parser.parse("how long did the detergent last"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.LASTED, "Rice"), parser.parse("when will the rice run out?"))
+    }
 }

@@ -124,7 +124,7 @@ sealed interface QuickAddDraft {
     data class Dream(val title: String, val kind: String, val amount: Decimal?, val date: LocalDate?) : QuickAddDraft
 
     /** A question for the assistant rather than something to save. */
-    data class Ask(val question: Question, val subject: String?, val person: String? = null) : QuickAddDraft
+    data class Ask(val question: Question, val subject: String?, val person: String? = null, val count: Int? = null) : QuickAddDraft
 
     enum class Question {
         COOK, EXPIRING, LEFT, AFFORD, WHERE,
@@ -143,6 +143,15 @@ sealed interface QuickAddDraft {
 
         /** "Want to watch a movie" / "read something": picks from that list (subject = the list's name). */
         PICK,
+
+        /** "Can I cook paneer tikka for 3?" (subject = the dish, count = people). */
+        CAN_COOK,
+
+        /** "By when can we go to Bali?" (subject = the dream). */
+        WHEN_DREAM,
+
+        /** "How long did the detergent last?" (subject = the item). */
+        LASTED,
     }
 
     /** "Gold necklace is in the bank locker" / "kept spare keys in the blue drawer". */
@@ -373,6 +382,14 @@ class QuickAddParser(
         val t = text.trim().trimEnd('?', '.', '!').trim()
         // Paying a card bill moves money you already counted when you spent it, so it isn't an expense.
         if (CARD_BILL.containsMatchIn(t)) return QuickAddDraft.Ask(QuickAddDraft.Question.CARD_BILL, if (Regex("\\b(paid|pay|paying|cleared|settled)\\b", RegexOption.IGNORE_CASE).containsMatchIn(t)) "paid" else null)
+        CAN_COOK.matchEntire(t)?.let { m ->
+            val dish = m.groupValues[1].ifEmpty { m.groupValues[3] }.trim().trim(*PUNCTUATION)
+            if (dish.isNotEmpty() && dish.lowercase() !in setOf("something", "anything", "it", "dinner", "lunch", "breakfast")) {
+                return QuickAddDraft.Ask(QuickAddDraft.Question.CAN_COOK, dish.capitalized(), count = m.groupValues[2].ifEmpty { m.groupValues[4] }.toIntOrNull())
+            }
+        }
+        (WHEN_DREAM.matchEntire(t) ?: HOW_LONG_TO_DREAM.matchEntire(t))?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.WHEN_DREAM, m.groupValues[1].trim().trim(*PUNCTUATION).capitalized()) }
+        (LASTED.matchEntire(t) ?: RUN_OUT.matchEntire(t))?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.LASTED, m.groupValues[1].trim().trim(*PUNCTUATION).capitalized()) }
         ASK_COOK.matchEntire(t)?.let { return QuickAddDraft.Ask(QuickAddDraft.Question.COOK, null) }
         // Before symptoms: "I feel like eating something spicy" is hunger, not illness.
         (CRAVING.matchEntire(t) ?: CRAVING_TASTE.matchEntire(t))?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.CRAVING, m.groupValues[1].trim()) }
@@ -949,6 +966,15 @@ class QuickAddParser(
             "^(?:(?:what|which)(?: dish(?:es)?)? (?:can|should|shall|could) (?:i|we) (?:cook|make)|what to (?:cook|make)|suggest (?:a |some )?(?:dish|dishes|recipe|recipes|something to cook)|(?:any )?(?:dinner|lunch|breakfast) ideas)\\b.*$",
             RegexOption.IGNORE_CASE,
         )
+        val CAN_COOK = Regex(
+            "^(?:can|could|shall) (?:i|we) (?:cook|make)\\s+(?:the |some |a )?(.+?)(?:\\s+for\\s+(\\d+)(?:\\s+(?:people|persons|person|of us|guests|plates))?)?$" +
+                "|^(?:is there|do we have|have we got) enough (?:to (?:cook|make)\\s+|for\\s+)(?:the |some )?(.+?)(?:\\s+for\\s+(\\d+)(?:\\s+(?:people|persons|person))?)?$",
+            RegexOption.IGNORE_CASE,
+        )
+        val WHEN_DREAM = Regex("^(?:by when|when) (?:can|could|will|would|shall) (?:we|i) (?:go to|go on|go for|visit|buy|get|afford|have|reach|do|take)\\s+(?:the |a |an |our |my )?(.+)$", RegexOption.IGNORE_CASE)
+        val HOW_LONG_TO_DREAM = Regex("^how long (?:until|till|before|to save for|to afford)\\s+(?:we can (?:go to|buy|afford) )?(?:the |a |an |our |my )?(.+)$", RegexOption.IGNORE_CASE)
+        val LASTED = Regex("^how long (?:did|does|do|will|would) (?:the |our |my |a |one )?(.+?) (?:last|go|run)(?: for| us)?$", RegexOption.IGNORE_CASE)
+        val RUN_OUT = Regex("^when (?:will|would|does|do) (?:the |our |my )?(.+?) (?:run out|finish|get over|be over)$", RegexOption.IGNORE_CASE)
         val ASK_EXPIRING = Regex("^what(?:'s| is| all is)? (?:expiring|about to expire|going (?:bad|off)).*$", RegexOption.IGNORE_CASE)
         val ASK_LEFT = Regex(
             "^how much(?: money| budget)?(?: is| do (?:we|i) have)?(?: left| remaining| available)?(?: (?:for|in|on)(?: the| my| our)? (.+))?$",

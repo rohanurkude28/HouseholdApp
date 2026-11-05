@@ -360,7 +360,7 @@ fun PlansScreen(
                             onDone = { viewModel.markDone(w.id, w.title)?.let(onSaved) },
                             votes = w.votes, myUid = viewModel.myUid, status = w.status,
                             onVote = { on -> viewModel.vote(w.id, on) }, onPlan = { viewModel.togglePlanned(w.id, w.status) },
-                            listenUrl = w.youtubeUrl,
+                            links = com.houseaffairs.app.core.data.mediaLinks(template, w.title, w.year, w.creator, w.imdbId, w.link),
                         )
                     }
                     items(wishItems.sortedWith(compareBy({ it.status != "PLANNED" }, { -it.votes.size })), key = { "wish-" + it.id }) { wish ->
@@ -373,6 +373,7 @@ fun PlansScreen(
                             onDone = { viewModel.markDone(wish.id, wish.title)?.let(onSaved) },
                             votes = wish.votes, myUid = viewModel.myUid, status = wish.status,
                             onVote = { on -> viewModel.vote(wish.id, on) }, onPlan = { viewModel.togglePlanned(wish.id, wish.status) },
+                            links = com.houseaffairs.app.core.data.wishLinks(wish.link),
                         )
                     }
                 }
@@ -523,8 +524,8 @@ private fun WishRow(
     status: String = "IDEA",
     onVote: ((Boolean) -> Unit)? = null,
     onPlan: (() -> Unit)? = null,
-    /** Music: opens YouTube Music on this song or album. */
-    listenUrl: String? = null,
+    /** One-tap ways out: IMDb, trailer, Goodreads, YouTube Music, the family's saved link. */
+    links: List<com.houseaffairs.app.core.data.ItemLink> = emptyList(),
 ) {
     Row(Modifier.fillMaxWidth().opensEdit(onClick).padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         if (image != null) {
@@ -548,15 +549,6 @@ private fun WishRow(
                         style = MaterialTheme.typography.labelLarge,
                         modifier = Modifier.clip(CircleShape).clickable(onClickLabel = if (mine) "Remove your heart" else "Heart it") { onVote(!mine) }.padding(horizontal = 6.dp, vertical = 2.dp),
                     )
-                    listenUrl?.let { url ->
-                        val uri = androidx.compose.ui.platform.LocalUriHandler.current
-                        Text(
-                            "▶ YouTube",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.clip(CircleShape).clickable(onClickLabel = "Play on YouTube") { runCatching { uri.openUri(url) } }.padding(horizontal = 6.dp, vertical = 2.dp),
-                        )
-                    }
                     val planned = status == "PLANNED"
                     Text(
                         if (planned) "📅 Planned" else "💡 Idea",
@@ -570,6 +562,7 @@ private fun WishRow(
                     )
                 }
             }
+            com.houseaffairs.app.core.ui.LinkChips(links, Modifier.padding(top = 6.dp))
         }
         // Same as everywhere: the circle ticks it off; the row (tap or hold) opens it.
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -813,12 +806,10 @@ private fun GoalRow(goal: com.houseaffairs.app.core.data.Goal, onEdit: () -> Uni
             Text("${value.toInt()}%", style = MaterialTheme.typography.labelLarge, color = accent.color)
         }
         if (onProgress != null) {
-            androidx.compose.material3.Slider(
-                value = value,
-                onValueChange = { value = it },
-                onValueChangeFinished = { onProgress(value.toInt()) },
-                valueRange = 0f..100f,
-                steps = 9,
+            com.houseaffairs.app.core.ui.LevelPicker(
+                value.toInt(), com.houseaffairs.app.core.ui.PROGRESS_STEPS, accent.color,
+                onChange = { value = it.toFloat(); onProgress(it) },
+                modifier = Modifier.padding(top = 8.dp),
             )
         }
     }

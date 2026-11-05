@@ -124,4 +124,52 @@ class EnvelopesTest {
         val bali = Dream("bali", "Bali trip", "Travel", "✈️", 1_00_000_00, null)
         assertEquals(30_000_00L, dreamProgress(listOf(bali), state, emptyList(), today, values).single().investedMinor)
     }
+
+    @Test
+    fun `raising the budget now doesn't change past months' leftovers`() {
+        val raised = budget.copy(limitMinor = 120_000_00, limitHistory = listOf(LimitChange(LocalDate.of(2026, 9, 1), 100_000_00), LimitChange(LocalDate.of(2026, 11, 1), 120_000_00)))
+        val state = envelopes(raised, LocalDate.of(2026, 9, 1), emptyList(), emptyList(), emptyList(), today)
+        // September and October at 100k each, not 120k.
+        assertEquals(200_000_00L, state.potMinor)
+    }
+
+    @Test
+    fun `a spend planned for a later month doesn't hold back this one`() {
+        val later = Txn("p", "Goa", "Travel", 3_000_00, LocalDate.of(2027, 1, 10), planned = true)
+        val soon = Txn("q", "Gift", "Travel", 500_00, LocalDate.of(2026, 11, 20), planned = true)
+        val state = envelopes(budget, LocalDate.of(2026, 11, 1), listOf(later, soon), emptyList(), emptyList(), today)
+        assertEquals(4_000_00L - 500_00, state.envelopes.first { it.category == "Travel" }.availableMinor)
+    }
+
+    @Test
+    fun `a monthly amount for a dream goes to it - not the gullak`() {
+        val saving = budget.copy(dreamAllocations = listOf(DreamAllocation("bali", 10_000_00, LocalDate.of(2026, 10, 1))))
+        val state = envelopes(saving, LocalDate.of(2026, 9, 1), emptyList(), emptyList(), emptyList(), today)
+        // September 100k, October 100k − 10k for Bali; November's 10k is set aside already.
+        assertEquals(190_000_00L, state.potMinor)
+        assertEquals(20_000_00L, state.dreamFunding["bali"])
+    }
+
+    @Test
+    fun `an overspent envelope is covered from ones with room first`() {
+        val state = EnvelopeState(
+            listOf(
+                Envelope("Dining", 5_000_00, 6_000_00, 0, 0, 0),
+                Envelope("Shopping", 3_000_00, 500_00, 0, 0, 0),
+                Envelope("Gifts", 1_000_00, 900_00, 0, 0, 0),
+                Envelope("Rent", 30_000_00, 0, 0, 0, 0),
+            ),
+            potMinor = 800_00, savedThisYearMinor = 0, dreamFunding = emptyMap(),
+        )
+        val options = coverOptions(state, "Dining", 1_000_00)
+        assertEquals(listOf("Shopping", "Gullak", "Gifts"), options.map { it.label })
+        assertEquals(emptyList<CoverOption>(), coverOptions(state, "Dining", 0))
+    }
+
+    @Test
+    fun `months until a dream`() {
+        assertEquals(6, monthsToDream(55_000, 10_000))
+        assertEquals(0, monthsToDream(0, 10_000))
+        assertEquals(null, monthsToDream(55_000, 0))
+    }
 }

@@ -15,7 +15,7 @@ class RightNowTest {
 
     @Test
     fun `weekday morning suggests breakfast you can make`() {
-        val r = rightNow(tuesday, pantry, emptyList(), wishes, emptyList(), null)!!
+        val r = rightNow(tuesday, pantry, SAMPLE_RECIPES, wishes, emptyList(), null)!!
         assertEquals("Breakfast ideas", r.headline)
         assertTrue(r.items.all { it.kind == SuggestionKind.FOOD })
         assertTrue(r.items.first().title in setOf("Masala omelette", "Egg bhurji"))
@@ -23,7 +23,7 @@ class RightNowTest {
 
     @Test
     fun `evening suggests dinner only, the watch list has its own tab`() {
-        val r = rightNow(tuesday.withHour(19), pantry, emptyList(), wishes, emptyList(), null)!!
+        val r = rightNow(tuesday.withHour(19), pantry, SAMPLE_RECIPES, wishes, emptyList(), null)!!
         assertEquals("For dinner", r.headline)
         assertTrue(r.items.all { it.kind == SuggestionKind.FOOD })
     }
@@ -31,14 +31,14 @@ class RightNowTest {
     @Test
     fun `weekend suggests eating out, and shopping only with budget left`() {
         val saturday = LocalDateTime.of(2026, 11, 7, 12, 0)
-        val noBudget = rightNow(saturday, pantry, emptyList(), wishes, emptyList(), null)!!
+        val noBudget = rightNow(saturday, pantry, SAMPLE_RECIPES, wishes, emptyList(), null)!!
         assertEquals(listOf(SuggestionKind.EAT_OUT), noBudget.items.map { it.kind })
-        val withBudget = rightNow(saturday, pantry, emptyList(), wishes, emptyList(), "₹4,000")!!
+        val withBudget = rightNow(saturday, pantry, SAMPLE_RECIPES, wishes, emptyList(), "₹4,000")!!
         assertTrue(withBudget.items.any { it.title == "New sofa" })
     }
 
     @Test
     fun `late night is quiet`() {
-        assertNull(rightNow(tuesday.withHour(23), pantry, emptyList(), wishes, emptyList(), null))
+        assertNull(rightNow(tuesday.withHour(23), pantry, SAMPLE_RECIPES, wishes, emptyList(), null))
     }
 }

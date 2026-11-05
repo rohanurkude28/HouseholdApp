@@ -80,6 +80,8 @@ service cloud.firestore {
       allow create: if signedIn() && request.resource.data.createdBy == uid();
       allow read: if isMember(hid);
       allow update: if isOwner(hid) && request.resource.data.createdBy == resource.data.createdBy;
+      // The last member deleting their account takes the home with them (the app clears entries first).
+      allow delete: if isOwner(hid);
 
       match /members/{memberId} {
         allow read: if isMember(hid);
@@ -97,6 +99,7 @@ service cloud.firestore {
         allow read: if isMember(hid);
         allow write: if isMember(hid) && request.resource.data.keys().hasOnly(['kind', 'createdBy', 'visibleTo', 'updatedAt'])
           && request.resource.data.kind is string && request.resource.data.kind.size() < 20;
+        allow delete: if isOwner(hid);
       }
 
       // Note for list queries: rules aren't filters. Query with

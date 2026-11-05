@@ -4,6 +4,9 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.houseaffairs.app.BuildConfig
 import com.houseaffairs.app.core.model.Visibility
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
@@ -38,6 +41,8 @@ data class WatchItem(
     val votes: List<String> = emptyList(),
     /** Set when picked from search results, so ratings come from exactly that title. */
     val imdbId: String? = null,
+    /** A link the family saved (trailer, review, shop). */
+    val link: String? = null,
     /** Author or artist, for books and music. */
     val creator: String? = null,
 ) {
@@ -88,14 +93,17 @@ class WatchRepository @Inject constructor(
             .map { snap ->
                 snap.documents
                     .filter { ListTemplate.of(it.getString("template"))?.isMedia == true && it.getString("status") != "DONE" }
-                    .map { d ->
+                    // One odd document mustn't empty the whole list: skip it instead.
+                    .mapNotNull { d ->
+                        runCatching {
                         WatchItem(
                             template = ListTemplate.of(d.getString("template")) ?: ListTemplate.WATCH,
                             creator = d.getString("creator"),
                             id = d.id,
                             title = d.getString("title").orEmpty(),
                             platform = d.getString("platform"),
-                            rating = d.getDouble("rating"),
+                            // Older items saved "👍 Liked it" here; only a number is a rating.
+                            rating = (d.get("rating") as? Number)?.toDouble(),
                             ratingSource = d.getString("ratingSource"),
                             poster = d.getString("poster"),
                             providers = (d.get("providers") as? List<*>).orEmpty().filterIsInstance<String>(),
@@ -107,7 +115,9 @@ class WatchRepository @Inject constructor(
                             status = d.getString("status") ?: "IDEA",
                             votes = (d.get("votes") as? List<*>).orEmpty().filterIsInstance<String>(),
                             imdbId = d.getString("imdbId"),
+                            link = d.getString("link")?.takeIf { it.isNotBlank() },
                         )
+                        }.getOrNull()
                     }
                     .sortedByDescending { it.rating ?: 0.0 }
             }
@@ -115,32 +125,36 @@ class WatchRepository @Inject constructor(
 
     /** Fills in rating, poster and providers for items not looked up yet. Safe to call often. */
     suspend fun enrich(householdId: String, list: List<WatchItem>) = withContext(Dispatchers.IO) {
-        list.filter { !it.lookedUp }.take(8).forEach { item ->
-            val found = when (item.template) {
-                ListTemplate.BOOKS -> runCatching { openLibrary(item.title) }.getOrNull()
-                ListTemplate.MUSIC -> runCatching { itunes(item.title) }.getOrNull()
-                else -> runCatching { if (tmdbKey.isNotBlank()) tmdb(item.title) else null }.getOrNull()
-                    ?: runCatching { tvmaze(item.title) }.getOrNull()
-            }
-            val fields = mutableMapOf<String, Any?>("lookedUp" to true)
-            found?.let { f ->
-                fields["rating"] = f.rating
-                fields["ratingSource"] = f.source
-                fields["poster"] = f.poster
-                fields["providers"] = f.providers
-                fields["kind"] = f.kind
-                fields["year"] = f.year
-                f.creator?.let { fields["creator"] = it }
-            }
-            items(householdId).document(item.id).update(fields)
-        }
+        coroutineScope { list.filter { !it.lookedUp }.take(8).map { item -> async { enrichOne(householdId, item) } }.awaitAll() }
         // IMDb and Rotten Tomatoes, once per movie or show, when there's an OMDb key.
-        if (omdbKey.isNotBlank()) {
-            list.filter { it.template == ListTemplate.WATCH && it.imdb == null && it.rottenTomatoes == null }.take(8).forEach { item ->
-                val scores = runCatching { omdb(item.title, item.year, item.imdbId) }.getOrNull() ?: return@forEach
-                items(householdId).document(item.id).update(scores)
-            }
+        if (omdbKey.isNotBlank()) coroutineScope {
+            list.filter { it.template == ListTemplate.WATCH && it.imdb == null && it.rottenTomatoes == null }.take(8).map { item ->
+                async {
+                    val scores = runCatching { omdb(item.title, item.year, item.imdbId) }.getOrNull() ?: return@async
+                    items(householdId).document(item.id).update(scores)
+                }
+            }.awaitAll()
         }
+    }
+
+    private fun enrichOne(householdId: String, item: WatchItem) {
+        val found = when (item.template) {
+            ListTemplate.BOOKS -> runCatching { openLibrary(item.title) }.getOrNull()
+            ListTemplate.MUSIC -> runCatching { itunes(item.title) }.getOrNull()
+            else -> runCatching { if (tmdbKey.isNotBlank()) tmdb(item.title) else null }.getOrNull()
+                ?: runCatching { tvmaze(item.title) }.getOrNull()
+        }
+        val fields = mutableMapOf<String, Any?>("lookedUp" to true)
+        found?.let { f ->
+            fields["rating"] = f.rating
+            fields["ratingSource"] = f.source
+            fields["poster"] = f.poster
+            fields["providers"] = f.providers
+            fields["kind"] = f.kind
+            fields["year"] = f.year
+            f.creator?.let { fields["creator"] = it }
+        }
+        items(householdId).document(item.id).update(fields)
     }
 
     /** IMDb rating and Rotten Tomatoes score for a title; "N/A" ratings are left out. */
@@ -158,15 +172,20 @@ class WatchRepository @Inject constructor(
      */
     suspend fun search(template: ListTemplate, query: String): List<MediaHit> = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext emptyList()
-        val hits = when (template) {
-            ListTemplate.BOOKS -> mergeBooks(
-                runCatching { searchBooks(query) }.getOrDefault(emptyList()),
-                runCatching { searchGoogleBooks(query) }.getOrDefault(emptyList()),
-            )
-            ListTemplate.MUSIC -> runCatching { searchSongs(query) }.getOrDefault(emptyList())
-            else -> {
-                val fromOmdb = if (omdbKey.isBlank()) emptyList() else searchVariants(query).take(5).flatMap { q -> runCatching { searchOmdb(q) }.getOrDefault(emptyList()) }
-                fromOmdb + runCatching { searchShows(query) }.getOrDefault(emptyList())
+        // Every source at once rather than one after another: the slowest one sets the wait, not the sum.
+        val hits = coroutineScope {
+            when (template) {
+                ListTemplate.BOOKS -> {
+                    val ol = async { runCatching { searchBooks(query) }.getOrDefault(emptyList()) }
+                    val g = async { runCatching { searchGoogleBooks(query) }.getOrDefault(emptyList()) }
+                    mergeBooks(ol.await(), g.await())
+                }
+                ListTemplate.MUSIC -> runCatching { searchSongs(query) }.getOrDefault(emptyList())
+                else -> {
+                    val omdb = if (omdbKey.isBlank()) emptyList() else searchVariants(query).take(4).map { q -> async { runCatching { searchOmdb(q) }.getOrDefault(emptyList()) } }
+                    val shows = async { runCatching { searchShows(query) }.getOrDefault(emptyList()) }
+                    omdb.flatMap { it.await() } + shows.await()
+                }
             }
         }
         rankHits(query, hits).take(6)
@@ -240,7 +259,8 @@ class WatchRepository @Inject constructor(
 
     /** "How was it?" after watching, reading or listening. */
     fun rate(householdId: String, id: String, liked: Boolean) {
-        items(householdId).document(id).update("rating", if (liked) "👍 Liked it" else "👎 Not great")
+        // Its own field: "rating" is the looked-up score, a number.
+        items(householdId).document(id).update("verdict", if (liked) "👍 Liked it" else "👎 Not great")
     }
 
     /** Returns an undo that puts the item back on its list. */
@@ -254,8 +274,8 @@ class WatchRepository @Inject constructor(
 
     private fun get(url: String): JSONObject? {
         val c = URL(url).openConnection() as HttpURLConnection
-        c.connectTimeout = 6_000
-        c.readTimeout = 6_000
+        c.connectTimeout = 4_000
+        c.readTimeout = 5_000
         return try {
             if (c.responseCode != 200) null else JSONObject(c.inputStream.bufferedReader().readText())
         } finally {
@@ -266,8 +286,8 @@ class WatchRepository @Inject constructor(
     /** Like [get], for endpoints that answer with a JSON list. */
     private fun getArray(url: String): org.json.JSONArray? {
         val c = URL(url).openConnection() as HttpURLConnection
-        c.connectTimeout = 6_000
-        c.readTimeout = 6_000
+        c.connectTimeout = 4_000
+        c.readTimeout = 5_000
         return try {
             if (c.responseCode != 200) null else org.json.JSONArray(c.inputStream.bufferedReader().readText())
         } finally {
@@ -314,10 +334,11 @@ class WatchRepository @Inject constructor(
 
     /** The best match from Open Library and Google Books together, so a cover or rating either lacks is filled. */
     private fun openLibrary(title: String): Found? {
-        val hit = rankHits(title, mergeBooks(
-            runCatching { searchBooks(title) }.getOrDefault(emptyList()),
-            runCatching { searchGoogleBooks(title, 5) }.getOrDefault(emptyList()),
-        )).firstOrNull() ?: return null
+        val hit = kotlinx.coroutines.runBlocking(Dispatchers.IO) {
+            val ol = async { runCatching { searchBooks(title) }.getOrDefault(emptyList()) }
+            val g = async { runCatching { searchGoogleBooks(title, 5) }.getOrDefault(emptyList()) }
+            rankHits(title, mergeBooks(ol.await(), g.await())).firstOrNull()
+        } ?: return null
         return Found(
             rating = hit.rating,
             source = "Open Library · Google Books",
