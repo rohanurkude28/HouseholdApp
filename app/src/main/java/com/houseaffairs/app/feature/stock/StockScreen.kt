@@ -188,10 +188,14 @@ fun StockScreen(
                 }
             }
         }
-        // What gets used up, and how fast: from packs bought and marked Finished.
-        if (state.tab == StockTab.PANTRY) item {
-                androidx.compose.material3.TextButton(onClick = { showUsage = true }, modifier = Modifier.padding(start = 8.dp)) { Text("📊 Kitchen by month") }
-            }
+        // This month's groceries, kinds and waste where the shopping happens; tap for every month.
+        if (state.tab == StockTab.PANTRY || state.tab == StockTab.SHOPPING) item {
+            com.houseaffairs.app.core.ui.StockMonthCard(
+                com.houseaffairs.app.core.data.StockKind.FOOD,
+                onOpen = { showUsage = true },
+                modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 4.dp),
+            )
+        }
         when (state.tab) {
             StockTab.PANTRY -> itemList(
                 "pantry", pantry, pantryControls, colors.stock,
@@ -199,7 +203,7 @@ fun StockScreen(
                 emptyTitle = "Your pantry is empty", emptyBody = "Add what you buy, or tick items off the shopping list and they land here.",
                 onToggle = { groups.toggle("pantry:$it") },
             ) { row ->
-                CompactRow(row.title, stockDetail(row.item, row.flag), row.flag, onClick = { onEdit(EntryType.GROCERY, row.item.id) }, actions = listOf("Finished" to { viewModel.usedUp(row.item) }), leading = com.houseaffairs.app.feature.vault.photoLead(row.item.photos))
+                CompactRow(row.title, stockDetail(row.item, row.flag), row.flag, onClick = { onEdit(EntryType.GROCERY, row.item.id) }, actions = listOf("Finished" to { viewModel.usedUp(row.item) }, "Threw it away" to { viewModel.threwAway(row.item) }), leading = com.houseaffairs.app.feature.vault.photoLead(row.item.photos))
             }
             StockTab.RECIPES -> {
                 // Find any dish, yours or the library's, and see what you have for it.
@@ -287,7 +291,7 @@ fun StockScreen(
         }
     }
 
-    if (showUsage) com.houseaffairs.app.core.ui.UsageSheet(onDismiss = { showUsage = false })
+    if (showUsage) com.houseaffairs.app.core.ui.StockYearSheet(com.houseaffairs.app.core.data.StockKind.FOOD, onDismiss = { showUsage = false })
     viewing?.let { idea ->
         DishSheet(
             idea, state.pantry,

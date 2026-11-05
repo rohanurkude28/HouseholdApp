@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -30,6 +31,7 @@ class HouseAffairsApp : Application() {
     @Inject lateinit var calendar: com.houseaffairs.app.core.calendar.CalendarStore
     @Inject lateinit var session: com.houseaffairs.app.core.data.SessionManager
     @Inject lateinit var home: com.houseaffairs.app.core.data.HomeRepository
+    @Inject lateinit var things: com.houseaffairs.app.core.data.ThingsRepository
 
     override fun onCreate() {
         super.onCreate()
@@ -59,6 +61,12 @@ class HouseAffairsApp : Application() {
                     // The home-screen widget follows the same changes.
                     com.houseaffairs.app.widget.HomeWidget.refreshSoon(this@HouseAffairsApp)
                 }
+        }
+        // Once per start: finished things whose year in review is over are cleared.
+        scope.launch {
+            session.state.filterIsInstance<SessionState.Ready>().map { it.household.id to it.me.uid }.distinctUntilChanged().collect { (hid, uid) ->
+                runCatching { things.clearOldFinished(hid, uid) }
+            }
         }
         // Daily automatic backup while it's chosen, on Wi-Fi only or any network.
         scope.launch {

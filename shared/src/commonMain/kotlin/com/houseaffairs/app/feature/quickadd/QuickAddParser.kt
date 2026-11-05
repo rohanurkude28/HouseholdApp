@@ -89,6 +89,8 @@ sealed interface QuickAddDraft {
         val reach: String? = null,
         /** "5:30 pm" when a time was said; the task then reminds at that time. */
         val time: String? = null,
+        /** Who it's for when said: "Rohan, please pay the bill", "remind Mom to…". */
+        val forName: String? = null,
     ) : QuickAddDraft
     data class Event(val title: String, val kind: String, val date: LocalDate?) : QuickAddDraft
     data class Medicine(val title: String, val forName: String?, val expiry: LocalDate?) : QuickAddDraft
@@ -124,7 +126,14 @@ sealed interface QuickAddDraft {
     data class Dream(val title: String, val kind: String, val amount: Decimal?, val date: LocalDate?) : QuickAddDraft
 
     /** A question for the assistant rather than something to save. */
-    data class Ask(val question: Question, val subject: String?, val person: String? = null, val count: Int? = null) : QuickAddDraft
+    data class Ask(
+        val question: Question,
+        val subject: String?,
+        val person: String? = null,
+        val count: Int? = null,
+        /** For SPENT: "this month" (the default), "last month", "this week", "this year"… */
+        val period: String? = null,
+    ) : QuickAddDraft
 
     enum class Question {
         COOK, EXPIRING, LEFT, AFFORD, WHERE,
@@ -152,6 +161,12 @@ sealed interface QuickAddDraft {
 
         /** "How long did the detergent last?" (subject = the item). */
         LASTED,
+
+        /** "How much did we spend on groceries this month?" (subject = category or shop; null = everything). */
+        SPENT,
+
+        /** "Share my live location with Ravi" (subject = the person). */
+        SHARE_LOCATION,
     }
 
     /** "Gold necklace is in the bank locker" / "kept spare keys in the blue drawer". */
@@ -230,7 +245,8 @@ class QuickAddParser(
 
     /** Everything but questions, changes and batches; also used for each part of a batch. */
     private fun parseSingle(text: String): QuickAddDraft? {
-        return parseActivity(text)
+        return parsePersonTask(text)
+            ?: parseActivity(text)
             ?: parseTrip(text)
             ?: parseAddTo(text)
             ?: parseMove(text)
@@ -239,10 +255,11 @@ class QuickAddParser(
             ?: parseCredit(text)
             ?: parseFund(text)
             ?: parseKept(text)
+            // "Running low on detergent" is something to buy, before detergent reads as a supply.
+            ?: parseRunningOut(text)
             ?: parseHousehold(text)
             ?: parseDream(text)
             ?: parseCooked(text)
-            ?: parseRunningOut(text)
             ?: parseEvent(text)
             ?: parseMedicine(text)
             ?: parseMoney(text)
@@ -252,7 +269,7 @@ class QuickAddParser(
     }
 
     private fun parseAddTo(text: String): QuickAddDraft? {
-        val match = ADD_TO.matchEntire(text) ?: return null
+        val match = ADD_TO.matchEntire(text.trimEnd('.', '!', '?').trim()) ?: return null
         val what = match.groupValues[1].trim()
         val target = match.groupValues[2].trim().lowercase()
         val template = ListTemplate.entries.firstOrNull { target in it.aliases }
@@ -390,6 +407,12 @@ class QuickAddParser(
         }
         (WHEN_DREAM.matchEntire(t) ?: HOW_LONG_TO_DREAM.matchEntire(t))?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.WHEN_DREAM, m.groupValues[1].trim().trim(*PUNCTUATION).capitalized()) }
         (LASTED.matchEntire(t) ?: RUN_OUT.matchEntire(t))?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.LASTED, m.groupValues[1].trim().trim(*PUNCTUATION).capitalized()) }
+        ASK_SPENT.matchEntire(t)?.let { m ->
+            val subject = m.groupValues[1].trim().trim(*PUNCTUATION).removePrefix("the ").ifEmpty { null }
+            val period = m.groupValues[2].ifEmpty { null }?.lowercase()?.let { if (it == "today") it else "$it ${m.groupValues[3].lowercase()}" }
+            return QuickAddDraft.Ask(QuickAddDraft.Question.SPENT, subject?.capitalized(), period = period ?: "this month")
+        }
+        SHARE_LOCATION.matchEntire(t)?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.SHARE_LOCATION, m.groupValues[1].trim().trim(*PUNCTUATION).capitalized()) }
         ASK_COOK.matchEntire(t)?.let { return QuickAddDraft.Ask(QuickAddDraft.Question.COOK, null) }
         // Before symptoms: "I feel like eating something spicy" is hunger, not illness.
         (CRAVING.matchEntire(t) ?: CRAVING_TASTE.matchEntire(t))?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.CRAVING, m.groupValues[1].trim()) }
@@ -639,7 +662,9 @@ class QuickAddParser(
     }
 
     private fun parseRunningOut(text: String): QuickAddDraft? {
-        val item = (OUT_OF.matchEntire(text) ?: ITEM_OVER.matchEntire(text))?.groupValues?.get(1)?.trim() ?: return null
+        // "…detergent. Add it to the shopping list." says the same thing twice.
+        val said = ADD_IT_TO_LIST.replace(text, "").trim().trimEnd('.', '!').trim()
+        val item = (OUT_OF.matchEntire(said) ?: ITEM_OVER.matchEntire(said))?.groupValues?.get(1)?.trim()?.trimEnd('.', '!') ?: return null
         // "need to call the plumber" is a task, not something to buy.
         if (item.startsWith("to ", ignoreCase = true)) return null
         return shoppingOf(item)
@@ -765,6 +790,25 @@ class QuickAddParser(
             drop += j
         }
         return Triple("Card", name, drop)
+    }
+
+    /**
+     * A task for someone: "remind Mom to take her medicine at 9 pm", "ask Ravi to fix the tap",
+     * "Rohan, please pay the electricity bill tomorrow". Talking to someone only counts when the
+     * rest is a task ("Ravi, 500 for groceries" stays an expense).
+     */
+    private fun parsePersonTask(text: String): QuickAddDraft.Task? {
+        val t = text.trim().trimEnd('.', '!', '?').trim()
+        REMIND_PERSON.matchEntire(t)?.let { m ->
+            val name = m.groupValues[1]
+            if (name.lowercase() !in NOT_NAMES) return parseTask(m.groupValues[2]).copy(forName = name.capitalized())
+        }
+        val m = ADDRESSED.matchEntire(t) ?: return null
+        val name = m.groupValues[1]
+        if (name.lowercase() in NOT_NAMES) return null
+        val rest = m.groupValues[2].trim()
+        if (parseSingle(rest) !is QuickAddDraft.Task) return null
+        return parseTask(rest).copy(forName = name.capitalized())
     }
 
     private fun parseTask(text: String): QuickAddDraft.Task {
@@ -946,8 +990,32 @@ class QuickAddParser(
             "^(?:please )?add (.+) (?:to|in|on)(?: the| my| our)? (.+?)(?: list)?$",
             RegexOption.IGNORE_CASE,
         )
+        /** "remind Mom to…", "ask Ravi to…", "tell Riya to…" (not "remind me to"). */
+        val REMIND_PERSON = Regex("^(?:please )?(?:remind|ask|tell) ([a-z]+) to (.+)$", RegexOption.IGNORE_CASE)
+
+        /** "Rohan, please pay the bill" / "Rohan please pay the bill" (voice drops the comma). */
+        val ADDRESSED = Regex("^([a-z]+)(?:\\s*,\\s*(?:please |pls |kindly |can you |could you )?| (?:please|pls|kindly|can you|could you) )(.+)$", RegexOption.IGNORE_CASE)
+
+        /** Words that start a sentence but aren't someone's name. */
+        val NOT_NAMES = setOf(
+            "me", "us", "i", "we", "you", "it", "them", "him", "her", "ok", "okay", "so", "also", "then", "now", "today",
+            "tomorrow", "and", "but", "please", "hey", "hi", "hello", "yes", "no", "well", "oh", "the", "a",
+        )
+
+        /** "add it to the shopping list" after naming what's running low. */
+        val ADD_IT_TO_LIST = Regex("[.,!]?\\s*(?:please )?(?:add|put) (?:it|them|that|those) (?:to|on|in)(?: the| my| our)? (?:shopping|grocery|groceries)(?: list)?[.!]?$", RegexOption.IGNORE_CASE)
+
+        /** "How much did we spend on groceries this month", "what have I spent at DMart last week". */
+        val ASK_SPENT = Regex(
+            "^(?:how much|what) (?:did|have|has) (?:we|i|the family|the home|our family) (?:spend|spent)(?: (?:on|for|at) (.+?))?(?: (this|last|today)(?: (week|month|year))?| so far)?$",
+            RegexOption.IGNORE_CASE,
+        )
+
+        /** "Share my live location with Ravi", "send my location to Mom". */
+        val SHARE_LOCATION = Regex("^(?:share|send) (?:my )?(?:live |current )?location (?:with|to) (.+)$", RegexOption.IGNORE_CASE)
+
         val OUT_OF = Regex(
-            "^(?:we(?:['’]re| are) |i(?:['’]m| am) )?(?:ran out of|out of|no more|need to buy|need|buy) (.+)$",
+            "^(?:we(?:['’]re| are) |i(?:['’]m| am) |we )?(?:running low on|running out of|low on|almost out of|nearly out of|ran out of|out of|no more|need to buy|need|buy) (.+)$",
             RegexOption.IGNORE_CASE,
         )
         val ITEM_OVER = Regex(

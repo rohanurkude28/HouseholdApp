@@ -57,3 +57,27 @@ class MonthOverviewTest {
         assertEquals(o.totalMinor, o.paidWith.sumOf { it.second })
     }
 }
+
+class MoneyYearTest {
+    private fun d(y: Int, m: Int, day: Int) = LocalDate.of(y, m, day)
+
+    @Test
+    fun `budget months group into years with their own limits`() {
+        val budget = Budget(limitMinor = 50_000_00, currency = "INR")
+        val txns = listOf(
+            Txn("1", "Rent", "Rent", 30_000_00, d(2026, 1, 2), planned = false),
+            Txn("2", "Toit", "Dining", 2_000_00, d(2026, 2, 3), planned = false),
+            Txn("3", "Gifts", "Gifts", 5_000_00, d(2025, 12, 20), planned = false),
+            Txn("4", "Soon", "Travel", 9_000_00, d(2026, 2, 9), planned = true),
+        )
+        val years = moneyYears(txns, budget, startedOn = d(2025, 12, 1), today = d(2026, 2, 10))
+        assertEquals(listOf(2026, 2025), years.map { it.year })
+        val y = years.first()
+        assertEquals(2, y.months.size)
+        assertEquals(32_000_00L, y.spentMinor)
+        assertEquals(100_000_00L, y.budgetMinor)
+        assertEquals("Rent" to 30_000_00L, y.topCategories().first())
+        // Newest month first, as everywhere else.
+        assertEquals(2, y.months.first().overview.cycle.start.monthValue)
+    }
+}

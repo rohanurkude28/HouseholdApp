@@ -134,7 +134,7 @@ fun SignInScreen(viewModel: SignInViewModel = hiltViewModel()) {
                 )
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    "Money, groceries, plans and paperwork for the whole family. In one calm place.",
+                    "Everything your home needs. One place.",
                     style = MaterialTheme.typography.titleMedium,
                     color = Color.White.copy(alpha = 0.9f),
                 )

@@ -1,6 +1,8 @@
 package com.houseaffairs.app.feature.add
 
 import androidx.lifecycle.ViewModel
+import com.houseaffairs.app.core.data.spentOn
+import com.houseaffairs.app.core.data.periodDays
 import com.houseaffairs.app.core.data.PhraseRepository
 import com.houseaffairs.app.feature.quickadd.Assistant
 import com.houseaffairs.app.feature.quickadd.AssistContext
@@ -156,6 +158,9 @@ data class Answer(
     val groups: List<Pair<String, List<DishIdea>>> = emptyList(),
     /** Gemini's reason for a dish, by title, when smart suggestions are on. */
     val why: Map<String, String> = emptyMap(),
+    /** "Share my live location with Ravi": who, and their number once known on this phone. */
+    val shareWith: String? = null,
+    val sharePhone: String? = null,
 )
 
 /** "Made paneer sabzi": the matching recipe (if any) and what it takes from the pantry. */
@@ -462,7 +467,14 @@ class AddViewModel @Inject constructor(
             is QuickAddDraft.Fund -> cleared.copy(move = moveFor(draft.amount, "Gullak", draft.target))
             is QuickAddDraft.Growth -> cleared.copy(move = growthFor(draft.target, toMinorUnits(draft.amount, currency()), revalue = false))
             is QuickAddDraft.Revalue -> cleared.copy(move = growthFor(draft.target, toMinorUnits(draft.amount, currency()), revalue = true))
-            is QuickAddDraft.Ask -> cleared.copy(answer = answerFor(draft))
+            is QuickAddDraft.Ask -> cleared.copy(answer = answerFor(draft)).also {
+                // The number for this person, if one was picked here before.
+                draft.subject?.takeIf { draft.question == QuickAddDraft.Question.SHARE_LOCATION }?.let { name ->
+                    viewModelScope.launch {
+                        settings.numberFor(name)?.let { n -> local.update { s -> s.copy(answer = s.answer?.takeIf { a -> a.shareWith == name }?.copy(sharePhone = n) ?: s.answer) } }
+                    }
+                }
+            }
             null -> cleared
             else -> cleared.copy(suggestion = suggestionFor(draft))
         }
@@ -856,6 +868,37 @@ class AddViewModel @Inject constructor(
                     )
                 }
             }
+            QuickAddDraft.Question.SPENT -> {
+                if (m == null) return Answer("No budget yet", listOf("Set up a budget in Money and I'll keep track of what's spent."))
+                val period = ask.period ?: "this month"
+                val spent = spentOn(m.txns, ask.subject, periodDays(period, today, m.budget.cycleStartDay))
+                val what = spent.matched?.lowercase() ?: ask.subject?.lowercase()
+                when {
+                    spent.count == 0 -> Answer(
+                        "Nothing spent${what?.let { " on $it" } ?: ""} $period",
+                        listOf(if (ask.subject != null) "No expenses matched “${ask.subject}”. Try a category like groceries or dining, or a shop's name." else "No expenses logged yet."),
+                    )
+                    else -> Answer(
+                        "${fmt(spent.totalMinor)}${what?.let { " on $it" } ?: ""} $period",
+                        listOfNotNull(
+                            "${spent.count} ${if (spent.count == 1) "expense" else "expenses"}",
+                            spent.top.takeIf { it.size > 1 }?.let { top -> "Most " + (if (ask.subject == null) "on " else "at ") + top.joinToString(" · ") { (k, v) -> "$k ${fmt(v)}" } },
+                            // This month against all of last month, to see the pace.
+                            if (period == "this month") spentOn(m.txns, ask.subject, periodDays("last month", today, m.budget.cycleStartDay)).totalMinor.takeIf { it > 0 }?.let { "All of last month: ${fmt(it)}" } else null,
+                        ),
+                    )
+                }
+            }
+            QuickAddDraft.Question.SHARE_LOCATION -> {
+                val name = ask.subject.orEmpty()
+                Answer(
+                    "Share your live location with $name",
+                    listOf(
+                        "I'll open $name's WhatsApp chat. Apps can't start live sharing for you, so there tap 📎 → Location → Share live location.",
+                    ),
+                    shareWith = name,
+                )
+            }
             QuickAddDraft.Question.AFFORD -> {
                 val dream = m?.dreams?.firstOrNull { sameIngredient(it.dream.title, ask.subject.orEmpty()) }
                 when {
@@ -1099,7 +1142,7 @@ class AddViewModel @Inject constructor(
     private fun doneChanges(entry: FoundEntry): Map<String, Any?>? = when (entry.type) {
         EntryType.TASK -> mapOf("done" to true, "completedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp())
         EntryType.SHOPPING -> mapOf("done" to true)
-        EntryType.WISH -> mapOf("status" to "DONE")
+        EntryType.WISH -> mapOf("status" to "DONE", "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp())
         EntryType.DREAM -> mapOf("achieved" to true)
         // Ends today unless it already ended, so later expenses don't join it.
         EntryType.TRIP -> mapOf("done" to true) + if ((entry.data["end"] as? com.google.firebase.Timestamp)?.toDate()?.after(java.util.Date()) != false) {
@@ -1394,7 +1437,7 @@ class AddViewModel @Inject constructor(
         }
         val shownTo = topic?.let { privateVisibleTo(r.household.privateTopics.getValue(it), uid) } ?: visibleTo
         if (form.editId != null) {
-            entries.update(r.household.id, form.type, form.editId, form.values, visibleTo)
+            entries.update(r.household.id, form.type, form.editId, form.values, visibleTo, r.user.uid)
             local.value = LocalState()
             val before = form.original
             val beforeVisible = form.originalVisibleTo ?: visibleTo
@@ -1496,7 +1539,14 @@ class AddViewModel @Inject constructor(
                 // No quantity said: preselect how it's usually measured (g for paneer, ml for milk).
                 "quantity" to (draft.quantity?.split(" ")?.let { QuantityValue(it[0], it.getOrElse(1) { "pcs" }) } ?: QuantityValue("", formUnit(draft.item))),
             )
-            is QuickAddDraft.Task -> EntryType.TASK to mapOf("title" to draft.title, "due" to draft.due, "repeat" to draft.repeat, "priority" to (draft.priority ?: "Low"), "reach" to draft.reach, "time" to draft.time)
+            is QuickAddDraft.Task -> {
+                // "Rohan, please…": given to that family member. Someone outside the app ("remind Mom")
+                // stays with me, named in the title.
+                val person = draft.forName?.let(::memberNamed)
+                val title = if (draft.forName != null && person == null) "${draft.forName}: ${draft.title.replaceFirstChar { it.lowercase() }}" else draft.title
+                EntryType.TASK to mapOf("title" to title, "due" to draft.due, "repeat" to draft.repeat, "priority" to (draft.priority ?: "Low"), "reach" to draft.reach, "time" to draft.time) +
+                    (person?.let { mapOf("assignee" to it.uid) } ?: emptyMap())
+            }
             is QuickAddDraft.Event -> EntryType.EVENT to mapOf(
                 "title" to draft.title,
                 "kind" to draft.kind,
@@ -1550,6 +1600,11 @@ class AddViewModel @Inject constructor(
             is QuickAddDraft.Move, is QuickAddDraft.Fund, is QuickAddDraft.Ask, is QuickAddDraft.Change,
             is QuickAddDraft.Growth, is QuickAddDraft.Revalue -> EntryType.TASK to emptyMap()
         }
+    }
+
+    fun rememberNumber(name: String, number: String) {
+        viewModelScope.launch { settings.rememberNumber(name, number) }
+        local.update { s -> s.copy(answer = s.answer?.copy(sharePhone = number)) }
     }
 
     private fun memberNamed(name: String): Member? =

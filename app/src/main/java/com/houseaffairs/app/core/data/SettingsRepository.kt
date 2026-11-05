@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -30,6 +31,13 @@ class SettingsRepository @Inject constructor(
 
     /** Home section order and visibility, e.g. "ATTENTION:1,GLANCE:1,RECENT:0"; null means the default. */
     val homeLayout: Flow<String?> = dataStore.data.map { it[HOME_LAYOUT] }
+
+    /** Numbers picked for "share my location with Ravi", by name, kept on this phone only. */
+    suspend fun numberFor(name: String): String? = dataStore.data.first()[stringPreferencesKey("phone_" + name.lowercase())]
+
+    suspend fun rememberNumber(name: String, number: String) {
+        dataStore.edit { it[stringPreferencesKey("phone_" + name.lowercase())] = number }
+    }
 
     suspend fun setHomeLayout(layout: String) {
         dataStore.edit { it[HOME_LAYOUT] = layout }

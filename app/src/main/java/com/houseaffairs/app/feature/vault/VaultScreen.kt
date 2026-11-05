@@ -143,8 +143,9 @@ fun VaultScreen(
     val drive: com.houseaffairs.app.core.drive.DriveViewModel = hiltViewModel()
     var pickedFile by remember { mutableStateOf<android.net.Uri?>(null) }
     val pickFile = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { pickedFile = it }
-    var showUsage by remember { mutableStateOf(false) }
-    if (showUsage) com.houseaffairs.app.core.ui.UsageSheet(onDismiss = { showUsage = false })
+    // The year for medicines or supplies, whichever tab it was opened from.
+    var showUsage by remember { mutableStateOf<com.houseaffairs.app.core.data.StockKind?>(null) }
+    showUsage?.let { kind -> com.houseaffairs.app.core.ui.StockYearSheet(kind, onDismiss = { showUsage = null }) }
     pickedFile?.let { uri -> com.houseaffairs.app.core.drive.UploadDocumentSheet(uri, drive) { pickedFile = null; drive.clearMessage() } }
     LaunchedEffect(requestedTab) {
         ThingsTab.entries.firstOrNull { it.name == requestedTab }?.let { viewModel.tab.value = it; onTabShown() }
@@ -213,9 +214,19 @@ fun VaultScreen(
                 }
             }
         }
-        if (tab == ThingsTab.SUPPLIES) item {
-                androidx.compose.material3.TextButton(onClick = { showUsage = true }, modifier = Modifier.padding(start = 8.dp)) { Text("📊 How long things last") }
-            }
+        // This month for medicines or supplies: what came home, what ran out, what was thrown away.
+        val stockKind = when (tab) {
+            ThingsTab.MEDICINES -> com.houseaffairs.app.core.data.StockKind.MEDICINES
+            ThingsTab.SUPPLIES -> com.houseaffairs.app.core.data.StockKind.SUPPLIES
+            else -> null
+        }
+        if (stockKind != null) item(key = "month-$stockKind") {
+            com.houseaffairs.app.core.ui.StockMonthCard(
+                stockKind,
+                onOpen = { showUsage = stockKind },
+                modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 4.dp),
+            )
+        }
         when (tab) {
             null -> Unit
             ThingsTab.MEDICINES -> itemList(
@@ -224,7 +235,7 @@ fun VaultScreen(
                 emptyTitle = "No medicines", emptyBody = "Track what's in the cabinet, who it's for, and when it expires.",
                 onToggle = { groups.toggle("medicines:$it") },
             ) { row ->
-                CompactRow(row.title, stockDetail(row.item, row.flag), row.flag, onClick = { onEdit(EntryType.MEDICINE, row.item.id) }, actions = listOf("Finished" to { stock.usedUp(row.item, from = "medicines") }), leading = photoLead(row.item.photos))
+                CompactRow(row.title, stockDetail(row.item, row.flag), row.flag, onClick = { onEdit(EntryType.MEDICINE, row.item.id) }, actions = listOf("Finished" to { stock.usedUp(row.item, from = "medicines") }, "Threw it away" to { stock.threwAway(row.item, from = "medicines") }), leading = photoLead(row.item.photos))
             }
             ThingsTab.SUPPLIES -> itemList(
                 "supplies", supplies, supControls, vault,
@@ -235,7 +246,7 @@ fun VaultScreen(
                 CompactRow(
                     row.title, stockDetail(row.item, row.flag), row.flag,
                     onClick = { onEdit(EntryType.HOUSEHOLD, row.item.id) },
-                    actions = listOf("Used 1" to { stock.useOne(row.item) }, "Finished" to { stock.usedUp(row.item) }),
+                    actions = listOf("Used 1" to { stock.useOne(row.item) }, "Finished" to { stock.usedUp(row.item) }, "Threw it away" to { stock.threwAway(row.item) }),
                     leading = photoLead(row.item.photos),
                 )
             }

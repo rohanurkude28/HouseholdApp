@@ -11,6 +11,8 @@ data class Goal(
     val progress: Int,
     val by: LocalDate?,
     val created: LocalDate?,
+    /** When it reached 100%, for the month and year views. */
+    val doneOn: LocalDate? = null,
 ) {
     val done: Boolean get() = progress >= 100
 }

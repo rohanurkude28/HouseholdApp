@@ -189,6 +189,9 @@ class PlansViewModel @Inject constructor(
 
     val myUid: String get() = (session.state.value as? SessionState.Ready)?.user?.uid.orEmpty()
 
+    fun nameOf(uid: String): String =
+        if (uid == myUid) "You" else members.value.firstOrNull { it.uid == uid }?.displayName?.substringBefore(' ') ?: "Someone"
+
     fun selectPlaceKind(kind: String?) {
         placeKind.value = if (placeKind.value == kind) null else kind
     }
@@ -230,6 +233,26 @@ class PlansViewModel @Inject constructor(
     /** A trip marked done by mistake goes back to current trips. */
     fun reopenTrip(trip: com.houseaffairs.app.core.data.Trip) {
         (session.state.value as? SessionState.Ready)?.let { moneyRepo.reopenTrip(it.household.id, trip.id) }
+    }
+
+    /** Yes to a task given to me; the undo puts the question back. */
+    fun acceptTask(task: com.houseaffairs.app.core.data.TaskItem): com.houseaffairs.app.feature.add.SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val undo = home.answerTask(r.household.id, r.user.uid, task, accept = true)
+        return com.houseaffairs.app.feature.add.SavedEntry("You'll do “${task.title}”") { undo() }
+    }
+
+    /** "Can't do it": back to whoever gave it, with the reason. */
+    fun declineTask(task: com.houseaffairs.app.core.data.TaskItem, note: String?): com.houseaffairs.app.feature.add.SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val undo = home.answerTask(r.household.id, r.user.uid, task, accept = false, note = note)
+        return com.houseaffairs.app.feature.add.SavedEntry("Sent “${task.title}” back") { undo() }
+    }
+
+    /** "I'll do it" on a task that came back. */
+    fun keepTask(task: com.houseaffairs.app.core.data.TaskItem) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        home.keepTask(r.household.id, task)
     }
 
     fun completeTask(task: TaskItem): SavedEntry? {

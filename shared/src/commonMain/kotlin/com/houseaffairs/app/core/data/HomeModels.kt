@@ -4,6 +4,9 @@ import com.houseaffairs.app.core.time.*
 
 /** What Home shows, read from Firestore by each platform's repository. */
 
+/** Stock statuses that take an item off its list: finished, or thrown away. */
+val GONE_STATUSES = setOf("USED_UP", "WASTED")
+
 enum class ActivityKind { EXPENSE, SHOPPING, TASK, LIST_ITEM, GROCERY, MEDICINE, SUBSCRIPTION, EVENT }
 
 data class ActivityItem(
@@ -38,6 +41,13 @@ data class TaskItem(
     val phone: String? = null,
     /** "5:30 pm" when the task has a time; it then reminds at that time on its due date. */
     val time: String? = null,
+    /** Who gave the task; with [ask], whether the person it's for has said yes yet. */
+    val assignedBy: String? = null,
+    /** "PENDING", "ACCEPTED" or "DECLINED" when it was given to someone else; null otherwise. */
+    val ask: String? = null,
+    /** Who said they can't do it, and why; it's back with [assignedBy] then. */
+    val declinedBy: String? = null,
+    val declineNote: String? = null,
 )
 
 data class StockItem(val id: String, val title: String, val expiry: LocalDate?, val level: Int?)

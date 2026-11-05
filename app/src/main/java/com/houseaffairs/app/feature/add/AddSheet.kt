@@ -262,7 +262,7 @@ private fun Picker(
         } else if (state.move != null) {
             MoveCard(state.move, onMove)
         } else if (state.answer != null) {
-            AnswerCard(state.answer, onMove, onLocationGranted)
+            AnswerCard(state.answer, onMove, onLocationGranted, onNumber = viewModel::rememberNumber)
         } else if (cook != null) {
             CookCard(cook, state.members, viewModel, onCook = onCook, onSaveRecipe = viewModel::saveCookAsRecipe)
         } else if (suggestion == null) {
@@ -585,7 +585,7 @@ private fun MoveCard(move: MoveAction, onMove: (MoveAction) -> Unit) {
 }
 
 @Composable
-private fun AnswerCard(answer: Answer, onMove: (MoveAction) -> Unit, onLocationGranted: () -> Unit = {}) {
+private fun AnswerCard(answer: Answer, onMove: (MoveAction) -> Unit, onLocationGranted: () -> Unit = {}, onNumber: (String, String) -> Unit = { _, _ -> }) {
     val stock = LocalHouseColors.current.stock
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
         if (granted.values.any { it }) onLocationGranted()
@@ -639,12 +639,43 @@ private fun AnswerCard(answer: Answer, onMove: (MoveAction) -> Unit, onLocationG
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Allow location") }
         }
+        answer.shareWith?.let { name ->
+            Spacer(Modifier.height(12.dp))
+            ShareLocationButtons(name, answer.sharePhone, onPicked = { onNumber(name, it) })
+        }
         answer.move?.let { move ->
             Spacer(Modifier.height(12.dp))
             Button(onClick = { onMove(move) }, shape = CircleShape, modifier = Modifier.fillMaxWidth()) {
                 Text("Move ${com.houseaffairs.app.core.util.formatMinor(move.amountMinor, move.currency)} from ${move.fromLabel}")
             }
         }
+    }
+}
+
+/**
+ * Opens [name]'s WhatsApp chat, where live location is one tap away. Without a number yet, the
+ * contacts picker finds it (no contacts permission needed) and this phone remembers it.
+ */
+@Composable
+private fun ShareLocationButtons(name: String, phone: String?, onPicked: (String) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    fun open(number: String) {
+        val text = android.net.Uri.encode("📍 Sharing my live location with you")
+        val url = "https://wa.me/" + com.houseaffairs.app.core.util.whatsAppNumber(number) + "?text=" + text
+        runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
+    }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val uri = result.data?.data ?: return@rememberLauncherForActivityResult
+        context.contentResolver.query(uri, arrayOf(android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0)?.let { onPicked(it); open(it) }
+        }
+    }
+    val pick = { picker.launch(android.content.Intent(android.content.Intent.ACTION_PICK, android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI)) }
+    if (phone != null) {
+        Button(onClick = { open(phone) }, shape = CircleShape, modifier = Modifier.fillMaxWidth()) { Text("Open $name's WhatsApp") }
+        androidx.compose.material3.TextButton(onClick = pick, modifier = Modifier.fillMaxWidth()) { Text("Use a different number") }
+    } else {
+        Button(onClick = pick, shape = CircleShape, modifier = Modifier.fillMaxWidth()) { Text("Pick $name's number") }
     }
 }
 

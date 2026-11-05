@@ -61,3 +61,10 @@ fun finishedFollowUp(title: String, dontBuy: () -> Unit) = FollowUp(
     note = "Added to the shopping list.",
     groups = listOf(FollowUpGroup("Buy again?", listOf(FollowUpChoice("Yes, keep on the list") {}, FollowUpChoice("Don't buy again", dontBuy)))),
 )
+
+/** After "threw it away": counted as waste and put on the shopping list; one tap takes it off. */
+fun thrownFollowUp(title: String, dontBuy: () -> Unit) = FollowUp(
+    title = "$title · thrown away",
+    note = "Counted as waste this month, and added to the shopping list.",
+    groups = listOf(FollowUpGroup("Buy again?", listOf(FollowUpChoice("Yes, keep on the list") {}, FollowUpChoice("Don't buy again", dontBuy)))),
+)

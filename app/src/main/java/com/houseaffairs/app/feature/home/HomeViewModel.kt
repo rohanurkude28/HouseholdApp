@@ -380,6 +380,26 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch { settings.setHomeLayout(encodeLayout(block(state.value.layout))) }
     }
 
+    /** Yes to a task given to me; the undo puts the question back. */
+    fun acceptTask(task: com.houseaffairs.app.core.data.TaskItem): com.houseaffairs.app.feature.add.SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val undo = home.answerTask(r.household.id, r.user.uid, task, accept = true)
+        return com.houseaffairs.app.feature.add.SavedEntry("You'll do “${task.title}”") { undo() }
+    }
+
+    /** "Can't do it": back to whoever gave it, with the reason. */
+    fun declineTask(task: com.houseaffairs.app.core.data.TaskItem, note: String?): com.houseaffairs.app.feature.add.SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val undo = home.answerTask(r.household.id, r.user.uid, task, accept = false, note = note)
+        return com.houseaffairs.app.feature.add.SavedEntry("Sent “${task.title}” back") { undo() }
+    }
+
+    /** "I'll do it" on a task that came back. */
+    fun keepTask(task: com.houseaffairs.app.core.data.TaskItem) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        home.keepTask(r.household.id, task)
+    }
+
     fun completeTask(id: String, onDone: (com.houseaffairs.app.feature.add.SavedEntry) -> Unit) {
         val r = session.state.value as? SessionState.Ready ?: return
         val task = state.value.data.tasks.firstOrNull { it.id == id } ?: return

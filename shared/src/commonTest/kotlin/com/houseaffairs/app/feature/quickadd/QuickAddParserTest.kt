@@ -527,4 +527,58 @@ class QuickAddParserTest {
         assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.LASTED, "Detergent"), parser.parse("how long did the detergent last"))
         assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.LASTED, "Rice"), parser.parse("when will the rice run out?"))
     }
+
+    // The household assistant's everyday requests, said the way people say them.
+
+    @Test
+    fun `talking to someone gives them the task`() {
+        val t = parser.parse("Rohan, please pay the electricity bill tomorrow.") as QuickAddDraft.Task
+        assertEquals("Pay the electricity bill", t.title)
+        assertEquals("Rohan", t.forName)
+        assertEquals(localDate(2026, 11, 3), t.due)
+        // Voice drops the comma.
+        assertEquals("Rohan", (parser.parse("rohan please take out the trash") as QuickAddDraft.Task).forName)
+        // An amount said to someone is still spending.
+        assertTrue(parser.parse("Ravi, 500 for groceries") !is QuickAddDraft.Task)
+    }
+
+    @Test
+    fun `remind someone at a time`() {
+        val t = parser.parse("Remind Mom to take her medicine at 9 PM.") as QuickAddDraft.Task
+        assertEquals("Take her medicine", t.title)
+        assertEquals("Mom", t.forName)
+        assertEquals("9:00 pm", t.time)
+        // "Remind me" is still my own task.
+        assertNull((parser.parse("remind me to call the plumber") as QuickAddDraft.Task).forName)
+    }
+
+    @Test
+    fun `a list ending in a full stop still splits`() {
+        val batch = parser.parse("Add tomatoes, milk and paneer to groceries.") as QuickAddDraft.Batch
+        assertEquals(listOf("Tomatoes", "Milk", "Paneer"), batch.drafts.map { (it as QuickAddDraft.Shopping).item })
+    }
+
+    @Test
+    fun `running low goes on the shopping list`() {
+        assertEquals("Detergent", (parser.parse("We're running low on detergent. Add it to the shopping list.") as QuickAddDraft.Shopping).item)
+        assertEquals("Rice", (parser.parse("low on rice") as QuickAddDraft.Shopping).item)
+    }
+
+    @Test
+    fun `how much was spent`() {
+        val a = parser.parse("How much did we spend on groceries this month?") as QuickAddDraft.Ask
+        assertEquals(QuickAddDraft.Question.SPENT, a.question)
+        assertEquals("Groceries", a.subject)
+        assertEquals("this month", a.period)
+        val all = parser.parse("how much have we spent last month") as QuickAddDraft.Ask
+        assertNull(all.subject)
+        assertEquals("last month", all.period)
+    }
+
+    @Test
+    fun `share live location with someone`() {
+        val a = parser.parse("Share my live location with Ravi") as QuickAddDraft.Ask
+        assertEquals(QuickAddDraft.Question.SHARE_LOCATION, a.question)
+        assertEquals("Ravi", a.subject)
+    }
 }

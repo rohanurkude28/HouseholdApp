@@ -190,6 +190,12 @@ class StockViewModel @Inject constructor(
         com.houseaffairs.app.core.ui.FollowUps.show(com.houseaffairs.app.core.data.finishedFollowUp(stock.title) { pantryRepo.removeFromShopping(hid, added) })
     }
 
+    /** Threw it away: like Finished, but counted as waste in the month and year views. */
+    fun threwAway(stock: PantryStock, from: String = "stock") = withIds { hid, uid ->
+        val added = pantryRepo.usedUp(hid, uid, stock, state.value.shopping.map { it.title }, from, thrown = true)
+        com.houseaffairs.app.core.ui.FollowUps.show(com.houseaffairs.app.core.data.thrownFollowUp(stock.title) { added?.let { pantryRepo.removeFromShopping(hid, it) } })
+    }
+
     private fun withIds(block: (String, String) -> Unit) {
         (session.state.value as? SessionState.Ready)?.let { block(it.household.id, it.user.uid) }
     }

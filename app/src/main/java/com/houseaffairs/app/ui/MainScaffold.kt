@@ -166,6 +166,7 @@ fun MainScaffold(session: SessionState.Ready) {
                     onEdit = openEdit,
                     requestedTab = subTabs["money"],
                     onTabShown = { subTabs.remove("money") },
+                    onOpen = openTab,
                 )
             }
             composable(Tab.STOCK.route) {

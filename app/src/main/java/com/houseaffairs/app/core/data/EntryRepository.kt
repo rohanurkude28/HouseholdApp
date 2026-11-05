@@ -79,7 +79,11 @@ class EntryRepository @Inject constructor(
             }
             else -> Unit
         }
-        if (type == EntryType.TASK) doc["assignedBy"] = uid
+        if (type == EntryType.TASK) {
+            doc["assignedBy"] = uid
+            // Given to someone else: they're asked to say yes (rota turns were agreed already).
+            if (needsAnswer(doc["assignee"] as? String, uid, (doc["rotation"] as? List<*>).orEmpty().isNotEmpty())) doc["ask"] = "PENDING"
+        }
 
         val household = db.collection("households").document(householdId)
         val ref = household.collection(type.collection).document()
@@ -176,7 +180,7 @@ class EntryRepository @Inject constructor(
     }.toSet() + "title"
 
     /** Saves edits to an existing entry. Who created it, when, and its status are kept. */
-    fun update(householdId: String, type: EntryType, id: String, values: FormValues, visibleTo: List<String>) {
+    fun update(householdId: String, type: EntryType, id: String, values: FormValues, visibleTo: List<String>, uid: String? = null) {
         val fields = fieldsOf(type, values)
         val changes = mutableMapOf<String, Any?>("visibleTo" to visibleTo, "updatedAt" to FieldValue.serverTimestamp())
         ownedKeys(type).forEach { key -> changes[key] = if (key in fields) fields[key] else FieldValue.delete() }
@@ -188,7 +192,25 @@ class EntryRepository @Inject constructor(
             changes["lat"] = FieldValue.delete()
             changes["lng"] = FieldValue.delete()
         }
-        db.collection("households").document(householdId).collection(type.collection).document(id).update(changes)
+        val ref = db.collection("households").document(householdId).collection(type.collection).document(id)
+        if (type == EntryType.TASK && uid != null) {
+            // Given to someone new ("ask someone else"): that person is asked; given to yourself, nothing to ask.
+            // Read before writing, so the old assignee is still there to compare with; one write either way.
+            val assignee = fields["assignee"] as? String
+            ref.get()
+                .addOnSuccessListener { old ->
+                    if (old.getString("assignee") != assignee) {
+                        changes["assignedBy"] = uid
+                        changes["ask"] = if (needsAnswer(assignee, uid, (fields["rotation"] as? List<*>).orEmpty().isNotEmpty())) "PENDING" else FieldValue.delete()
+                        changes["declinedBy"] = FieldValue.delete()
+                        changes["declineNote"] = FieldValue.delete()
+                    }
+                    ref.update(changes)
+                }
+                .addOnFailureListener { ref.update(changes) }
+            return
+        }
+        ref.update(changes)
     }
 
     /** Reads an entry back into form values (and who it's visible to) for editing. */
@@ -241,7 +263,7 @@ class EntryRepository @Inject constructor(
                 household.collection(collection).whereArrayContainsAny("visibleTo", listOf(com.houseaffairs.app.core.model.Visibility.EVERYONE, uid)).get().await().documents
             }.getOrDefault(emptyList())
             docs.mapNotNull { d ->
-                if (d.getBoolean("done") == true || d.getString("status") in setOf("DONE", "USED_UP") || d.getBoolean("closed") == true) return@mapNotNull null
+                if (d.getBoolean("done") == true || d.getString("status") in GONE_STATUSES + "DONE" || d.getBoolean("closed") == true) return@mapNotNull null
                 // Pantry and supplies share a collection; the document says which it is.
                 val type = kinds.firstOrNull { it.name == d.getString("type") } ?: kinds.firstOrNull { it != EntryType.HOUSEHOLD } ?: kinds.first()
                 if (type !in kinds) return@mapNotNull null

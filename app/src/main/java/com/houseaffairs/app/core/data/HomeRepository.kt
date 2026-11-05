@@ -83,12 +83,16 @@ class HomeRepository @Inject constructor(
                             reach = it.getString("reach"),
                             phone = it.getString("phone")?.takeIf { p -> p.isNotBlank() },
                             time = it.getString("time")?.takeIf { t -> t.isNotBlank() },
+                            assignedBy = it.getString("assignedBy"),
+                            ask = it.getString("ask"),
+                            declinedBy = it.getString("declinedBy"),
+                            declineNote = it.getString("declineNote")?.takeIf { n -> n.isNotBlank() },
                         )
                     }
                     // Soonest first; on the same day, High before Medium before Low.
                     .sortedWith(compareBy<TaskItem, LocalDate?>(nullsLast()) { it.dueDate }.thenBy { listOf("High", "Medium", "Low").indexOf(it.priority) }),
-                pantry = stockDocs.filter { it.getString("status") != "USED_UP" }.map(::stockItem),
-                medicines = medicineDocs.filter { it.getString("status") != "USED_UP" }.map(::stockItem),
+                pantry = stockDocs.filter { it.getString("status") !in GONE_STATUSES }.map(::stockItem),
+                medicines = medicineDocs.filter { it.getString("status") !in GONE_STATUSES }.map(::stockItem),
                 renewals = recurringDocs.mapNotNull { doc ->
                     val next = doc.localDate("nextDate") ?: return@mapNotNull null
                     val amount = doc.getLong("amountMinor")?.let { minor -> doc.getString("currency")?.let { formatMinor(minor, it) } }
@@ -136,7 +140,8 @@ class HomeRepository @Inject constructor(
                 ref.get().addOnSuccessListener { doc ->
                     val data = doc.data ?: return@addOnSuccessListener
                     next.set(
-                        data - "completedAt" + mapOf(
+                        // The next one is agreed already: no question carried over.
+                        data - "completedAt" - "ask" - "declinedBy" - "declineNote" + mapOf(
                             "done" to false,
                             "due" to com.google.firebase.Timestamp(java.util.Date.from(due.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant())),
                             "assignee" to nextInRotation(task.rotation, task.assignee),
@@ -152,6 +157,40 @@ class HomeRepository @Inject constructor(
             ref.update(mapOf("done" to false, "completedAt" to com.google.firebase.firestore.FieldValue.delete()))
             nextRef?.delete()
         }
+    }
+
+    /**
+     * The answer to a task given to me: yes, or "can't do it" ([note] says why), which hands it
+     * back to whoever gave it. Returns the undo.
+     */
+    fun answerTask(householdId: String, uid: String, task: TaskItem, accept: Boolean, note: String? = null): () -> Unit {
+        val ref = collection(householdId, "tasks").document(task.id)
+        ref.update(
+            if (accept) mapOf("ask" to "ACCEPTED", "answeredAt" to com.google.firebase.firestore.FieldValue.serverTimestamp())
+            else mapOf(
+                "ask" to "DECLINED", "declinedBy" to uid, "declineNote" to note?.trim()?.takeIf { it.isNotEmpty() },
+                "assignee" to task.assignedBy, "answeredAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+            ),
+        )
+        return {
+            ref.update(
+                mapOf(
+                    "ask" to "PENDING", "assignee" to task.assignee,
+                    "declinedBy" to com.google.firebase.firestore.FieldValue.delete(), "declineNote" to com.google.firebase.firestore.FieldValue.delete(),
+                ),
+            )
+        }
+    }
+
+    /** "I'll do it": a task that came back stays with me and stops asking. */
+    fun keepTask(householdId: String, task: TaskItem) {
+        collection(householdId, "tasks").document(task.id).update(
+            mapOf(
+                "ask" to com.google.firebase.firestore.FieldValue.delete(),
+                "declinedBy" to com.google.firebase.firestore.FieldValue.delete(),
+                "declineNote" to com.google.firebase.firestore.FieldValue.delete(),
+            ),
+        )
     }
 
     fun markBought(householdId: String, itemId: String) {

@@ -217,7 +217,14 @@ private fun HomeContent(
         state.layout.filter { it.visible }.forEach { pref ->
             when (pref.section) {
                 HomeSection.STATS -> Unit // drawn inside the hero
-                HomeSection.TODAY -> item { val nav = LocalHomeNav.current; TodaySection(state, onQuickAdd, onBillPaid = { key -> viewModel.markBillPaid(key, nav.saved) }, onLogRenewal = { id -> viewModel.logRenewal(id, nav.saved) }, onRestock = { title -> viewModel.addToShopping(title, nav.saved) }) { id -> viewModel.completeTask(id, nav.saved) } }
+                HomeSection.TODAY -> item { val nav = LocalHomeNav.current; TodaySection(state, onQuickAdd, onBillPaid = { key -> viewModel.markBillPaid(key, nav.saved) }, onLogRenewal = { id -> viewModel.logRenewal(id, nav.saved) }, onRestock = { title -> viewModel.addToShopping(title, nav.saved) },
+                    answers = com.houseaffairs.app.core.ui.TaskAnswers(
+                        accept = { viewModel.acceptTask(it)?.let(nav.saved) },
+                        decline = { t, note -> viewModel.declineTask(t, note)?.let(nav.saved) },
+                        keep = viewModel::keepTask,
+                        reassign = { nav.edit(EntryType.TASK, it.id) },
+                    ),
+                ) { id -> viewModel.completeTask(id, nav.saved) } }
                 HomeSection.COMING_UP -> item { ComingUpSection(state) }
                 HomeSection.GLANCE -> item { GlanceRow(state, onOpenSettings) }
                 HomeSection.RIGHT_NOW, HomeSection.USE_IT_UP, HomeSection.WATCH, HomeSection.SHOPPING ->
@@ -300,7 +307,7 @@ private fun areaIcon(area: Area): ImageVector = when (area) {
 
 /** Tasks and alerts in one ranked list, so Home has a single place to look first. */
 @Composable
-private fun TodaySection(state: HomeUiState, onQuickAdd: () -> Unit, onBillPaid: (String) -> Unit, onLogRenewal: (String) -> Unit, onRestock: (String) -> Unit, onComplete: (String) -> Unit) {
+private fun TodaySection(state: HomeUiState, onQuickAdd: () -> Unit, onBillPaid: (String) -> Unit, onLogRenewal: (String) -> Unit, onRestock: (String) -> Unit, answers: com.houseaffairs.app.core.ui.TaskAnswers, onComplete: (String) -> Unit) {
     val nav = LocalHomeNav.current
     val tasks = if (state.canPlans && state.shows(Area.PLANS)) state.data.tasks else emptyList()
     val rows = buildToday(state.attention.filter { state.shows(it.area) }, tasks, LocalDate.now())
@@ -334,16 +341,22 @@ private fun TodaySection(state: HomeUiState, onQuickAdd: () -> Unit, onBillPaid:
                             priority = row.priority,
                             area = Area.PLANS,
                             title = task.title,
-                            detail = listOfNotNull(
-                                task.priority.takeIf { it != "Low" }?.let { "$it priority" },
-                                task.dueDate?.let { dueLabel(it).first },
-                                task.assignee?.takeIf { it != state.myUid }?.let { "for ${state.nameOf(it)}" },
-                            ).joinToString(" · ").ifEmpty { "No date" },
+                            detail = com.houseaffairs.app.core.data.handoffLine(task, state.myUid, state::nameOf).let { asked ->
+                                listOfNotNull(
+                                    asked,
+                                    task.priority.takeIf { it != "Low" }?.let { "$it priority" },
+                                    task.dueDate?.let { dueLabel(it).first },
+                                    // "Waiting for Ravi" already says who it's for.
+                                    task.assignee?.takeIf { it != state.myUid && asked == null }?.let { "for ${state.nameOf(it)}" },
+                                ).joinToString(" · ").ifEmpty { "No date" }
+                            },
                             onClick = { nav.edit(EntryType.TASK, task.id) },
                         ) {
                             task.reach?.let { com.houseaffairs.app.core.ui.ReachButton(it, task.phone, task.title) }
                             TickCircle(LocalHouseColors.current.plans.color, onTick = { onComplete(task.id) }, contentDescription = "Done: ${task.title}")
                         }
+                        // Given to me, or back with me: the answer buttons under the row.
+                        com.houseaffairs.app.core.ui.HandoffButtons(task, state.myUid, answers, Modifier.padding(start = 56.dp, top = 6.dp))
                     }
                     is TodayRow.Alert -> {
                         val item = row.item
