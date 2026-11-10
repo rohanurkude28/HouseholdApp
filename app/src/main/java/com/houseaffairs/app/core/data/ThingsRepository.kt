@@ -87,6 +87,7 @@ class ThingsRepository @Inject constructor(
                         votes = (d.get("votes") as? List<*>).orEmpty().filterIsInstance<String>(),
                         event = d.getString("event"),
                         link = d.getString("link")?.takeIf { it.isNotBlank() },
+                        photos = (d.get("photos") as? List<*>).orEmpty().filterIsInstance<String>(),
                     )
                 }
             }

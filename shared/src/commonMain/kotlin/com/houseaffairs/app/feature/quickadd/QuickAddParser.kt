@@ -262,7 +262,7 @@ class QuickAddParser(
     private fun parseSingle(text: String): QuickAddDraft? {
         return parsePersonTask(text)
             // "Remind me every day at 9 pm to take vitamins" is a reminder, whatever it mentions.
-            ?: (if (REMINDER.containsMatchIn(text)) parseTask(text) else null)
+            ?: (if (REMINDER.containsMatchIn(text) || REMIND_START.containsMatchIn(text)) parseReminder(text) else null)
             ?: parseActivity(text)
             ?: parseTrip(text)
             ?: parseAddTo(text)
@@ -292,7 +292,7 @@ class QuickAddParser(
         val template = ListTemplate.entries.firstOrNull { target in it.aliases }
         if (target !in SHOPPING_ALIASES && template == null) return null
         // "milk, eggs and bread": several items. Titles like "Tom and Jerry" only split on commas.
-        val parts = (if (template?.isMedia == true) what.split(",") else what.split(LIST_SPLIT))
+        val parts = (if (template?.isMedia == true) what.split(",") else what.split(LIST_SPLIT).flatMap { if (template == null) groceryWords(it) else listOf(it) })
             .map { it.trim().removePrefix("and ").trim() }.filter { it.isNotEmpty() }
         val drafts = parts.map { item ->
             if (template == null) shoppingOf(item) ?: QuickAddDraft.Shopping(item.capitalized()) else QuickAddDraft.ListItem(template, item.capitalized())
@@ -305,11 +305,116 @@ class QuickAddParser(
      * as something to save. Plain tasks don't count, so "call Riya and Aman" stays one task.
      */
     private fun parseBatch(text: String): QuickAddDraft.Batch? {
+        counted(text)?.let { return it }
+        // A reminder's own words ("remind me to call mom and pay rent", "…and remind everyday") are one reminder.
+        if (REMINDER.containsMatchIn(text) || REMIND_START.containsMatchIn(text) || ANY_REMIND.containsMatchIn(text)) return null
+        // "Add tomatoes, milk and paneer to groceries": one list, split by the add-to rule.
+        if (ADD_TO.matchEntire(text.trimEnd('.', '!', '?').trim()) != null) return null
         val parts = text.split(BATCH_SPLIT).map { it.trim() }.filter { it.isNotEmpty() }
         if (parts.size < 2) return null
-        val drafts = parts.map { parseSingle(it) ?: return null }
-        if (drafts.any { it is QuickAddDraft.Task || it is QuickAddDraft.Batch || it is QuickAddDraft.Cooked || it is QuickAddDraft.Move }) return null
-        return QuickAddDraft.Batch(drafts)
+        val singles = parts.map { parseSingle(it) ?: return null }
+        if (singles.any { it is QuickAddDraft.Batch || it is QuickAddDraft.Cooked || it is QuickAddDraft.Move }) return null
+        // "Call mom, pay rent and buy milk": each part starts with something to do, so each is its own.
+        // "Call Riya and Aman" isn't: "Aman" doesn't, so it stays one task.
+        val doing = parts.map { p -> p.split(" ").first().normalizedWord().let { it in TASK_VERBS || it in BUY_WORDS } }
+        val firstMoney = singles.firstOrNull { it is QuickAddDraft.Expense } as? QuickAddDraft.Expense
+        val drafts = singles.mapIndexed { i, d ->
+            val p = parts[i]
+            when {
+                d !is QuickAddDraft.Task -> d
+                doing[i] -> d
+                // "Bought milk 60, eggs 90": the price goes with the first one's kind of spend.
+                firstMoney != null -> pricedLike(p, firstMoney) ?: return null
+                // "Milk, eggs and bread": short, unknown words in a list are things to buy.
+                singles.none { it is QuickAddDraft.Task && doing[singles.indexOf(it)] } && p.split(" ").size <= 3 && p.none(Char::isDigit) ->
+                    shoppingOf(p) ?: QuickAddDraft.Shopping(p.capitalized())
+                else -> return null
+            }
+        }
+        return QuickAddDraft.Batch(drafts.flatMap { (it as? QuickAddDraft.Batch)?.drafts ?: listOf(it) })
+    }
+
+    /** "2 milk 1 bread 6 eggs": counts and items in a row, each one to buy. */
+    private fun counted(text: String): QuickAddDraft.Batch? {
+        if (CURRENCY_MARKER.containsMatchIn(text) || !COUNTED_LIST.matches(text.trim())) return null
+        val items = COUNTED_ITEM.findAll(text.trim()).map { m -> QuickAddDraft.Shopping(m.groupValues[2].trim().capitalized(), "${m.groupValues[1]} pcs") }.toList()
+        return items.takeIf { it.size >= 2 }?.let { QuickAddDraft.Batch(it) }
+    }
+
+    /** "eggs 90" after "bought milk 60": an item and its price, spent like the first. */
+    private fun pricedLike(part: String, first: QuickAddDraft.Expense): QuickAddDraft.Expense? {
+        val m = ITEM_PRICE.matchEntire(part.trim()) ?: return null
+        val amount = justAmount(m.groupValues[2]) ?: return null
+        val item = m.groupValues[1].trim()
+        val sub = SUBCATEGORY_BY_WORD[item.lowercase()]
+        return QuickAddDraft.Expense(amount, first.currency, CATEGORY_BY_KEYWORD[item.lowercase()] ?: sub?.first ?: first.category, item.capitalized(), part, sub?.second, first.paidWith, first.card)
+    }
+
+    /** "milk eggs bread" → three items, when every word is a grocery the aisles know; else one. */
+    private fun groceryWords(item: String): List<String> {
+        val words = item.trim().split(WHITESPACE).filter { it.isNotEmpty() && it.lowercase() !in setOf("and", "some", "a", "an") }
+        if (words.size < 2 || words.any { it.any(Char::isDigit) }) return listOf(item)
+        return if (words.all { com.houseaffairs.app.core.data.aisleOf(it) != com.houseaffairs.app.core.data.Aisle.OTHER }) words else listOf(item)
+    }
+
+    /**
+     * "Set an alarm for 6 am", "wake me up at 6", "remind me in 30 minutes to check the oven",
+     * "remind me at 6 to call Ravi", "reminder: dentist friday 4pm": a task with a time, which then
+     * rings. A bare hour ("at 6") is the next 6 o'clock; "in 30 minutes" needs the clock.
+     */
+    private fun parseReminder(text: String): QuickAddDraft.Task {
+        val alarm = ALARM_WORDS.containsMatchIn(text)
+        var rest = REMIND_START.replace(text.trim().trimEnd('.', '!', '?'), "").trim()
+        val now = nowMinute()
+        var minute: Int? = null
+        var day: LocalDate? = null
+        // "in 30 minutes", "in an hour", "in 2 hours".
+        IN_A_WHILE.find(rest)?.let { m ->
+            val n = when (val c = m.groupValues[1].lowercase()) { "a", "an" -> 1.0; "half an" -> 0.5; else -> c.toDoubleOrNull() ?: 1.0 }
+            val mins = (if (m.groupValues[2].lowercase().startsWith("h")) n * 60 else n).toInt()
+            if (now != null) {
+                val at = now + mins
+                minute = at % (24 * 60)
+                day = today().plusDays((at / (24 * 60)).toLong())
+                rest = rest.removeRange(m.range).trim()
+            }
+        }
+        // "at 6" with no am or pm: the next 6 o'clock from now.
+        if (minute == null && TASK_TIME.find(rest) == null) BARE_HOUR.find(rest)?.let { m ->
+            val h = m.groupValues[1].toInt()
+            if (h in 1..12) {
+                // An alarm or wake-up at "6" is the morning; a reminder is whichever 6 comes next.
+                val choices = if (alarm) listOf(h % 12 * 60) else listOf(h % 12 * 60, h % 12 * 60 + 12 * 60)
+                val n = now ?: -1
+                minute = choices.firstOrNull { it > n } ?: choices.first()
+                if (choices.none { it > n }) day = today().plusDays(1)
+                rest = rest.removeRange(m.range).trim()
+            }
+        }
+        // "on 15th", "on the 3rd": the next such date.
+        ON_DAY.find(rest)?.let { m ->
+            val d = m.groupValues[1].toInt()
+            if (d in 1..31) {
+                val t = today()
+                val thisMonth = clampedDate(t.year, t.monthValue, d)
+                day = if (thisMonth.isBefore(t)) clampedDate(addMonths(t.year, t.monthValue, 1).first, addMonths(t.year, t.monthValue, 1).second, d) else thisMonth
+                rest = rest.removeRange(m.range).trim()
+            }
+        }
+        // "tomorrow morning": a sensible hour when none is said.
+        val partOfDay = PART_OF_DAY.find(rest)?.let { m -> rest = rest.removeRange(m.range).trim(); m.groupValues[1].lowercase() }
+        val task = parseTask(rest.ifEmpty { "-" })
+        val time = task.time ?: minute?.let(::formatClock) ?: if (TASK_TIME.find(rest) == null) partOfDay?.let { PART_OF_DAY_MINUTE[it] }?.let(::formatClock) else null
+        var title = task.title.replace(DANGLING, "").trim()
+        while (LEADING_JOIN.containsMatchIn(title)) title = title.replace(LEADING_JOIN, "").trim()
+        // Only time words were said ("set an alarm for 6 am"): parseTask hands those back as the title.
+        val leftover = TASK_TIME.replace(rest, " ").split(WHITESPACE).filter { it.isNotBlank() }.toMutableList()
+        extractDate(leftover)
+        val onlyWhen = rest.isBlank() || leftover.all { it.normalizedWord() in setOf("for", "at", "on", "to", "by", "tomorrow", "today", "tonight", "-") }
+        title = (if (onlyWhen) "" else title).capitalized()
+            .ifEmpty { if (WAKE.containsMatchIn(text)) "Wake up" else if (alarm) "Alarm" else "Reminder" }
+        val timedDue = time?.let { minuteOfDay(it) }?.let { at -> if ((now ?: -1) >= at) today().plusDays(1) else today() }
+        return task.copy(title = title, time = time, due = day ?: task.due ?: timedDue)
     }
 
     private fun parseChange(input: String): QuickAddDraft.Change? {
@@ -693,6 +798,9 @@ class QuickAddParser(
         val item = (OUT_OF.matchEntire(said) ?: ITEM_OVER.matchEntire(said))?.groupValues?.get(1)?.trim()?.trimEnd('.', '!') ?: return null
         // "need to call the plumber" is a task, not something to buy.
         if (item.startsWith("to ", ignoreCase = true)) return null
+        // "need milk eggs and curd": each one, when they're all groceries.
+        val items = item.split(LIST_SPLIT).flatMap { groceryWords(it) }.map { it.trim() }.filter { it.isNotEmpty() }
+        if (items.size > 1) return QuickAddDraft.Batch(items.map { shoppingOf(it) ?: QuickAddDraft.Shopping(it.capitalized()) })
         return shoppingOf(item)
     }
 
@@ -1272,6 +1380,28 @@ class QuickAddParser(
             "message", "ask", "tell", "do", "make", "change", "replace", "install", "sort", "organise", "organize", "plan",
         )
         val TASK_TIME = Regex("(?:\\s|^)(?:at|@|by|around)?\\s*(\\d{1,2}(?:[:.]\\d{2})?\\s?(?:am|pm|a\\.m\\.|p\\.m\\.)|\\d{1,2}:\\d{2}|noon)(?=\\s|$|[,.!?])", RegexOption.IGNORE_CASE)
+        /** "Set an alarm", "set me a reminder", "alarm", "wake me up", "reminder:": a reminder, whatever follows. */
+        val REMIND_START = Regex(
+            "^(?:please\\s+)?(?:(?:can|could) you\\s+)?(?:(?:set|put|add|create|make)\\s+(?:me\\s+)?(?:an?\\s+|the\\s+)?(?:alarm|reminder|timer)s?(?:\\s+for\\s+me)?|reminder|alarm|wake me(?: up)?|remind me)\\b[:,]?\\s*",
+            RegexOption.IGNORE_CASE,
+        )
+        val ANY_REMIND = Regex("\\bremind", RegexOption.IGNORE_CASE)
+        val WAKE = Regex("\\bwake me\\b", RegexOption.IGNORE_CASE)
+        val ALARM_WORDS = Regex("\\b(?:alarm|wake me)\\b", RegexOption.IGNORE_CASE)
+        val IN_A_WHILE = Regex("\\bin\\s+(\\d+(?:\\.\\d+)?|an?|half an)\\s*(minutes?|mins?|hours?|hrs?)\\b", RegexOption.IGNORE_CASE)
+        val BARE_HOUR = Regex("\\b(?:at|by|around)\\s+(\\d{1,2})(?![\\d:.]|\\s*(?:am|pm|a\\.m|p\\.m|th|st|nd|rd))\\b", RegexOption.IGNORE_CASE)
+        val ON_DAY = Regex("\\bon\\s+(?:the\\s+)?(\\d{1,2})(?:st|nd|rd|th)\\b(?!\\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec))", RegexOption.IGNORE_CASE)
+        val PART_OF_DAY = Regex("\\b(?:in the\\s+)?(morning|afternoon|evening|night)\\b", RegexOption.IGNORE_CASE)
+        val PART_OF_DAY_MINUTE = mapOf("morning" to 9 * 60, "afternoon" to 14 * 60, "evening" to 18 * 60, "night" to 21 * 60)
+        /** Words left hanging once the time is taken out: "for", "at" at the end. */
+        val DANGLING = Regex("\\s+(?:for|at|on|by|to)$", RegexOption.IGNORE_CASE)
+        val LEADING_JOIN = Regex("^(?:to|for|that|about|me to)\\s+", RegexOption.IGNORE_CASE)
+        /** "2 milk 1 bread 6 eggs". */
+        val COUNTED_LIST = Regex("^(?:\\d{1,2}\\s+[a-z][a-z]*(?:\\s+[a-z]+)?\\s*,?\\s*){2,}$", RegexOption.IGNORE_CASE)
+        val COUNTED_ITEM = Regex("(\\d{1,2})\\s+([a-z][a-z]*(?:\\s+(?!\\d)[a-z]+)?)", RegexOption.IGNORE_CASE)
+        /** "eggs 90", "bread ₹45". */
+        val ITEM_PRICE = Regex("^([a-z][a-z ]*?)\\s+((?:₹|rs\\.?\\s?)?\\d[\\d,]*(?:\\.\\d+)?k?)$", RegexOption.IGNORE_CASE)
+        val BUY_WORDS = setOf("buy", "get", "order", "bought", "pick")
         val TASK_PREFIX = Regex("^(?:please )?(?:remind me to|remind me|remind to|remind|todo:?|to-do:?|task:?)\\s+", RegexOption.IGNORE_CASE)
 
         /** Starts by asking to be reminded: "remind me…", "remind every day…" (not "remind Mom to…"). */

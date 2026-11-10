@@ -213,6 +213,8 @@ enum class EntryType(
         listOf(
             ChoiceSpec("template", "List", ListTemplate.entries.map { it.label }, required = true),
             TextSpec("title", "What", "Dune 2, Bali, a new sofa…", required = true),
+            // The sofa in the shop, the place, the gift: a picture says which one.
+            PhotosSpec(),
             // Set by hand, it wins over anything looked up online, so no TMDB key is needed.
             ChoiceSpec(
                 "platform", "Where to watch", listOf("Netflix", "Prime Video", "Hotstar", "SonyLIV", "Zee5", "YouTube", "Theatre"),
@@ -354,6 +356,8 @@ enum class EntryType(
         "Dream or gullak", "New dream or gullak", Icons.Outlined.AutoAwesome, { it.vault }, AppModule.PLANS, "dreams", "title",
         listOf(
             TextSpec("title", "Name", "Bali trip, emergency fund, Diwali…", required = true),
+            // The first picture fills the dream's card on the vision board.
+            PhotosSpec(label = "Pictures for the vision board"),
             ChoiceSpec("kind", "Kind", DREAM_KINDS.keys.toList(), required = true),
             MoneySpec(label = "Target (optional)", required = false),
             DateSpec("targetDate", "By when"),

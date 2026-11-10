@@ -232,6 +232,13 @@ class PlansViewModel @Inject constructor(
         (session.state.value as? SessionState.Ready)?.let { moneyRepo.markDreamAchieved(it.household.id, dream.id, achieved) }
     }
 
+    /** The vision board after a drag: [ids] in their new order. */
+    fun reorderDreams(ids: List<String>) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        val before = state.value.dreams.associate { it.id to it.boardOrder }
+        moneyRepo.setBoardOrder(r.household.id, com.houseaffairs.app.core.data.boardOrders(ids, before))
+    }
+
     fun reopen(item: com.houseaffairs.app.core.data.FinishedItem) {
         (session.state.value as? SessionState.Ready)?.let { things.reopen(it.household.id, item) }
     }

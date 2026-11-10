@@ -32,6 +32,8 @@ data class WishItem(
     val event: String? = null,
     /** A link the family saved (reel, website, shop). */
     val link: String? = null,
+    /** Photos of it (PhotoStore ids): the sofa, the place, the gift. */
+    val photos: List<String> = emptyList(),
 )
 
 /**

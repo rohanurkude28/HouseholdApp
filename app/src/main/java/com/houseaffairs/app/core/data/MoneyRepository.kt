@@ -269,6 +269,8 @@ class MoneyRepository @Inject constructor(
                         targetDate = doc.localDate("targetDate"),
                         achieved = doc.getBoolean("achieved") == true,
                         horizonChoice = doc.getString("horizon"),
+                        photos = (doc.get("photos") as? List<*>).orEmpty().filterIsInstance<String>(),
+                        boardOrder = doc.getDouble("boardOrder"),
                     )
                 }
             }
@@ -385,6 +387,14 @@ class MoneyRepository @Inject constructor(
         saved.chunked(400).forEach { chunk -> db.batch().also { b -> chunk.forEach { (ref, _) -> b.delete(ref) } }.commit().await() }
         moveCategory(householdId, uid, name, null)
         return { saved.chunked(400).forEach { chunk -> db.batch().also { b -> chunk.forEach { (ref, data) -> b.set(ref, data) } }.commit() } }
+    }
+
+    /** Saves where dreams were dragged to on the vision board, for the whole family. */
+    fun setBoardOrder(householdId: String, orders: Map<String, Double>) {
+        if (orders.isEmpty()) return
+        val batch = db.batch()
+        orders.forEach { (id, pos) -> batch.update(household(householdId).collection("dreams").document(id), "boardOrder", pos) }
+        batch.commit()
     }
 
     /** A category typed in a form ("Cook") joins the family's own, so it's offered next time. */

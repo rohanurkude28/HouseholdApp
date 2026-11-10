@@ -43,6 +43,8 @@ data class WatchItem(
     val imdbId: String? = null,
     /** A link the family saved (trailer, review, shop). */
     val link: String? = null,
+    /** The family's own photos of it, used when nothing was looked up. */
+    val photos: List<String> = emptyList(),
     /** Author or artist, for books and music. */
     val creator: String? = null,
 ) {
@@ -116,6 +118,7 @@ class WatchRepository @Inject constructor(
                             votes = (d.get("votes") as? List<*>).orEmpty().filterIsInstance<String>(),
                             imdbId = d.getString("imdbId"),
                             link = d.getString("link")?.takeIf { it.isNotBlank() },
+                            photos = (d.get("photos") as? List<*>).orEmpty().filterIsInstance<String>(),
                         )
                         }.getOrNull()
                     }

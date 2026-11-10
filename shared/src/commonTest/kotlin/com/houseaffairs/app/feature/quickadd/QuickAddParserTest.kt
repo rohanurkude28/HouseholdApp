@@ -7,6 +7,7 @@ import kotlin.test.Test
 import com.houseaffairs.app.core.util.Decimal
 import com.houseaffairs.app.core.util.compareValue
 import com.houseaffairs.app.core.util.decimalOf
+import com.houseaffairs.app.core.util.plainString
 import com.houseaffairs.app.core.time.*
 
 class QuickAddParserTest {
@@ -629,5 +630,52 @@ class QuickAddParserTest {
         // "Skip" alone with no day isn't enough.
         assertTrue(parser.parse("skip rope") !is QuickAddDraft.SkipDose)
     }
-}
 
+    private val at10 = QuickAddParser(today = { localDate(2026, 11, 11) }, nowMinute = { 10 * 60 })
+    private fun reminder(text: String) = at10.parse(text) as QuickAddDraft.Task
+    private fun shop(vararg items: String) = QuickAddDraft.Batch(items.map { QuickAddDraft.Shopping(it) })
+
+    @Test
+    fun `alarms ring at their time - with a plain title`() {
+        assertEquals(QuickAddDraft.Task("Alarm", localDate(2026, 11, 12), time = "6:00 am"), reminder("set alarm for 6 am"))
+        assertEquals("7:30 am", reminder("set an alarm at 7:30").time)
+        assertEquals(QuickAddDraft.Task("Wake up", localDate(2026, 11, 12), time = "6:00 am"), reminder("wake me up at 6"))
+        assertEquals(QuickAddDraft.Task("Alarm", localDate(2026, 11, 12), time = "5:30 am"), reminder("alarm tomorrow 5:30 am"))
+    }
+
+    @Test
+    fun `reminders in any order of words`() {
+        assertEquals("Take medicine", reminder("set a reminder for 5 pm to take medicine").title)
+        val ravi = reminder("remind me at 6 to call Ravi")
+        assertEquals("Call Ravi", ravi.title)
+        // "At 6" said at 10 am is this evening.
+        assertEquals("6:00 pm", ravi.time)
+        assertEquals("Call Ravi", reminder("reminder call Ravi at 6").title)
+        assertEquals(QuickAddDraft.Task("Check oven", localDate(2026, 11, 11), time = "10:30 am"), reminder("remind me in 30 minutes to check oven"))
+        assertEquals(QuickAddDraft.Task("Dentist", localDate(2026, 11, 13), time = "4:00 pm"), reminder("reminder: dentist friday 4pm"))
+        val bank = reminder("remind me tomorrow morning to call bank")
+        assertEquals(localDate(2026, 11, 12), bank.due)
+        assertEquals("9:00 am", bank.time)
+        assertEquals(localDate(2026, 11, 15), reminder("remind me on 15th to pay credit card").due)
+    }
+
+    @Test
+    fun `several things in one line are saved one by one`() {
+        assertEquals(shop("Milk", "Eggs", "Bread"), at10.parse("milk, eggs and bread"))
+        assertEquals(shop("Milk", "Eggs", "Bread"), at10.parse("add milk eggs bread to shopping"))
+        assertEquals(shop("Milk", "Eggs", "Curd"), at10.parse("need milk eggs and curd"))
+        assertEquals(
+            QuickAddDraft.Batch(listOf(QuickAddDraft.Shopping("Milk", "2 pcs"), QuickAddDraft.Shopping("Bread", "1 pcs"), QuickAddDraft.Shopping("Eggs", "6 pcs"))),
+            at10.parse("2 milk 1 bread 6 eggs"),
+        )
+        val bought = at10.parse("bought milk 60, eggs 90 and bread 45") as QuickAddDraft.Batch
+        assertEquals(listOf("60", "90", "45"), bought.drafts.map { (it as QuickAddDraft.Expense).amount.plainString() })
+        assertTrue(bought.drafts.all { (it as QuickAddDraft.Expense).category == "Groceries" })
+        val mixed = at10.parse("call mom, pay rent and buy milk") as QuickAddDraft.Batch
+        assertEquals(listOf("Call mom", "Pay rent"), mixed.drafts.filterIsInstance<QuickAddDraft.Task>().map { it.title })
+        // Not a list of things to do: one task.
+        assertTrue(at10.parse("call Riya and Aman") is QuickAddDraft.Task)
+        // A reminder's own "and" stays one reminder.
+        assertTrue(at10.parse("remind me to call mom and pay rent") is QuickAddDraft.Task)
+    }
+}

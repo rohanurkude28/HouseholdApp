@@ -103,7 +103,7 @@ private val DREAM_GRADIENTS = mapOf(
     "Emergency" to listOf(Color(0xFF5AC8A8), Color(0xFF2E7D6B)),
     "Festival" to listOf(Color(0xFFFFC94D), Color(0xFFFF7A45)),
 )
-private fun gradientFor(kind: String) = DREAM_GRADIENTS[kind] ?: listOf(Color(0xFF6C7BFF), Color(0xFF5B3FD9))
+internal fun gradientFor(kind: String) = DREAM_GRADIENTS[kind] ?: listOf(Color(0xFF6C7BFF), Color(0xFF5B3FD9))
 
 /** Plans: the family's vision board, plus tasks and upcoming events. */
 @Composable
@@ -122,7 +122,11 @@ fun PlansScreen(
     onTabShown: () -> Unit = {},
     viewModel: PlansViewModel = hiltViewModel(),
 ) {
+    // For the family's own photos on list rows (files on this phone).
+    val photoContext = LocalContext.current
     var pendingDream by remember { mutableStateOf<String?>(null) }
+    // The vision board as a pinboard by default; "By when" groups it into rows.
+    var boardView by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
     LaunchedEffect(requestedTab) {
         // "GIFTS" opens Lists filtered to gift ideas (from an event's "🎁 gift ideas").
         if (requestedTab == "GIFTS") {
@@ -208,7 +212,26 @@ fun PlansScreen(
                 val today = LocalDate.now()
                 val active = state.dreams.filter { !it.achieved }
                 val byHorizon = active.groupBy { it.horizon(today) }
-                Horizon.entries.forEach { horizon ->
+                // The board (drag to arrange, tap to flip) or rows by when.
+                item(key = "board-switch") {
+                    Row(Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Vision board", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                        FilterChip(selected = boardView, onClick = { boardView = true }, label = { Text("Board") }, shape = CircleShape)
+                        FilterChip(selected = !boardView, onClick = { boardView = false }, label = { Text("By when") }, shape = CircleShape)
+                    }
+                }
+                if (boardView) {
+                    item(key = "board-hint") {
+                        Text("Hold a card to move it · tap to flip it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 20.dp, bottom = 10.dp))
+                    }
+                    item(key = "board") {
+                        VisionBoard(
+                            active, { d -> state.progress?.firstOrNull { it.dream.id == d.id } }, state.currency,
+                            onOpen = { open = it }, onAdd = { onAddDream(null) }, onReorder = viewModel::reorderDreams,
+                        )
+                    }
+                }
+                if (!boardView) Horizon.entries.forEach { horizon ->
                     val list = byHorizon[horizon].orEmpty()
                     // Someday only shows when something's in it; the three time frames always do.
                     if (horizon == Horizon.SOMEDAY && list.isEmpty()) return@forEach
@@ -395,7 +418,7 @@ fun PlansScreen(
                                 w.rottenTomatoes?.takeIf { it.isNotEmpty() }?.let { "🍅 $it" },
                                 w.whereToWatch, w.year,
                             ).joinToString(" · ").ifEmpty { template.title },
-                            image = w.poster,
+                            image = w.poster ?: w.photos.firstOrNull()?.let { com.houseaffairs.app.core.photo.PhotoStore.file(photoContext, it) }?.takeIf { it.exists() },
                             doneLabel = template.markLabel,
                             onClick = { onEdit(EntryType.WISH, w.id) },
                             onDone = { viewModel.markDone(w.id, w.title)?.let(onSaved) },
@@ -411,7 +434,7 @@ fun PlansScreen(
                         WishRow(
                             title = wish.title,
                             detail = listOfNotNull(wish.event?.let { "🎁 $it" }, wish.place, wish.budgetText).joinToString(" · ").ifEmpty { template.title },
-                            image = null,
+                            image = wish.photos.firstOrNull()?.let { com.houseaffairs.app.core.photo.PhotoStore.file(photoContext, it) }?.takeIf { it.exists() },
                             doneLabel = template.markLabel,
                             onClick = { onEdit(EntryType.WISH, wish.id) },
                             onDone = { viewModel.markDone(wish.id, wish.title)?.let(onSaved) },
@@ -585,7 +608,8 @@ private fun ListHeader(text: String) {
 private fun WishRow(
     title: String,
     detail: String,
-    image: String?,
+    /** A cover's URL, or a family photo's file. */
+    image: Any?,
     doneLabel: String,
     onClick: () -> Unit,
     onDone: () -> Unit,
@@ -700,7 +724,7 @@ private fun HorizonHeader(title: String, detail: String, count: Int) {
 }
 
 @Composable
-private fun NewDreamTile(label: String, onClick: () -> Unit) {
+internal fun NewDreamTile(label: String, onClick: () -> Unit) {
     Column(
         Modifier.fillMaxWidth().aspectRatio(0.82f).clip(MaterialTheme.shapes.large)
             .border(2.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.large).clickable(onClick = onClick).padding(16.dp),
@@ -716,12 +740,17 @@ private fun NewDreamTile(label: String, onClick: () -> Unit) {
 
 /** A vision-board tile: emoji, name, and how close the family is. */
 @Composable
-private fun DreamCard(dream: Dream, progress: DreamProgress?, currency: String, trip: TripSummary?, onClick: () -> Unit) {
-    Column(
-        Modifier.fillMaxWidth().aspectRatio(0.82f).clip(MaterialTheme.shapes.large)
-            .background(Brush.linearGradient(gradientFor(dream.kind))).clickable(onClick = onClick).padding(16.dp),
-    ) {
-        Text(dream.emoji, fontSize = 40.sp)
+internal fun DreamCard(dream: Dream, progress: DreamProgress?, currency: String, trip: TripSummary?, onClick: (() -> Unit)?) {
+    val context = LocalContext.current
+    // The family's own picture, when there is one, behind a dark fade so the words stay readable.
+    val picture = remember(dream.photos) { dream.photos.firstOrNull()?.let { com.houseaffairs.app.core.photo.PhotoStore.file(context, it) }?.takeIf { it.exists() } }
+    Box(Modifier.fillMaxWidth().aspectRatio(0.82f).clip(MaterialTheme.shapes.large).background(Brush.linearGradient(gradientFor(dream.kind))).then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)) {
+    if (picture != null) {
+        coil.compose.AsyncImage(model = picture, contentDescription = null, contentScale = androidx.compose.ui.layout.ContentScale.Crop, modifier = Modifier.matchParentSize())
+        Box(Modifier.matchParentSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.05f), Color.Black.copy(alpha = 0.65f)))))
+    }
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        if (picture == null) Text(dream.emoji, fontSize = 40.sp)
         Spacer(Modifier.weight(1f))
         Text(dream.title, style = MaterialTheme.typography.titleMedium, color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
         val status = when {
@@ -749,6 +778,7 @@ private fun DreamCard(dream: Dream, progress: DreamProgress?, currency: String, 
             )
         }
     }
+}
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)

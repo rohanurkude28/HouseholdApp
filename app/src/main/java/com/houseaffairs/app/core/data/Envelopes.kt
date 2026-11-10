@@ -148,6 +148,10 @@ data class Dream(
     val achieved: Boolean = false,
     /** What the family picked, if anything; otherwise it follows from [targetDate]. */
     val horizonChoice: String? = null,
+    /** Pictures for the vision board (PhotoStore ids); the first fills its card. */
+    val photos: List<String> = emptyList(),
+    /** Where it was dragged to on the board; null until moved. */
+    val boardOrder: Double? = null,
 ) {
     fun horizon(today: LocalDate = LocalDate.now()): Horizon = horizonOf(horizonChoice, targetDate, today)
 }
