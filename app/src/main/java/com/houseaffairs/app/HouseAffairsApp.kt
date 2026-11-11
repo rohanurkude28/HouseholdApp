@@ -42,6 +42,7 @@ class HouseAffairsApp : Application() {
             }
         }
         DigestWorker.createChannel(this)
+        com.houseaffairs.app.notify.StreakWorker.createChannel(this)
         Reminders.createChannel(this)
         Reminders.schedulePeriodic(this)
         // While the app runs, a new or changed task re-plans this phone's reminders straight away.
@@ -79,6 +80,8 @@ class HouseAffairsApp : Application() {
         scope.launch {
             settings.notificationPrefs.distinctUntilChanged { a, b -> a.enabled == b.enabled && a.hour == b.hour }.collect { prefs ->
                 if (prefs.enabled) DigestWorker.schedule(this@HouseAffairsApp, prefs.hour) else DigestWorker.cancel(this@HouseAffairsApp)
+                // The evening streak nudge follows the same on/off switch as the digest.
+                if (prefs.enabled) com.houseaffairs.app.notify.StreakWorker.schedule(this@HouseAffairsApp) else com.houseaffairs.app.notify.StreakWorker.cancel(this@HouseAffairsApp)
             }
         }
     }

@@ -196,7 +196,14 @@ class StockViewModel @Inject constructor(
             stock.keptStocked -> null
             else -> com.houseaffairs.app.core.data.buyAgainFollowUp(stock.title, thrown) { pantryRepo.addToShopping(hid, uid, stock.title) }
         }
-        followUp?.let { com.houseaffairs.app.core.ui.FollowUps.show(it) }
+        // Changed your mind (or tapped by mistake): one tap puts it back.
+        val undo = com.houseaffairs.app.core.data.FollowUpGroup(
+            "Changed your mind?", listOf(com.houseaffairs.app.core.data.FollowUpChoice("Put it back") { pantryRepo.putBack(hid, stock, from, added) }),
+        )
+        com.houseaffairs.app.core.ui.FollowUps.show(
+            (followUp ?: com.houseaffairs.app.core.data.FollowUp("${stock.title} · ${if (thrown) "thrown away" else "used up"}", groups = emptyList()))
+                .let { it.copy(groups = it.groups + undo) },
+        )
     }
 
     /** "Skip today" on a medicine taken on a schedule: no reminders today, not counted down. */

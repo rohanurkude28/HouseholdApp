@@ -252,7 +252,7 @@ enum class EntryType(
             ChoiceSpec("servings", "Quantities above are for (people)", listOf("1", "2", "4"), required = true),
             ChoiceSpec("mood", "Mood", FLAVOURS, multi = true, allowCustom = true),
             TextSpec("link", "Reel or recipe link", isLink = true),
-            ChoiceSpec("mealType", "Meal", listOf("Breakfast", "Lunch", "Dinner", "Snack", "Dessert"), essential = false),
+            ChoiceSpec("mealType", "Meal", listOf("Breakfast", "Lunch", "Dinner", "Snack", "Dessert", "Drink"), essential = false),
             TextSpec("prepTime", "Prep time", "20 min", essential = false),
             // Per serving, i.e. one person's plate; the live-well wheel adds up servings eaten.
             TextSpec("macros", "Nutrition per serving (one person)", isMacros = true, essential = false),
@@ -338,6 +338,8 @@ enum class EntryType(
             // Trips sit on the vision board under the dream they make come true.
             ChoiceSpec("forDream", "Part of a dream", listOf("Not linked"), dynamicOptions = "dreams", hideWithoutDynamic = true),
             MembersSpec("who", "Who's going", essential = false),
+            // A surprise trip: they don't see it (or its plan) until this is cleared.
+            MembersSpec("surpriseFor", "Keep it a surprise from", essential = false),
             TextSpec("note", "Note", essential = false),
         ),
     ),

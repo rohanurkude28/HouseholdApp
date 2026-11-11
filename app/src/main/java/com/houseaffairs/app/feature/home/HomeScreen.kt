@@ -67,10 +67,20 @@ import com.houseaffairs.app.core.data.Priority
 import com.houseaffairs.app.core.data.TodayRow
 import com.houseaffairs.app.core.data.BILL_PREFIX
 import com.houseaffairs.app.core.data.RENEWAL_PREFIX
+import com.houseaffairs.app.core.data.ActivityKind
+import com.houseaffairs.app.core.data.CardKind
+import com.houseaffairs.app.core.data.Idea
+import com.houseaffairs.app.core.data.Moment
+import com.houseaffairs.app.core.data.MomentCard
+import com.houseaffairs.app.core.data.MomentInputs
+import com.houseaffairs.app.core.data.momentCards
+import com.houseaffairs.app.core.data.momentLine
+import com.houseaffairs.app.core.data.nextUp
 import com.houseaffairs.app.core.data.buildToday
 import com.houseaffairs.app.core.data.COMING_UP_COLLECTIONS
 import androidx.compose.material.icons.outlined.Restaurant
 import androidx.compose.material.icons.outlined.RestaurantMenu
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.ShoppingBag
 import androidx.compose.material.icons.outlined.Tv
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -157,16 +167,18 @@ fun HomeScreen(
     onEdit: (EntryType, String) -> Unit,
     onOpenReview: () -> Unit,
     onSaved: (com.houseaffairs.app.feature.add.SavedEntry) -> Unit = {},
+    onAddType: (EntryType) -> Unit = { onQuickAdd() },
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     CompositionLocalProvider(LocalHomeNav provides HomeNav(onOpenTab, onEdit, onSaved)) {
-        HomeContent(onQuickAdd, onOpenSettings, onOpenReview, onOpenTab, onAddRecipe, viewModel)
+        HomeContent(onQuickAdd, onAddType, onOpenSettings, onOpenReview, onOpenTab, onAddRecipe, viewModel)
     }
 }
 
 @Composable
 private fun HomeContent(
     onQuickAdd: () -> Unit,
+    onAddType: (EntryType) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenReview: () -> Unit,
     onOpenTab: (String) -> Unit,
@@ -175,7 +187,16 @@ private fun HomeContent(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val nudge by viewModel.nudge.collectAsStateWithLifecycle()
-    LaunchedEffect(Unit) { viewModel.refreshNudge() }
+    val streak by viewModel.streak.collectAsStateWithLifecycle()
+    val handled by viewModel.handled.collectAsStateWithLifecycle()
+    val rows = remember(state.attention, state.data.tasks, state.filter, state.canPlans) { todayRows(state) }
+    // Home talks about this part of the day: what it suggests at breakfast isn't what it asks at night.
+    val moment = Moment.at(LocalTime.now().hour)
+    val cards = remember(rows, handled, state, moment) { momentCards(moment, momentInputs(state, rows, moment), handled) }
+    LaunchedEffect(Unit) {
+        viewModel.refreshNudge()
+        viewModel.markOpened()
+    }
     val dayPart = DayPart.now()
     val listState = rememberLazyListState()
     // The gradient is behind the status bar until roughly its first 300dp have scrolled away.
@@ -189,19 +210,29 @@ private fun HomeContent(
     LightStatusBarIcons(enabled = !heroGone || MaterialTheme.colorScheme.background.luminance() < 0.5f)
 
     var customising by remember { mutableStateOf(false) }
+    var searching by remember { mutableStateOf(false) }
+    val homeNav = LocalHomeNav.current
+    if (searching) SearchSheet(onDismiss = { searching = false }, onEdit = homeNav.edit, onOpenTab = onOpenTab)
 
     Box(Modifier.fillMaxSize()) {
     LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(bottom = 24.dp)) {
-        item { Hero(state, dayPart, onQuickAdd, onOpenReview, onOpenTab, viewModel::toggleHideAmounts) }
-        if (state.filters.size > 2) item { FilterRow(state, viewModel::setFilter) }
-        setupSteps(state, onQuickAdd, onOpenSettings) { onOpenTab("money") }.takeIf { steps -> steps.any { !it.done } }?.let { steps ->
-            item { SetupCard(steps, Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp)) }
-        }
-        nudge?.let { n ->
-            item {
-                NudgeCard(n, Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp), onClick = onOpenReview, onDismiss = viewModel::dismissNudge)
+        item { Hero(state, dayPart, momentLine(moment, cards), onQuickAdd, onOpenReview, onOpenTab, viewModel::toggleHideAmounts, onSearch = { searching = true }) }
+        // One way to add from Home: the Ask bar. Its sheet leads with the big tiles for what this person adds most.
+        // Narrowing Home lives in Customise now; shown here only while a narrowing is on, to undo it.
+        if (state.filters.size > 2 && state.filter != HomeFilter.ALL) item { FilterRow(state, viewModel::setFilter) }
+        // Setting up, notifications and the daily nudge come after the deck, never before.
+        val extras: androidx.compose.foundation.lazy.LazyListScope.() -> Unit = {
+            setupSteps(state, onQuickAdd, onOpenSettings) { onOpenTab("money") }.takeIf { steps -> steps.any { !it.done } }?.let { steps ->
+                item { SetupCard(steps, Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp)) }
+            }
+            item { NotificationsOffCard() }
+            nudge?.let { n ->
+                item {
+                    NudgeCard(n, Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp), onClick = onOpenReview, onDismiss = viewModel::dismissNudge)
+                }
             }
         }
+        if (state.layout.none { it.visible && it.section == HomeSection.TODAY }) extras()
         // Sections in the order (and visibility) each person chose, narrowed by the filter.
         // Suggestions, cooking, watching and shopping share one tabbed card to keep Home short.
         val forYou = state.layout.filter { it.visible }.mapNotNull { pref ->
@@ -217,15 +248,19 @@ private fun HomeContent(
         state.layout.filter { it.visible }.forEach { pref ->
             when (pref.section) {
                 HomeSection.STATS -> Unit // drawn inside the hero
-                HomeSection.TODAY -> item { val nav = LocalHomeNav.current; TodaySection(state, onQuickAdd, onBillPaid = { key -> viewModel.markBillPaid(key, nav.saved) }, onLogRenewal = { id -> viewModel.logRenewal(id, nav.saved) }, onRestock = { title -> viewModel.addToShopping(title, nav.saved) },
-                    answers = com.houseaffairs.app.core.ui.TaskAnswers(
-                        accept = { viewModel.acceptTask(it)?.let(nav.saved) },
-                        decline = { t, note -> viewModel.declineTask(t, note)?.let(nav.saved) },
-                        keep = viewModel::keepTask,
-                        reassign = { nav.edit(EntryType.TASK, it.id) },
-                    ),
-                ) { id -> viewModel.completeTask(id, nav.saved) } }
+                HomeSection.TIDY -> item {
+                    val hidden by viewModel.tidyHidden.collectAsStateWithLifecycle()
+                    val nudges = remember(state.data, state.budget) {
+                        homeNudges(state.data, LocalDate.now(), state.canMoney, state.canStock, state.canMedicine, state.canPlans, hasBudget = state.budget != null)
+                    }
+                    if (!hidden && state.data.loaded && nudges.isNotEmpty()) TidyCard(nudges, onDismiss = viewModel::dismissTidy)
+                }
+                HomeSection.TODAY -> {
+                    item { TodaySection(state, rows, moment, cards, handled, streak, viewModel, onQuickAdd, onAddType) }
+                    extras()
+                }
                 HomeSection.COMING_UP -> item { ComingUpSection(state) }
+                HomeSection.FAMILY -> if (state.members.size > 1) item { FamilyFeed(state) }
                 HomeSection.GLANCE -> item { GlanceRow(state, onOpenSettings) }
                 HomeSection.RIGHT_NOW, HomeSection.USE_IT_UP, HomeSection.WATCH, HomeSection.SHOPPING ->
                     if (!forYouShown && forYou.isNotEmpty()) {
@@ -257,7 +292,7 @@ private fun HomeContent(
     }
 
     if (customising) {
-        CustomiseSheet(state.layout, viewModel::toggleSection, viewModel::moveSection) { customising = false }
+        CustomiseSheet(state, viewModel::toggleSection, viewModel::moveSection, viewModel::setFilter) { customising = false }
     }
 }
 
@@ -265,11 +300,11 @@ private fun HomeContent(
 // Filters, attention, coming up
 
 @Composable
-private fun FilterRow(state: HomeUiState, onSelect: (HomeFilter) -> Unit) {
+private fun FilterRow(state: HomeUiState, onSelect: (HomeFilter) -> Unit, padded: Boolean = true) {
     LazyRow(
-        contentPadding = PaddingValues(horizontal = 20.dp),
+        contentPadding = PaddingValues(horizontal = if (padded) 20.dp else 0.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.padding(top = 16.dp),
+        modifier = Modifier.padding(top = if (padded) 16.dp else 8.dp),
     ) {
         items(state.filters.size) { index ->
             val filter = state.filters[index]
@@ -305,93 +340,315 @@ private fun areaIcon(area: Area): ImageVector = when (area) {
     Area.PLANS -> Icons.Outlined.Event
 }
 
-/** Tasks and alerts in one ranked list, so Home has a single place to look first. */
-@Composable
-private fun TodaySection(state: HomeUiState, onQuickAdd: () -> Unit, onBillPaid: (String) -> Unit, onLogRenewal: (String) -> Unit, onRestock: (String) -> Unit, answers: com.houseaffairs.app.core.ui.TaskAnswers, onComplete: (String) -> Unit) {
-    val nav = LocalHomeNav.current
+private fun TodayRow.key(): String = when (this) {
+    is TodayRow.Task -> task.id
+    is TodayRow.Alert -> item.id
+}
+
+private fun todayRows(state: HomeUiState): List<TodayRow> {
     val tasks = if (state.canPlans && state.shows(Area.PLANS)) state.data.tasks else emptyList()
-    val rows = buildToday(state.attention.filter { state.shows(it.area) }, tasks, LocalDate.now())
-    var expanded by remember { mutableStateOf(false) }
-    SectionTitle(
-        "Today",
-        action = if (rows.size > 5) (if (expanded) "Show less" else "Show all ${rows.size}") else null,
-        onAction = { expanded = !expanded },
+    return buildToday(state.attention.filter { state.shows(it.area) }, tasks, LocalDate.now())
+}
+
+private fun taskDetail(task: com.houseaffairs.app.core.data.TaskItem, state: HomeUiState): String =
+    com.houseaffairs.app.core.data.handoffLine(task, state.myUid, state::nameOf).let { asked ->
+        listOfNotNull(
+            asked,
+            task.priority.takeIf { it != "Low" }?.let { "$it priority" },
+            task.dueDate?.let { dueLabel(it).first },
+            // "Waiting for Ravi" already says who it's for.
+            task.assignee?.takeIf { it != state.myUid && asked == null }?.let { "for ${state.nameOf(it)}" },
+        ).joinToString(" · ").ifEmpty { "No date" }
+    }
+
+/** What Home knows for this person right now, as the pure deck rule wants it. */
+private fun momentInputs(state: HomeUiState, rows: List<TodayRow>, moment: Moment): MomentInputs {
+    val today = LocalDate.now()
+    // Someone else's task isn't mine to finish, so it never gets a card.
+    val mine = rows.filter { it !is TodayRow.Task || it.task.assignee == null || it.task.assignee == state.myUid }
+    val food = state.rightNow?.items?.firstOrNull { it.kind == SuggestionKind.FOOD }?.let { Idea(it.title, it.detail) }
+    val rescue = state.ideas.firstOrNull()?.let { Idea(it.recipe.title, it.rescues.firstOrNull()?.let { r -> "Uses $r before it goes off" } ?: "You have everything") }
+    val startOfDay = today.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+    val tomorrow = today.plusDays(1)
+    return MomentInputs(
+        things = mine.map { row ->
+            when (row) {
+                is TodayRow.Task -> MomentCard(row.key(), CardKind.THING, row.priority?.label ?: "When you can", row.task.title, taskDetail(row.task, state))
+                is TodayRow.Alert -> MomentCard(row.key(), CardKind.THING, row.item.priority.label, row.item.title, row.item.detail)
+            }
+        },
+        // Dinner is when food about to expire gets rescued; other meals take what suits the hour.
+        meal = (if (moment == Moment.EVENING) rescue ?: food else food ?: rescue).takeIf { state.canStock && moment.meal != null },
+        // The eat-out list on weekends; any day, a place the family already loved.
+        eatOut = state.rightNow?.items?.firstOrNull { it.kind == SuggestionKind.EAT_OUT }?.let { Idea(it.title, it.detail) }
+            ?: com.houseaffairs.app.core.data.likedBefore(state.places, moment.meal, java.time.LocalDate.now()),
+        toBuy = if (state.canStock) state.data.shopping.map { it.name } else emptyList(),
+        spentToday = state.data.recent.any { it.kind == ActivityKind.EXPENSE && it.createdBy == state.myUid && (it.createdAtMillis ?: startOfDay) >= startOfDay },
+        watch = state.watch.firstOrNull()?.takeIf { state.canPlans }?.let { Idea(it.title, it.providers.firstOrNull() ?: it.platform ?: "On your watch list") },
+        tomorrow = if (state.canPlans) {
+            state.data.tasks.filter { it.dueDate == tomorrow && (it.assignee == null || it.assignee == state.myUid) }.map { it.title } +
+                state.data.events.filter { it.next == tomorrow }.map { it.title }
+        } else emptyList(),
     )
-    HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp).animateContentSize()) {
-        if (rows.isEmpty()) {
-            Row(Modifier.clip(MaterialTheme.shapes.small).clickable(onClick = onQuickAdd), verticalAlignment = Alignment.CenterVertically) {
-                IconBlob(Icons.Outlined.AutoAwesome, LocalHouseColors.current.money, size = 40.dp)
-                Spacer(Modifier.width(14.dp))
-                Column {
-                    Text("You're all caught up", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        "Tasks, expiring items and bills show up here. Try “pay rent tomorrow”.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+}
+
+/**
+ * Home's main part: a deck of cards for this part of the day, one idea or question each, swiped
+ * through and answered with one tap. What it shows changes from morning to night, and it runs
+ * out, so there's a reason to look again later instead of a list that never ends.
+ */
+@Composable
+private fun TodaySection(
+    state: HomeUiState,
+    rows: List<TodayRow>,
+    moment: Moment,
+    cards: List<MomentCard>,
+    handled: Set<String>,
+    streak: Int,
+    viewModel: HomeViewModel,
+    onQuickAdd: () -> Unit,
+    onAddType: (EntryType) -> Unit,
+) {
+    val nav = LocalHomeNav.current
+    // Doing something counts towards the day; undoing it takes that back.
+    fun did(id: String): (com.houseaffairs.app.feature.add.SavedEntry) -> Unit = { saved ->
+        viewModel.setHandled(id)
+        nav.saved(saved.copy(undo = { saved.undo(); viewModel.setHandled(id, false) }))
+    }
+    val answers = com.houseaffairs.app.core.ui.TaskAnswers(
+        accept = { viewModel.acceptTask(it)?.let(nav.saved) },
+        decline = { t, note -> viewModel.declineTask(t, note)?.let(nav.saved) },
+        keep = viewModel::keepTask,
+        reassign = { nav.edit(EntryType.TASK, it.id) },
+    )
+    val inDeck = cards.map { it.id }.toSet()
+    val later = rows.filter { it.key() !in inDeck && it.key() !in handled }
+    var expanded by remember { mutableStateOf(false) }
+    val pager = androidx.compose.foundation.pager.rememberPagerState { cards.size + 1 }
+
+    Column(Modifier.padding(top = 18.dp)) {
+        Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("${moment.emoji}  ${moment.label.replaceFirstChar { it.uppercase() }}", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            com.houseaffairs.app.core.data.streakLine(streak)?.let {
+                Text(it, style = MaterialTheme.typography.labelMedium, color = LocalHouseColors.current.coral)
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        // The next card peeks in from the right, so it's plain there's more to swipe to.
+        androidx.compose.foundation.pager.HorizontalPager(
+            state = pager,
+            contentPadding = PaddingValues(start = 20.dp, end = if (cards.isEmpty()) 20.dp else 48.dp),
+            pageSpacing = 12.dp,
+            key = { cards.getOrNull(it)?.id ?: "end" },
+        ) { page ->
+            val card = cards.getOrNull(page)
+            if (card == null) {
+                EndCard(moment, answered = handled.isNotEmpty(), onQuickAdd)
+            } else {
+                DeckCard(card, "${page + 1} of ${cards.size}", rows.firstOrNull { it.key() == card.id }, state, viewModel, answers, ::did, onAddType)
+            }
+        }
+        if (cards.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.Center) {
+                repeat(cards.size + 1) { i ->
+                    val on = i == pager.currentPage
+                    Box(
+                        Modifier.padding(horizontal = 3.dp).size(width = if (on) 18.dp else 6.dp, height = 6.dp).clip(CircleShape)
+                            .background(if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
                     )
                 }
             }
-        } else {
-            (if (expanded) rows else rows.take(5)).forEachIndexed { index, row ->
-                if (index > 0) Spacer(Modifier.height(14.dp))
-                when (row) {
-                    is TodayRow.Task -> {
-                        val task = row.task
-                        AttentionRow(
-                            priority = row.priority,
-                            area = Area.PLANS,
-                            title = task.title,
-                            detail = com.houseaffairs.app.core.data.handoffLine(task, state.myUid, state::nameOf).let { asked ->
-                                listOfNotNull(
-                                    asked,
-                                    task.priority.takeIf { it != "Low" }?.let { "$it priority" },
-                                    task.dueDate?.let { dueLabel(it).first },
-                                    // "Waiting for Ravi" already says who it's for.
-                                    task.assignee?.takeIf { it != state.myUid && asked == null }?.let { "for ${state.nameOf(it)}" },
-                                ).joinToString(" · ").ifEmpty { "No date" }
-                            },
-                            onClick = { nav.edit(EntryType.TASK, task.id) },
-                        ) {
-                            task.reach?.let { com.houseaffairs.app.core.ui.ReachButton(it, task.phone, task.title) }
-                            TickCircle(LocalHouseColors.current.plans.color, onTick = { onComplete(task.id) }, contentDescription = "Done: ${task.title}")
-                        }
-                        // Given to me, or back with me: the answer buttons under the row.
-                        com.houseaffairs.app.core.ui.HandoffButtons(task, state.myUid, answers, Modifier.padding(start = 56.dp, top = 6.dp))
+        }
+        // Everything else that's open stays one tap away, never in the way.
+        if (later.isNotEmpty()) {
+            TextButton(onClick = { expanded = !expanded }, modifier = Modifier.padding(horizontal = 8.dp)) {
+                Text(if (expanded) "Show less" else if (later.size == 1) "1 more can wait" else "${later.size} more can wait")
+            }
+            if (expanded) {
+                HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+                    later.forEachIndexed { i, row ->
+                        if (i > 0) Spacer(Modifier.height(12.dp))
+                        LaterRow(row, state, viewModel, answers, ::did)
                     }
-                    is TodayRow.Alert -> {
-                        val item = row.item
-                        AttentionRow(
-                            priority = item.priority,
-                            area = item.area,
-                            title = item.title,
-                            detail = item.detail,
-                            onClick = {
-                                item.open?.let { return@AttentionRow nav.open(it) }
-                                val type = collectionType(item.collection)
-                                if (type != null) nav.edit(type, item.id.removePrefix(RENEWAL_PREFIX)) else nav.open("money")
-                            },
-                        ) {
-                            // Card bills are marked paid right here; Money no longer has a card box.
-                            val bill = item.id.removePrefix(BILL_PREFIX).takeIf { item.id.startsWith(BILL_PREFIX) }
-                            val restock = item.restock
-                            val renewal = item.id.removePrefix(RENEWAL_PREFIX).takeIf { item.id.startsWith(RENEWAL_PREFIX) }
-                            if (bill != null) {
-                                TextButton(onClick = { onBillPaid(bill) }) { Text("Paid") }
-                            } else if (renewal != null) {
-                                TextButton(onClick = { onLogRenewal(renewal) }) { Text("Log it") }
-                            } else if (restock != null && state.data.shopping.none { com.houseaffairs.app.core.data.itemKey(it.name) == com.houseaffairs.app.core.data.itemKey(restock) }) {
-                                TextButton(onClick = { onRestock(restock) }) { Text("+ List") }
-                            } else {
-                                Text(item.priority.label, style = MaterialTheme.typography.labelMedium, color = priorityColor(item.priority))
-                            }
+                    if (state.canPlans && state.data.tasks.isNotEmpty()) {
+                        TextButton(onClick = { nav.open("plans/TASKS") }, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                            Text("All tasks (${state.data.tasks.size})")
                         }
                     }
                 }
             }
-            if (tasks.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                TextButton(onClick = { nav.open("plans/TASKS") }, contentPadding = PaddingValues(horizontal = 0.dp)) {
-                    Text("All tasks (${tasks.size})")
+        }
+    }
+}
+
+private val DECK_HEIGHT = 216.dp
+
+/** One card of the deck: a small heading, one big line, and a button that says what tapping it does. */
+@Composable
+private fun DeckCard(
+    card: MomentCard,
+    position: String,
+    row: TodayRow?,
+    state: HomeUiState,
+    viewModel: HomeViewModel,
+    answers: com.houseaffairs.app.core.ui.TaskAnswers,
+    did: (String) -> (com.houseaffairs.app.feature.add.SavedEntry) -> Unit,
+    onAddType: (EntryType) -> Unit,
+) {
+    val nav = LocalHomeNav.current
+    val colors = LocalHouseColors.current
+    val id = card.id
+    val dismiss = { viewModel.setHandled(id) }
+    fun go(route: String): () -> Unit = { dismiss(); nav.open(route) }
+    val area = when (row) {
+        is TodayRow.Task -> Area.PLANS
+        is TodayRow.Alert -> row.item.area
+        null -> null
+    }
+    val (emoji, accent) = when (card.kind) {
+        CardKind.THING -> "" to areaAccent(area ?: Area.PLANS)
+        CardKind.MEAL -> "🍳" to colors.stock
+        CardKind.EAT_OUT -> "🍽️" to colors.plans
+        CardKind.SHOPPING -> "🛒" to colors.stock
+        CardKind.SPENDS -> "💸" to colors.money
+        CardKind.WATCH -> "🎬" to colors.vault
+        CardKind.TOMORROW -> "📅" to colors.plans
+    }
+    // What the main button says and does; null where a task has its own yes/no buttons.
+    var later = "Not now"
+    val main: Pair<String, () -> Unit>? = when (card.kind) {
+        CardKind.MEAL -> "Let's cook" to go("stock/RECIPES")
+        CardKind.EAT_OUT -> "See places" to go("plans/PLACES")
+        CardKind.SHOPPING -> "Open the list" to go("stock/SHOPPING")
+        // Not answered until something is added: the question goes away once a spend is noted.
+        CardKind.SPENDS -> { later = "Nothing today"; "Yes, add it" to { onAddType(EntryType.EXPENSE) } }
+        CardKind.WATCH -> "Open watch list" to go("plans/LISTS")
+        CardKind.TOMORROW -> { later = ""; "Got it" to dismiss }
+        CardKind.THING -> {
+            later = "Not today"
+            when (row) {
+                is TodayRow.Task -> when (com.houseaffairs.app.core.data.handoffOf(row.task, state.myUid)) {
+                    // Given to me, or back with me: answer that first.
+                    com.houseaffairs.app.core.data.Handoff.ASKED_ME, com.houseaffairs.app.core.data.Handoff.CAME_BACK -> null
+                    else -> "Done ✓" to { viewModel.completeTask(row.task.id, did(id)) }
+                }
+                is TodayRow.Alert -> {
+                    val item = row.item
+                    val bill = item.id.removePrefix(BILL_PREFIX).takeIf { item.id.startsWith(BILL_PREFIX) }
+                    val renewal = item.id.removePrefix(RENEWAL_PREFIX).takeIf { item.id.startsWith(RENEWAL_PREFIX) }
+                    val restock = item.restock?.takeIf { r -> state.data.shopping.none { com.houseaffairs.app.core.data.itemKey(it.name) == com.houseaffairs.app.core.data.itemKey(r) } }
+                    when {
+                        bill != null -> "Paid ✓" to { viewModel.markBillPaid(bill, did(id)) }
+                        renewal != null -> "Log it" to { viewModel.logRenewal(renewal, did(id)) }
+                        restock != null -> "Add to list" to { viewModel.addToShopping(restock, did(id)) }
+                        item.habit != null -> "Add to my day" to { viewModel.addHabitTask(item.habit!!, did(id)) }
+                        // Nothing to do but know about it: saying so is dealing with it.
+                        else -> { later = ""; "Got it" to dismiss }
+                    }
+                }
+                null -> { later = ""; "Got it" to dismiss }
+            }
+        }
+    }
+    val open: (() -> Unit)? = when (row) {
+        is TodayRow.Task -> ({ nav.edit(EntryType.TASK, row.task.id) })
+        is TodayRow.Alert -> ({ openAlert(row.item, nav) })
+        null -> null
+    }
+    Surface(
+        shape = RoundedCornerShape(28.dp),
+        color = accent.container,
+        modifier = Modifier.fillMaxWidth().height(DECK_HEIGHT).clip(RoundedCornerShape(28.dp)).then(if (open != null) Modifier.clickable(onClick = open) else Modifier),
+    ) {
+        Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(card.eyebrow.uppercase(), style = MaterialTheme.typography.labelMedium, color = accent.color, modifier = Modifier.weight(1f))
+                Text(position, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.Top) {
+                Column(Modifier.weight(1f)) {
+                    Text(card.title, style = MaterialTheme.typography.headlineSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(4.dp))
+                    Text(card.detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+                Spacer(Modifier.width(12.dp))
+                if (emoji.isNotEmpty()) Text(emoji, style = MaterialTheme.typography.displaySmall) else IconBlob(areaIcon(area ?: Area.PLANS), accent, size = 44.dp)
+            }
+            Spacer(Modifier.weight(1f))
+            if (main == null && row is TodayRow.Task) {
+                com.houseaffairs.app.core.ui.HandoffButtons(row.task, state.myUid, answers)
+            } else if (main != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.Button(
+                        onClick = main.second,
+                        shape = CircleShape,
+                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = accent.color, contentColor = Color.White),
+                    ) { Text(main.first) }
+                    if (later.isNotEmpty()) TextButton(onClick = dismiss) { Text(later, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
+            }
+        }
+    }
+}
+
+/** The last card: this part of the day is done, and here's what the next one brings. */
+@Composable
+private fun EndCard(moment: Moment, answered: Boolean, onQuickAdd: () -> Unit) {
+    Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.fillMaxWidth().height(DECK_HEIGHT)) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.Center) {
+            Text(if (answered) "🎉" else moment.emoji, style = MaterialTheme.typography.displaySmall)
+            Spacer(Modifier.height(8.dp))
+            Text(if (answered) "That's all for ${moment.label.removePrefix("this ")}" else "Nothing needs you ${moment.label}", style = MaterialTheme.typography.titleLarge)
+            Text(nextUp(moment), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            TextButton(onClick = onQuickAdd, contentPadding = PaddingValues(horizontal = 0.dp)) { Text("Add something") }
+        }
+    }
+}
+
+private fun openAlert(item: com.houseaffairs.app.core.data.Attention, nav: HomeNav) {
+    item.open?.let { return nav.open(it) }
+    val type = collectionType(item.collection)
+    if (type != null) nav.edit(type, item.id.removePrefix(RENEWAL_PREFIX)) else nav.open("money")
+}
+
+/** A row under "more for later": the same things, one line each. */
+@Composable
+private fun LaterRow(
+    row: TodayRow,
+    state: HomeUiState,
+    viewModel: HomeViewModel,
+    answers: com.houseaffairs.app.core.ui.TaskAnswers,
+    did: (String) -> (com.houseaffairs.app.feature.add.SavedEntry) -> Unit,
+) {
+    val nav = LocalHomeNav.current
+    val id = row.key()
+    when (row) {
+        is TodayRow.Task -> {
+            val task = row.task
+            AttentionRow(row.priority, Area.PLANS, task.title, taskDetail(task, state), onClick = { nav.edit(EntryType.TASK, task.id) }) {
+                task.reach?.let { com.houseaffairs.app.core.ui.ReachButton(it, task.phone, task.title) }
+                TickCircle(LocalHouseColors.current.plans.color, onTick = { viewModel.completeTask(task.id, did(id)) }, contentDescription = "Done: ${task.title}")
+            }
+            com.houseaffairs.app.core.ui.HandoffButtons(task, state.myUid, answers, Modifier.padding(start = 56.dp, top = 6.dp))
+        }
+        is TodayRow.Alert -> {
+            val item = row.item
+            AttentionRow(item.priority, item.area, item.title, item.detail, onClick = { openAlert(item, nav) }) {
+                // Card bills are marked paid right here; Money no longer has a card box.
+                val bill = item.id.removePrefix(BILL_PREFIX).takeIf { item.id.startsWith(BILL_PREFIX) }
+                val restock = item.restock
+                val renewal = item.id.removePrefix(RENEWAL_PREFIX).takeIf { item.id.startsWith(RENEWAL_PREFIX) }
+                if (bill != null) {
+                    TextButton(onClick = { viewModel.markBillPaid(bill, did(id)) }) { Text("Paid") }
+                } else if (renewal != null) {
+                    TextButton(onClick = { viewModel.logRenewal(renewal, did(id)) }) { Text("Log it") }
+                } else if (restock != null && state.data.shopping.none { com.houseaffairs.app.core.data.itemKey(it.name) == com.houseaffairs.app.core.data.itemKey(restock) }) {
+                    TextButton(onClick = { viewModel.addToShopping(restock, did(id)) }) { Text("+ List") }
+                } else if (item.habit != null) {
+                    TextButton(onClick = { viewModel.addHabitTask(item.habit!!, did(id)) }) { Text("+ Task") }
+                } else {
+                    Text(item.priority.label, style = MaterialTheme.typography.labelMedium, color = priorityColor(item.priority))
                 }
             }
         }
@@ -455,11 +712,13 @@ private fun comingUp(state: HomeUiState): List<ComingUpRow> {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CustomiseSheet(
-    layout: List<SectionPref>,
+    state: HomeUiState,
     onToggle: (HomeSection) -> Unit,
     onMove: (HomeSection, Boolean) -> Unit,
+    onFilter: (HomeFilter) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val layout = state.layout
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
         Column(Modifier.navigationBarsPadding().padding(start = 20.dp, end = 12.dp, bottom = 16.dp)) {
             Text("Customise Home", style = MaterialTheme.typography.headlineSmall)
@@ -468,6 +727,11 @@ private fun CustomiseSheet(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (state.filters.size > 2) {
+                Spacer(Modifier.height(12.dp))
+                Text("Show only", style = MaterialTheme.typography.titleSmall)
+                FilterRow(state, onFilter, padded = false)
+            }
             Spacer(Modifier.height(12.dp))
             layout.forEachIndexed { index, pref ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -492,15 +756,17 @@ private fun CustomiseSheet(
 private fun Hero(
     state: HomeUiState,
     dayPart: DayPart,
+    line: String,
     onQuickAdd: () -> Unit,
     onOpenReview: () -> Unit,
     onOpenTab: (String) -> Unit,
     onToggleHide: () -> Unit,
+    onSearch: () -> Unit,
 ) {
     HeroBackground(
         dayPart = dayPart,
         groundColor = MaterialTheme.colorScheme.background,
-        modifier = Modifier.fillMaxWidth().height(if (state.showStats) 340.dp else 300.dp),
+        modifier = Modifier.fillMaxWidth().height((if (state.showStats) 366 else 300).dp),
     ) {
         Column(
             Modifier
@@ -514,6 +780,12 @@ private fun Hero(
                     color = Color.White.copy(alpha = 0.8f),
                     modifier = Modifier.weight(1f),
                 )
+                // Search the whole home by name or topic ("travel").
+                Box(
+                    Modifier.size(36.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.18f)).clickable(onClick = onSearch),
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Outlined.Search, contentDescription = "Search", tint = Color.White, modifier = Modifier.size(20.dp)) }
+                Spacer(Modifier.width(8.dp))
                 // Your avatar opens the weekly review; the ring lights up when a new one is ready.
                 Row(Modifier.clip(CircleShape).clickable(onClick = onOpenReview).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
                     AvatarStack(state.members.filter { it.uid != state.myUid }.map { it.displayName }, size = 28.dp, ring = Color.White.copy(alpha = 0.9f))
@@ -529,11 +801,17 @@ private fun Hero(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            // The whole day in one plain sentence, before any numbers.
+            if (state.showStats) {
+                Spacer(Modifier.height(4.dp))
+                Text(line, style = MaterialTheme.typography.titleMedium, color = Color.White.copy(alpha = 0.92f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             Spacer(Modifier.height(14.dp))
             if (state.showStats) {
                 StatsStrip(state, onOpenTab, onToggleHide)
             } else {
-                Text(summaryLine(state), style = MaterialTheme.typography.bodyLarge, color = Color.White.copy(alpha = 0.9f))
+                Text(line, style = MaterialTheme.typography.titleMedium, color = Color.White.copy(alpha = 0.92f))
+                Text(summaryLine(state), style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.85f))
             }
         }
         AskBar(
@@ -1194,6 +1472,104 @@ private fun WatchRow(watch: List<WatchItem>, why: Map<String, String>, onWatched
                     overflow = TextOverflow.Ellipsis,
                     modifier = if (w.youtubeUrl != null) Modifier.clickable { runCatching { uri.openUri(w.youtubeUrl!!) } } else Modifier,
                 )
+            }
+        }
+    }
+}
+
+/** A few gentle pushes: tidy what's gone stale, add what's missing. "Not today" puts it away till tomorrow. */
+@Composable
+private fun TidyCard(nudges: List<HomeNudge>, onDismiss: () -> Unit) {
+    val nav = LocalHomeNav.current
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).clip(RoundedCornerShape(24.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLow).padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 4.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(if (nudges.any { it.tidy }) "Tidy up" else "Worth adding", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            TextButton(onClick = onDismiss) { Text("Not today") }
+        }
+        nudges.forEach { n ->
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { nav.open(n.route) }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(n.emoji, style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.width(12.dp))
+                Text(n.text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                TextButton(onClick = { nav.open(n.route) }) { Text(n.action) }
+            }
+        }
+    }
+}
+
+/**
+ * Shown while this phone blocks the app's notifications (said no in the tour, or turned them off
+ * later): reminders, doses and the digest can't reach anyone otherwise. Checked again on return.
+ */
+@Composable
+private fun NotificationsOffCard() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val owner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    var off by remember { mutableStateOf(false) }
+    androidx.compose.runtime.DisposableEffect(owner) {
+        val check = { off = !androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled() }
+        check()
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, e -> if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) check() }
+        owner.lifecycle.addObserver(obs)
+        onDispose { owner.lifecycle.removeObserver(obs) }
+    }
+    if (!off) return
+    Row(
+        Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 12.dp).clip(RoundedCornerShape(20.dp))
+            .background(MaterialTheme.colorScheme.errorContainer).padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("🔕", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Notifications are off", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onErrorContainer)
+            Text("Reminders and medicine doses won't ring.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+        }
+        TextButton(onClick = {
+            context.startActivity(
+                android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }) { Text("Turn on") }
+    }
+}
+
+/** What the rest of the family added lately, so there's something new each time Home opens. */
+@Composable
+private fun FamilyFeed(state: HomeUiState) {
+    val nav = LocalHomeNav.current
+    val now = System.currentTimeMillis()
+    val feed = remember(state.data.recent, state.members) { com.houseaffairs.app.core.data.familyFeed(state.data.recent, state.myUid, now, state::nameOf) }
+    if (feed.isEmpty()) return
+    SectionTitle("What's new at home")
+    HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        feed.forEachIndexed { i, line ->
+            if (i > 0) Spacer(Modifier.height(10.dp))
+            Row(
+                Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).clickable {
+                    nav.open(
+                        when (line.kind) {
+                            ActivityKind.EXPENSE, ActivityKind.SUBSCRIPTION -> "money"
+                            ActivityKind.SHOPPING -> "stock/SHOPPING"
+                            ActivityKind.GROCERY -> "stock"
+                            ActivityKind.TASK -> "plans/TASKS"
+                            ActivityKind.LIST_ITEM -> "plans/LISTS"
+                            ActivityKind.EVENT -> "plans/EVENTS"
+                            ActivityKind.MEDICINE -> "vault/MEDICINES"
+                        },
+                    )
+                },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(line.emoji, style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.width(12.dp))
+                Text(line.text, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
+                Text(com.houseaffairs.app.core.data.agoText(line.whenMillis, now), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

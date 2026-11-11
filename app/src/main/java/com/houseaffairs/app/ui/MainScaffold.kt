@@ -146,6 +146,7 @@ fun MainScaffold(session: SessionState.Ready) {
                     onEdit = openEdit,
                     onOpenReview = { navController.navigate(REVIEW_ROUTE) },
                     onSaved = { saved -> showUndo(saved.message, saved.celebrate) { saved.undo() } },
+                    onAddType = { openAdd(it, emptyMap()) },
                 )
             }
             composable(REVIEW_ROUTE) {
@@ -280,6 +281,13 @@ fun MainScaffold(session: SessionState.Ready) {
 
     // In the demo, always say so, with a way out: nobody should wonder whose data this is.
     val touring = (main.tourStep.collectAsState().value ?: -1) >= 0
+    // Setup never answered on this phone (tour skipped or left): ask before anything else.
+    val setupDone by main.setupDone.collectAsState()
+    if (!touring && setupDone == false && !session.user.isAnonymous) {
+        SetupGate(onDone = main::markSetupDone)
+    }
+    // Once a day on opening: a mood and a line for days that have none, after the tour and setup.
+    if (!touring && (setupDone == true || session.user.isAnonymous)) DiaryCatchUp()
     if (session.user.isAnonymous && !touring) {
         // Above the bottom bar, at the side: clear of each tab's title and of the centre + button.
         androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize().navigationBarsPadding().padding(bottom = 104.dp, end = 12.dp), contentAlignment = androidx.compose.ui.Alignment.BottomEnd) {
@@ -303,6 +311,7 @@ fun MainScaffold(session: SessionState.Ready) {
             start = com.houseaffairs.app.core.data.tourResumeAt(saved, steps.size),
             onStep = main::setTourStep,
             onFinish = main::finishTour,
+            onSetupDone = main::markSetupDone,
             onOpen = { route -> if (tabs.any { it.route == route }) openTab(route) },
         )
     }

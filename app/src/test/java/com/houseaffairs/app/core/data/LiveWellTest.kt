@@ -55,4 +55,23 @@ class LiveWellTest {
         assertEquals(0.5f, target.habits.first { it.name == "Keep learning" }.score!!, 0.001f)
         assertEquals(1f, liveWell(WeekData(learned = 1), WellPlan(studyMinutes = 120)).habits.first { it.name == "Keep learning" }.score)
     }
+
+    @Test
+    fun `steps and sleep from Health Connect join the wheel`() {
+        val wheel = liveWell(WeekData(steps = 35_000, sleepHours = 6.0, days = 7))
+        val steps = wheel.habits.first { it.name == "Steps" }
+        assertEquals(5_000f / 7_000f, steps.score!!, 0.001f)
+        assertEquals(0.75f, wheel.habits.first { it.name == "Sleep" }.score!!, 0.001f)
+        // 35,000 steps is about 350 minutes of walking.
+        assertEquals(1f, wheel.habits.first { it.name == "Walk" }.score!!, 0.001f)
+        // Not connected: neither habit shows.
+        assertTrue(liveWell(WeekData()).habits.none { it.name == "Steps" || it.name == "Sleep" })
+    }
+
+    @Test
+    fun `sleep scores full from 7 to 9 hours`() {
+        assertEquals(1f, sleepScore(8.0), 0.001f)
+        assertEquals(0.5f, sleepScore(5.0), 0.001f)
+        assertEquals(0.75f, sleepScore(10.0), 0.001f)
+    }
 }

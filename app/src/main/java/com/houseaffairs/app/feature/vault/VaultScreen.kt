@@ -142,6 +142,8 @@ fun VaultScreen(
     // Documents: pick a file, then name it and choose its Drive folder.
     val drive: com.houseaffairs.app.core.drive.DriveViewModel = hiltViewModel()
     var pickedFile by remember { mutableStateOf<android.net.Uri?>(null) }
+    var showGallery by remember { mutableStateOf(false) }
+    if (showGallery) com.houseaffairs.app.core.photo.GallerySheet(onDismiss = { showGallery = false }, onOpenEntry = { type, id -> onEdit(EntryType.valueOf(type), id) })
     val pickFile = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { pickedFile = it }
     var wasting by remember { mutableStateOf<Pair<com.houseaffairs.app.core.data.PantryStock, String>?>(null) }
     wasting?.let { (item, from) -> com.houseaffairs.app.core.ui.WasteDialog(item.title, onPick = { stock.wastePart(item, it, from); wasting = null }, onDismiss = { wasting = null }) }
@@ -192,10 +194,14 @@ fun VaultScreen(
         search = { q -> findKept(kept, q).map { it.id }.toSet() },
     )
 
-    LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(bottom = 24.dp)) {
+    LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), state = com.houseaffairs.app.core.ui.rememberTopListState(tab), contentPadding = PaddingValues(bottom = 24.dp)) {
         item {
             Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp)) {
-                Text("Things", style = MaterialTheme.typography.headlineLarge)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Things", style = MaterialTheme.typography.headlineLarge, modifier = Modifier.weight(1f))
+                    // Every picture the family added, from every list.
+                    androidx.compose.material3.TextButton(onClick = { showGallery = true }) { Text("📷 Photos") }
+                }
                 Text(
                     "${stockState.medicines.size} medicines · ${stockState.supplies.size} supplies · ${kept.size} kept safe",
                     style = MaterialTheme.typography.bodyMedium,
@@ -243,7 +249,7 @@ fun VaultScreen(
                         row.item.schedule?.let { "Skip today" to { stock.skipToday(row.item) } },
                         "Used up" to { stock.usedUp(row.item, from = "medicines") }, "Threw it away…" to { wasting = row.item to "medicines" },
                     ),
-                    quick = if (row.flag == com.houseaffairs.app.core.data.Flag.EXPIRED) "🗑️ Bin it" to { stock.threwAway(row.item, from = "medicines") } else null, leading = photoLead(row.item.photos))
+                    quick = if (row.flag == com.houseaffairs.app.core.data.Flag.EXPIRED) "🗑️ Bin it" to { wasting = row.item to "medicines" } else null, leading = photoLead(row.item.photos))
             }
             ThingsTab.SUPPLIES -> itemList(
                 "supplies", supplies, supControls, vault,
@@ -255,7 +261,7 @@ fun VaultScreen(
                     row.title, stockDetail(row.item, row.flag), row.flag,
                     onClick = { onEdit(EntryType.HOUSEHOLD, row.item.id) },
                     actions = listOf("Used 1" to { stock.useOne(row.item) }, "Used up" to { stock.usedUp(row.item) }, "Threw it away…" to { wasting = row.item to "stock" }),
-                    quick = if (row.flag == com.houseaffairs.app.core.data.Flag.EXPIRED) "🗑️ Bin it" to { stock.threwAway(row.item) } else null,
+                    quick = if (row.flag == com.houseaffairs.app.core.data.Flag.EXPIRED) "🗑️ Bin it" to { wasting = row.item to "stock" } else null,
                     leading = photoLead(row.item.photos),
                 )
             }

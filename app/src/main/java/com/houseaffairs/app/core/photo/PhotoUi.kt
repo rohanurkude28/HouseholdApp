@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -120,7 +122,7 @@ fun PhotosEditor(ids: List<String>, onChange: (List<String>) -> Unit) {
 
 /** One photo full screen, pinch to zoom; [onDelete] adds a remove button (in forms). */
 @Composable
-fun PhotoViewer(id: String, onDismiss: () -> Unit, onDelete: (() -> Unit)? = null) {
+fun PhotoViewer(id: String, onDismiss: () -> Unit, onDelete: (() -> Unit)? = null, caption: String? = null, actionLabel: String? = null, onAction: (() -> Unit)? = null) {
     val context = LocalContext.current
     var scale by remember { mutableFloatStateOf(1f) }
     var dx by remember { mutableFloatStateOf(0f) }
@@ -142,6 +144,16 @@ fun PhotoViewer(id: String, onDismiss: () -> Unit, onDelete: (() -> Unit)? = nul
             Row(Modifier.statusBarsPadding().padding(8.dp).align(Alignment.TopEnd)) {
                 onDelete?.let { IconButton(onClick = it) { Icon(Icons.Outlined.DeleteOutline, contentDescription = "Remove photo", tint = Color.White) } }
                 IconButton(onClick = onDismiss, modifier = Modifier.clip(CircleShape)) { Icon(Icons.Outlined.Close, contentDescription = "Close", tint = Color.White) }
+            }
+            // What it's a photo of, and a way to it (from the gallery).
+            if (caption != null || onAction != null) {
+                Row(
+                    Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(alpha = 0.55f)).navigationBarsPadding().padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    caption?.let { Text(it, color = Color.White, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f)) }
+                    if (onAction != null && actionLabel != null) androidx.compose.material3.TextButton(onClick = onAction) { Text(actionLabel, color = Color.White) }
+                }
             }
         }
     }

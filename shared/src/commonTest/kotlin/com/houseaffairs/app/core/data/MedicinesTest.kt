@@ -47,7 +47,9 @@ class MedicinesTest {
         // Today's 9 am has passed: tonight, then tomorrow twice.
         assertEquals(listOf(1260, 540, 1260), r.map { it.minute })
         assertEquals("💊 Crocin", r.first().title)
-        assertTrue(doseReminders(listOf(course()), "asha", nov5, 600).isEmpty())
+        // Whoever added it (giving it to Riya) is reminded too; nobody else is.
+        assertEquals(3, doseReminders(listOf(course()), "asha", nov5, 600, days = 1).size)
+        assertTrue(doseReminders(listOf(course()), "ravi", nov5, 600).isEmpty())
         // For nobody in particular: whoever added it.
         assertEquals(3, doseReminders(listOf(course(forWhom = emptyList())), "asha", nov5, 600, days = 1).size)
     }

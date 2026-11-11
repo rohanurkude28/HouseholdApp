@@ -66,6 +66,8 @@ fun FieldEditor(
     members: List<Member>,
     showError: Boolean,
     dynamicOptions: Map<String, List<String>> = emptyMap(),
+    /** Shown inside a text field, in the accent colour ("Where or who" wears its category). */
+    leading: androidx.compose.ui.graphics.vector.ImageVector? = null,
 ) {
     Column(Modifier.fillMaxWidth()) {
         if ((spec !is TextSpec || spec.isMacros) && spec !is MoneySpec) {
@@ -77,7 +79,7 @@ fun FieldEditor(
             Spacer(Modifier.height(8.dp))
         }
         when (spec) {
-            is TextSpec -> if (spec.isMacros) MacrosEditor(value as? String, onChange) else TextEditor(spec, value as? String ?: "", onChange, showError)
+            is TextSpec -> if (spec.isMacros) MacrosEditor(value as? String, onChange) else TextEditor(spec, value as? String ?: "", onChange, showError, leading, accent)
             is MoneySpec -> MoneyEditor(spec, value as? MoneyValue ?: MoneyValue("", "USD"), onChange, showError)
             is ChoiceSpec -> {
                 val extra = spec.dynamicOptions?.let { dynamicOptions[it] }.orEmpty()
@@ -99,13 +101,20 @@ fun FieldEditor(
 }
 
 @Composable
-private fun TextEditor(spec: TextSpec, value: String, onChange: (Any?) -> Unit, showError: Boolean) {
+private fun TextEditor(spec: TextSpec, value: String, onChange: (Any?) -> Unit, showError: Boolean, leading: androidx.compose.ui.graphics.vector.ImageVector? = null, accent: Accent? = null) {
     OutlinedTextField(
         value = value,
         onValueChange = onChange,
         label = { Text(spec.label) },
         placeholder = if (spec.placeholder.isNotEmpty()) ({ Text(spec.placeholder) }) else null,
-        leadingIcon = if (spec.isLink) ({ Icon(Icons.Outlined.Link, contentDescription = null) }) else null,
+        leadingIcon = when {
+            spec.isLink -> ({ Icon(Icons.Outlined.Link, contentDescription = null) })
+            // Crossfades, so the change is seen as it's typed.
+            leading != null -> ({
+                androidx.compose.animation.Crossfade(leading, label = "category") { Icon(it, contentDescription = null, tint = accent?.color ?: MaterialTheme.colorScheme.primary) }
+            })
+            else -> null
+        },
         trailingIcon = when {
             spec.isPhone -> ({ ContactPickerButton(onChange) })
             // A saved link opens straight from the form too.

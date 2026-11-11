@@ -194,6 +194,9 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
         item { SectionHeader("Connections · Google Calendar (each person)") }
         item { CalendarGroup(state, viewModel) }
 
+        item { SectionHeader("Connections · Health (each person)") }
+        item { SettingsGroup { com.houseaffairs.app.core.health.HealthConnectRow() } }
+
         item { SectionHeader("Sounds & vibration") }
         item { FeedbackGroup() }
 

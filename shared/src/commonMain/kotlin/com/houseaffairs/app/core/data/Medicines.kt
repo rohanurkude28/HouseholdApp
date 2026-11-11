@@ -98,8 +98,11 @@ fun MedicineCourse.needsRefill(today: LocalDate, leadDays: Int = 3): LocalDate? 
     return out
 }
 
-/** Whose phone rings for a dose: the people it's for, or whoever added it when it's for nobody in particular. */
-fun MedicineCourse.remindsMe(me: String): Boolean = remindDoses && (me in forWhom || (forWhom.isEmpty() && createdBy == me))
+/**
+ * Whose phone rings for a dose: the people it's for, and whoever added it, since a parent adds a
+ * child's medicine and gives it to them.
+ */
+fun MedicineCourse.remindsMe(me: String): Boolean = remindDoses && (me in forWhom || createdBy == me)
 
 /** Dose reminders for the next [days] days (today's past ones left out), up to the course's end. */
 fun doseReminders(courses: List<MedicineCourse>, me: String, today: LocalDate, nowMinute: Int, days: Int = 2, nameOf: (String) -> String = { "" }): List<PlannedReminder> =

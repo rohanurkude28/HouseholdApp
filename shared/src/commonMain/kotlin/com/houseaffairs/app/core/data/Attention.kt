@@ -21,6 +21,8 @@ data class Attention(
     val restock: String? = null,
     /** Where a tap goes when there's no single entry behind it ("plans/GOALS"). */
     val open: String? = null,
+    /** A chore the family usually does about now ("Do laundry"): Today offers to add it as a task. */
+    val habit: String? = null,
 )
 
 /** The day [left] would be used up if spending carries on at the rate so far ([spent] over [day] days). */

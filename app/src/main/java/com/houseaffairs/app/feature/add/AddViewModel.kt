@@ -123,10 +123,14 @@ data class FormState(
     val originalVisibleTo: List<String>? = null,
     /** Something was typed or picked in the form: worth keeping if the sheet closes. */
     val edited: Boolean = false,
+    /** What the last scan filled in ("Filled amount, shop and date"), or that it found nothing. */
+    val scanNote: String? = null,
     /** Fields the opener already decided (the list a wish goes on); hidden from the form. */
     val locked: Set<String> = emptySet(),
     /** A saved recipe this one repeats (id, title): saving is held back and opening it is offered. */
     val duplicateOf: Pair<String, String>? = null,
+    /** The category the form picked from what was typed; it keeps following until the person picks one. */
+    val autoCategory: String? = null,
 ) {
     val missing: List<FieldSpec> get() = type.fields.filter { it.required && it.visibleWhen(values) && !it.isFilled(values[it.key]) }
 }
@@ -427,6 +431,12 @@ class AddViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.Eagerly, AddUiState())
 
     private val ctx get() = session.state.value as? SessionState.Ready
+
+    /** The big tiles at the top of the add sheet: what this person adds most on this phone. */
+    val usual: StateFlow<List<EntryType>> = combine(ready, settings.addedKinds) { r, counts ->
+        val allowed = EntryType.entries.filter { it.listed && it.available && r.me.canAdd(it) }.map { it.name }
+        com.houseaffairs.app.core.data.usualKinds(counts, allowed, USUAL_DEFAULTS.map { it.name }).map { EntryType.valueOf(it) }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
 
 
@@ -1345,7 +1355,28 @@ class AddViewModel @Inject constructor(
     // Form
 
     fun update(key: String, value: Any?) {
-        updateForm { it.copy(values = it.values + (key to value), duplicateOf = null, edited = true) }
+        updateForm { f ->
+            var values = f.values + (key to value)
+            // "Twice a day" shows its times (9 am, 9 pm) straight away, ready to change, not a hidden default.
+            if (f.type == EntryType.MEDICINE && key == "frequency" && (values["doseTimes"] as? List<*>).isNullOrEmpty()) {
+                val times = com.houseaffairs.app.core.data.doseTimes(value as? String, emptyList()).map { com.houseaffairs.app.core.data.formatClock(it) }
+                if (times.isNotEmpty()) values = values + ("doseTimes" to times)
+            }
+            // Like the icon that changes as you type: the shop or note picks the category, until the person does.
+            var auto = if (key == "category") null else f.autoCategory
+            if (f.type == EntryType.EXPENSE && f.editId == null && (key == "merchant" || key == "note")) {
+                val current = values["category"] as? String
+                if (current.isNullOrBlank() || current == "Other" || current == f.autoCategory) {
+                    val learned = com.houseaffairs.app.core.data.learnedCategories(money.value?.txns.orEmpty())
+                    val guess = listOf("merchant", "note").firstNotNullOfOrNull { k -> (values[k] as? String)?.let { com.houseaffairs.app.core.data.guessCategory(it, learned, parser::categoryOfWord) } }
+                    if (guess != null && guess != current) {
+                        values = values + ("category" to guess)
+                        auto = guess
+                    }
+                }
+            }
+            f.copy(values = values, duplicateOf = null, edited = true, autoCategory = auto)
+        }
         val spec = local.value.form?.type?.fields?.firstOrNull { it.key == key } as? TextSpec
         if (spec?.isAddress == true) lookUpAddress(value as? String ?: "")
     }
@@ -1374,6 +1405,85 @@ class AddViewModel @Inject constructor(
     }
 
     fun toggleMore() = updateForm { it.copy(showMore = !it.showMore) }
+
+    /**
+     * A whole bill, scanned: the expense (total, shop, date) and each item on it, as cards to
+     * check and save together. A pharmacy bill's items go to medicines; others to the pantry.
+     * Items carry no cost, since the expense already counts it.
+     */
+    fun fromBill(text: String) {
+        val kind = com.houseaffairs.app.core.data.scanKind(text)
+        // A label or pack scanned here would make a nonsense expense, so say what it looks like instead.
+        if (kind == com.houseaffairs.app.core.data.ScanKind.NUTRITION || kind == com.houseaffairs.app.core.data.ScanKind.PACK) {
+            val what = if (kind == com.houseaffairs.app.core.data.ScanKind.NUTRITION) "a nutrition label" else "a pack label"
+            local.value = LocalState(answer = Answer("That looks like $what, not a bill", listOf(
+                if (kind == com.houseaffairs.app.core.data.ScanKind.NUTRITION) "Open a recipe and use 📷 there to fill its macros." else "Open the item and use 📷 there to fill its expiry.",
+            )))
+            return
+        }
+        val bill = com.houseaffairs.app.core.data.scanBill(text, LocalDate.now())
+        if (bill.receipt.total != null && bill.items.isNotEmpty()) return showBill(bill)
+        // The rules got only part of it: let Gemini have a go when Smart understanding is on.
+        if (smartAdd.value && text.isNotBlank()) {
+            local.value = LocalState(answer = Answer("Reading the bill…", listOf("Asking Gemini to make sense of it.")))
+            viewModelScope.launch {
+                val ai = runCatching { assistant.readBill(text) }.getOrNull()
+                showBill(if (ai != null && (ai.items.size > bill.items.size || bill.receipt.total == null)) ai else bill)
+            }
+        } else {
+            showBill(bill)
+        }
+    }
+
+    private fun showBill(bill: com.houseaffairs.app.core.data.BillScan) {
+        val expense = bill.receipt.total?.let { total ->
+            suggestionFor(QuickAddDraft.Expense(total, null, if (bill.pharmacy) "Health" else "Groceries", bill.receipt.merchant, "Scanned bill", if (bill.pharmacy) "Medicines" else null))
+                .let { s -> bill.receipt.date?.let { d -> s.copy(values = s.values + ("date" to d)) } ?: s }
+        }
+        val items = bill.items.map { i ->
+            suggestionFor(if (bill.pharmacy) QuickAddDraft.Medicine(i.name, null, null) else QuickAddDraft.Grocery(i.name, "${i.quantity} pcs", null))
+        }
+        val cards = listOfNotNull(expense) + items
+        local.value = if (cards.isEmpty()) {
+            LocalState(answer = Answer("Couldn't read that bill", listOfNotNull(
+                "Try again with the whole bill in the frame, flat and in good light.",
+                if (!smartAdd.value) "Turning on Settings → Smart understanding lets Gemini read harder bills." else null,
+            )))
+        } else {
+            LocalState(batch = cards)
+        }
+    }
+
+    /** Text read off a receipt, pack or label: fills the fields this kind of entry has. */
+    fun applyScan(text: String) = updateForm { f ->
+        val today = LocalDate.now()
+        val filled = mutableListOf<String>()
+        var values = f.values
+        val kind = com.houseaffairs.app.core.data.scanKind(text)
+        // Said plainly when the picture doesn't belong in this form, rather than filling it with junk.
+        val wrong = when {
+            f.type == EntryType.EXPENSE && kind == com.houseaffairs.app.core.data.ScanKind.NUTRITION -> "That looks like a nutrition label, not a bill. Nothing filled."
+            f.type == EntryType.RECIPE && kind == com.houseaffairs.app.core.data.ScanKind.RECEIPT -> "That looks like a bill. Use \"Scan a bill\" in the + sheet to add its items."
+            f.type != EntryType.EXPENSE && f.type != EntryType.RECIPE && kind == com.houseaffairs.app.core.data.ScanKind.RECEIPT ->
+                "That looks like a bill. Use \"Scan a bill\" in the + sheet to add every item and the expense at once."
+            else -> null
+        }
+        if (wrong != null) return@updateForm f.copy(scanNote = wrong)
+        when (f.type) {
+            EntryType.EXPENSE -> {
+                val r = com.houseaffairs.app.core.data.scanReceipt(text, today)
+                r.total?.let { t -> values = values + ("amount" to MoneyValue(t.toPlainString(), (values["amount"] as? MoneyValue)?.currency ?: currency())); filled += "amount" }
+                r.merchant?.takeIf { (values["merchant"] as? String).isNullOrBlank() }?.let { values = values + ("merchant" to it); filled += "shop" }
+                r.date?.let { values = values + ("date" to it); filled += "date" }
+            }
+            EntryType.RECIPE -> com.houseaffairs.app.core.data.scanNutrition(text)?.let { values = values + ("macros" to it); filled += "protein, carbs, fat and fibre" }
+            else -> com.houseaffairs.app.core.data.scanExpiry(text, today)?.let { values = values + ("expiry" to it); filled += "expiry ${formatDate(it)}" }
+        }
+        f.copy(
+            values = values, edited = true, showMore = f.showMore || f.type == EntryType.RECIPE,
+            scanNote = if (filled.isEmpty()) "Couldn't read it. Try again closer, with good light." else "Filled " + filled.joinToString(", "),
+        )
+    }
 
     fun setWhoCanSee(who: WhoCanSee) = updateForm { it.copy(whoCanSee = who) }
 
@@ -1438,9 +1548,16 @@ class AddViewModel @Inject constructor(
         } else {
             null
         }
-        val shownTo = topic?.let { privateVisibleTo(r.household.privateTopics.getValue(it), uid) } ?: visibleTo
+        // A gift idea or surprise trip is never shown to the person it's for, on new entries and edits alike.
+        val surprise = com.houseaffairs.app.core.data.surpriseFor(
+            form.type.collection, ListTemplate.of(form.values["template"] as? String) == ListTemplate.GIFTS, form.values,
+        ).filter { it != uid }
+        fun kept(list: List<String>) = com.houseaffairs.app.core.data.hiddenFrom(list, state.value.members.map { it.uid }, surprise, uid, Visibility.EVERYONE)
+        val shownTo = kept(topic?.let { privateVisibleTo(r.household.privateTopics.getValue(it), uid) } ?: visibleTo)
+        val secret = surprise.mapNotNull { id -> state.value.members.firstOrNull { it.uid == id }?.displayName?.substringBefore(' ') }
+            .takeIf { it.isNotEmpty() }?.let { " · hidden from ${it.joinToString(" and ")} 🤫" }.orEmpty()
         if (form.editId != null) {
-            entries.update(r.household.id, form.type, form.editId, form.values, visibleTo, r.user.uid)
+            entries.update(r.household.id, form.type, form.editId, form.values, kept(visibleTo), r.user.uid)
             local.value = LocalState()
             val before = form.original
             val beforeVisible = form.originalVisibleTo ?: visibleTo
@@ -1461,7 +1578,9 @@ class AddViewModel @Inject constructor(
         if (form.type == EntryType.WISH && hit != null) watchRepo.applyHit(r.household.id, ref.id, hit)
         viewModelScope.launch { settings.markQuickAddTried() }
         local.value = LocalState()
-        return SavedEntry("$title · ${form.type.label} saved" + (topic?.let { " privately ($it)" } ?: "")) { entries.delete(ref) }
+        // What people add most becomes their big tiles in the add sheet.
+        viewModelScope.launch { settings.countAdded(form.type.name) }
+        return SavedEntry("$title · ${form.type.label} saved" + (topic?.let { " privately ($it)" } ?: "") + secret) { entries.delete(ref) }
     }
 
     private fun updateForm(block: (FormState) -> FormState) = local.update { s -> s.form?.let { s.copy(form = block(it)) } ?: s }

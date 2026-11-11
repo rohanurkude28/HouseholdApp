@@ -200,6 +200,9 @@ class QuickAddParser(
     private val nowMinute: () -> Int? = { null },
 ) {
 
+    /** The spending category one word points at ("uber" → Transport), for guessing while a form is typed. */
+    fun categoryOfWord(word: String): String? = CATEGORY_BY_KEYWORD[word] ?: SUBCATEGORY_BY_WORD[word]?.first
+
     fun parse(input: String): QuickAddDraft? {
         val text = withLakhs(input.trim().replace(WHITESPACE, " "))
         if (text.isEmpty()) return null

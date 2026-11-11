@@ -1,5 +1,7 @@
 package com.houseaffairs.app.feature.add
 
+import com.houseaffairs.app.core.data.USUAL_COUNT
+import com.houseaffairs.app.core.data.addGroups
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.speech.RecognizerIntent
@@ -20,6 +22,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
@@ -201,27 +204,32 @@ private fun Picker(
             .padding(start = 20.dp, end = 20.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Add anything", style = MaterialTheme.typography.headlineSmall)
-                Text(
-                    "Say it, type it, or pick below",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            VoiceButton(onClick = startVoice)
-        }
+        Text("Add anything", style = MaterialTheme.typography.headlineSmall)
 
+        // One box for everything: type, speak, or scan a bill. Its hint cycles through real examples.
+        var hint by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+        LaunchedEffect(state.examples) {
+            while (state.examples.size > 1) { kotlinx.coroutines.delay(3000); hint = (hint + 1) % state.examples.size }
+        }
         TextField(
             value = state.text,
             onValueChange = viewModel::onTextChange,
             placeholder = {
                 Text(
-                    "Type or say anything…",
+                    state.examples.getOrNull(hint % state.examples.size.coerceAtLeast(1))?.let { "“$it”" } ?: "Type or say anything…",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 )
+            },
+            trailingIcon = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // A bill adds the expense and every item on it at once.
+                    if (state.text.isEmpty()) com.houseaffairs.app.core.ui.ScanButton("Scan a bill: the expense and each item", viewModel::fromBill)
+                    VoiceButton(onClick = startVoice, size = 44.dp)
+                    Spacer(Modifier.width(6.dp))
+                }
             },
             textStyle = MaterialTheme.typography.titleLarge,
             singleLine = true,
@@ -265,13 +273,7 @@ private fun Picker(
             AnswerCard(state.answer, onMove, onLocationGranted, onNumber = viewModel::rememberNumber, onSkip = viewModel::skipDose)
         } else if (cook != null) {
             CookCard(cook, state.members, viewModel, onCook = onCook, onSaveRecipe = viewModel::saveCookAsRecipe)
-        } else if (suggestion == null) {
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                state.examples.forEach { example ->
-                    SuggestionChip(onClick = { viewModel.onTextChange(example) }, label = { Text(example) }, shape = CircleShape)
-                }
-            }
-        } else {
+        } else if (suggestion != null) {
             SuggestionCard(
                 suggestion, blocked,
                 thinking = state.thinking,
@@ -291,40 +293,8 @@ private fun Picker(
             )
         }
 
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        Text("Or choose what to add", style = MaterialTheme.typography.titleMedium)
-
-        val colors = LocalHouseColors.current
-        val tiles = EntryType.entries.filter { it in state.allowedTypes && it.listed }
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            maxItemsInEachRow = 4,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            tiles.forEach { type ->
-                Column(
-                    Modifier
-                        .weight(1f)
-                        .clip(MaterialTheme.shapes.medium)
-                        .clickable(enabled = type.available) { viewModel.openForm(type) }
-                        .alpha(if (type.available) 1f else 0.45f)
-                        .padding(vertical = 8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    IconBlob(type.icon, type.accent(colors), size = 52.dp)
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        if (type.available) type.label else "${type.label}\n(soon)",
-                        style = MaterialTheme.typography.labelMedium,
-                        textAlign = TextAlign.Center,
-                        maxLines = 2,
-                    )
-                }
-            }
-            // Keep the last row's tiles the same width as the others.
-            repeat((4 - tiles.size % 4) % 4) { Spacer(Modifier.weight(1f)) }
-        }
+        // While something is typed, the suggestion is the only thing to look at.
+        if (state.text.isBlank()) AddMenu(state, usual = viewModel.usual.collectAsStateWithLifecycle().value, onPick = viewModel::openForm)
     }
 }
 
@@ -760,6 +730,81 @@ private fun CookCard(
     }
 }
 
+/** What each kind is called in the add menu: what people say, not what the app calls it. */
+private val PLAIN: Map<EntryType, Pair<String, String>> = mapOf(
+    EntryType.EXPENSE to ("💸" to "I spent"),
+    EntryType.SHOPPING to ("🛒" to "Need to buy"),
+    EntryType.TASK to ("✅" to "To do"),
+    EntryType.MEDICINE to ("💊" to "Medicine"),
+    EntryType.SUBSCRIPTION to ("🔁" to "Subscription"),
+    EntryType.CREDIT to ("🎟️" to "Gift card or coupon"),
+    EntryType.TRIP to ("🧳" to "Trip"),
+    EntryType.GROCERY to ("🥫" to "Pantry"),
+    EntryType.HOUSEHOLD to ("🧴" to "Supplies"),
+    EntryType.RECIPE to ("🍳" to "Recipe"),
+    EntryType.EVENT to ("🎂" to "Birthday or event"),
+    EntryType.GOAL to ("🏆" to "Weekly goal"),
+    EntryType.ACTIVITY to ("🚶" to "Activity"),
+    EntryType.WISH to ("⭐" to "Wish or idea"),
+    EntryType.DREAM to ("✨" to "Dream or gullak"),
+    EntryType.PLACE to ("📍" to "Place"),
+    EntryType.KEPT to ("📦" to "Where it's kept"),
+    EntryType.DOCUMENT to ("📄" to "Document"),
+)
+
+/** The big tiles on a new phone, before this person's own habits show. */
+internal val USUAL_DEFAULTS = listOf(EntryType.EXPENSE, EntryType.SHOPPING, EntryType.TASK, EntryType.MEDICINE)
+
+/** Everything else, by area, so a kind is found by what it's about rather than in a wall of icons. */
+private val MENU_GROUPS: List<Pair<String, List<EntryType>>> = listOf(
+    "Money" to listOf(EntryType.EXPENSE, EntryType.SUBSCRIPTION, EntryType.CREDIT, EntryType.TRIP),
+    "Kitchen" to listOf(EntryType.SHOPPING, EntryType.GROCERY, EntryType.RECIPE, EntryType.HOUSEHOLD),
+    "Plans" to listOf(EntryType.TASK, EntryType.EVENT, EntryType.GOAL, EntryType.ACTIVITY),
+    "Home & health" to listOf(EntryType.MEDICINE, EntryType.KEPT, EntryType.DOCUMENT),
+    "Wishes & dreams" to listOf(EntryType.WISH, EntryType.DREAM, EntryType.PLACE),
+)
+
+/**
+ * The add menu before anything is typed: four big tiles for what this person adds most, then
+ * the rest as small chips under a few plain headings, each kind once.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AddMenu(state: AddUiState, usual: List<EntryType>, onPick: (EntryType) -> Unit) {
+    val allowed = state.allowedTypes.filter { it.listed && it.available }
+    val tiles = usual.filter { it in allowed }
+    // Equal heights, even when one label takes two lines.
+    Row(Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        tiles.forEach { type ->
+            val (emoji, label) = PLAIN[type] ?: ("➕" to type.label)
+            Column(
+                Modifier.weight(1f).fillMaxHeight().clip(MaterialTheme.shapes.large).background(MaterialTheme.colorScheme.surfaceContainer)
+                    .clickable { onPick(type) }.padding(vertical = 14.dp, horizontal = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(emoji, style = MaterialTheme.typography.headlineSmall)
+                Spacer(Modifier.height(4.dp))
+                Text(label, style = MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center, maxLines = 2)
+            }
+        }
+        repeat(USUAL_COUNT - tiles.size) { Spacer(Modifier.weight(1f)) }
+    }
+    val groups = addGroups(MENU_GROUPS.map { (name, kinds) -> name to kinds.map { it.name } }, allowed.map { it.name }, tiles.map { it.name })
+    if (groups.isEmpty()) return
+    Text("Something else", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    groups.forEach { (name, kinds) ->
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(name, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                kinds.map { EntryType.valueOf(it) }.forEach { type ->
+                    val (emoji, label) = PLAIN[type] ?: ("➕" to type.label)
+                    SuggestionChip(onClick = { onPick(type) }, label = { Text("$emoji  $label") }, shape = CircleShape)
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun VoiceButton(onClick: () -> Unit, size: androidx.compose.ui.unit.Dp = 52.dp) {
     Box(
@@ -814,11 +859,16 @@ private fun EntryForm(form: FormState, state: AddUiState, viewModel: AddViewMode
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.weight(1f),
             )
+            // Receipts, expiry dates and nutrition labels, read straight into the form.
+            scanHintFor(form.type)?.let { hint -> com.houseaffairs.app.core.ui.ScanButton(hint, viewModel::applyScan) }
             VoiceButton(onClick = startVoice, size = 44.dp)
         }
 
+        form.scanNote?.let { Text("📷 $it", style = MaterialTheme.typography.bodySmall, color = accent.color) }
         essential.forEach { spec ->
-            FieldEditor(spec, form.values[spec.key], { viewModel.update(spec.key, it) }, accent, state.members, spec.key in missingKeys, state.dynamicOptions)
+            // The shop field wears the category's icon, so a guess made while typing is seen at once.
+            val leading = if (form.type == EntryType.EXPENSE && spec.key == "merchant") com.houseaffairs.app.core.ui.categoryIcon(form.values["category"] as? String ?: "") else null
+            FieldEditor(spec, form.values[spec.key], { viewModel.update(spec.key, it) }, accent, state.members, spec.key in missingKeys, state.dynamicOptions, leading)
             if (spec is TextSpec && spec.isAddress) AddressHintsRow(spec.key, form.values[spec.key] as? String, viewModel)
         }
 
@@ -934,4 +984,13 @@ private fun AddressHintsRow(key: String, value: String?, viewModel: AddViewModel
             )
         }
     }
+}
+
+/** What scanning reads for each kind of entry; null where there's nothing to scan. */
+private fun scanHintFor(type: EntryType): String? = when (type) {
+    EntryType.EXPENSE -> "Scan a receipt: amount, shop, date"
+    EntryType.GROCERY, EntryType.MEDICINE, EntryType.HOUSEHOLD -> "Scan the pack for its expiry date"
+    EntryType.CREDIT -> "Scan the card for its expiry"
+    EntryType.RECIPE -> "Scan a nutrition label for protein, carbs, fat, fibre"
+    else -> null
 }

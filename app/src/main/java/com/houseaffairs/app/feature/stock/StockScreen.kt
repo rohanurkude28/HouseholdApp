@@ -139,6 +139,8 @@ fun StockScreen(
     // A dish opened from an idea or a search: ingredients with ✓/✗.
     var viewing by remember { mutableStateOf<com.houseaffairs.app.core.data.DishIdea?>(null) }
     var showUsage by remember { mutableStateOf(false) }
+    // The meal chip picked on the recipe menu; null shows every meal with a few dishes each.
+    var mealFilter by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
     var wasting by remember { mutableStateOf<com.houseaffairs.app.core.data.PantryStock?>(null) }
     wasting?.let { item -> com.houseaffairs.app.core.ui.WasteDialog(item.title, onPick = { viewModel.wastePart(item, it); wasting = null }, onDismiss = { wasting = null }) }
     val query by viewModel.query.collectAsStateWithLifecycle()
@@ -163,7 +165,7 @@ fun StockScreen(
         groups = groups,
     )
 
-    LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(bottom = 24.dp)) {
+    LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), state = com.houseaffairs.app.core.ui.rememberTopListState(state.tab), contentPadding = PaddingValues(bottom = 24.dp)) {
         item {
             Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp)) {
                 Text("Kitchen", style = MaterialTheme.typography.headlineLarge)
@@ -207,7 +209,7 @@ fun StockScreen(
             ) { row ->
                 CompactRow(row.title, stockDetail(row.item, row.flag), row.flag, onClick = { onEdit(EntryType.GROCERY, row.item.id) }, actions = listOf("Used up" to { viewModel.usedUp(row.item) }, "Threw it away…" to { wasting = row.item }),
                     // Gone off: binning it is the likely next step, so it's right there.
-                    quick = if (row.flag == com.houseaffairs.app.core.data.Flag.EXPIRED) "🗑️ Bin it" to { viewModel.threwAway(row.item) } else null, leading = com.houseaffairs.app.feature.vault.photoLead(row.item.photos))
+                    quick = if (row.flag == com.houseaffairs.app.core.data.Flag.EXPIRED) "🗑️ Bin it" to { wasting = row.item } else null, leading = com.houseaffairs.app.feature.vault.photoLead(row.item.photos))
             }
             StockTab.RECIPES -> {
                 // Find any dish, yours or the library's, and see what you have for it.
@@ -266,14 +268,55 @@ fun StockScreen(
                 if (state.recipes.isEmpty()) {
                     item { Empty("No recipes yet", "Save a dish with its ingredients. When you cook it, the pantry updates itself.") }
                 }
-                items(state.recipes, key = { it.recipe.id }) { view ->
-                    // A tap shows the dish (what you have, Cook, Edit); editing is one more tap from there.
-                    RecipeCard(
-                        view, colors.stock, state.lastCooked[view.recipe.title.lowercase()],
-                        onEdit = { viewing = com.houseaffairs.app.core.data.DishIdea(view.recipe, saved = true, fit = view.fit, rescues = emptyList()) },
-                        onChange = { onEdit(EntryType.RECIPE, view.recipe.id) },
-                        onDelete = { viewModel.deleteRecipe(view.recipe, onSaved) },
-                    ) { cooking = view.recipe }
+                // A menu, not one long list: a chip per meal, and dishes as tiles two across.
+                val hour = java.time.LocalTime.now().hour
+                val menu = com.houseaffairs.app.core.data.byMeal(state.recipes, { it.recipe.meal }, { it.recipe.title }, hour)
+                val shown = menu.firstOrNull { it.first == mealFilter }
+                if (menu.size > 1) item(key = "meal-chips") {
+                    LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        item {
+                            FilterChip(
+                                selected = shown == null, onClick = { mealFilter = null }, label = { Text("All  ${state.recipes.size}") }, shape = CircleShape,
+                                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = colors.stock.container, selectedLabelColor = colors.stock.color),
+                            )
+                        }
+                        items(menu, key = { it.first }) { (meal, list) ->
+                            FilterChip(
+                                selected = shown?.first == meal, onClick = { mealFilter = if (mealFilter == meal) null else meal },
+                                label = { Text("${com.houseaffairs.app.core.data.mealEmoji(meal)} $meal  ${list.size}") }, shape = CircleShape,
+                                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = colors.stock.container, selectedLabelColor = colors.stock.color),
+                            )
+                        }
+                    }
+                }
+                (shown?.let { listOf(it) } ?: menu).forEach { (meal, list) ->
+                    val peek = if (shown == null && menu.size > 1) com.houseaffairs.app.core.data.MEAL_PEEK else Int.MAX_VALUE
+                    if (menu.size > 1) item(key = "meal-$meal") {
+                        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(com.houseaffairs.app.core.data.mealEmoji(meal), style = MaterialTheme.typography.titleLarge)
+                            Spacer(Modifier.width(8.dp))
+                            Text(meal, style = MaterialTheme.typography.titleMedium)
+                            if (meal == com.houseaffairs.app.core.data.mealAt(hour)) {
+                                Spacer(Modifier.width(8.dp))
+                                Tag("Up next", colors.stock.color)
+                            }
+                            Spacer(Modifier.weight(1f))
+                            if (list.size > peek) TextButton(onClick = { mealFilter = meal }) { Text("See all ${list.size}") } else Spacer(Modifier.height(48.dp))
+                        }
+                    }
+                    // A dish on both the lunch and dinner menus needs a key per menu.
+                    items(list.take(peek).chunked(2), key = { pair -> "$meal-" + pair.joinToString("-") { it.recipe.id } }) { pair ->
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 5.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            pair.forEach { view ->
+                                // A tap shows the dish (what you have, Cook, Edit, Delete).
+                                RecipeTile(
+                                    view, meal, colors.stock, state.lastCooked[view.recipe.title.lowercase()], Modifier.weight(1f),
+                                    onOpen = { viewing = com.houseaffairs.app.core.data.DishIdea(view.recipe, saved = true, fit = view.fit, rescues = emptyList()) },
+                                ) { cooking = view.recipe }
+                            }
+                            if (pair.size == 1) Spacer(Modifier.weight(1f))
+                        }
+                    }
                 }
             }
             StockTab.SHOPPING -> itemList(
@@ -324,57 +367,34 @@ private fun Label(text: String, detail: String? = null) {
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+/** One dish on the menu: its photo (or the meal's emoji), whether it can be cooked now, and Cook. */
 @Composable
-private fun RecipeCard(view: RecipeView, accent: Accent, lastMade: LocalDate?, onEdit: () -> Unit, onChange: () -> Unit = {}, onDelete: () -> Unit = {}, onCook: () -> Unit) {
+private fun RecipeTile(view: RecipeView, meal: String, accent: Accent, lastMade: LocalDate?, modifier: Modifier = Modifier, onOpen: () -> Unit, onCook: () -> Unit) {
     val fit = view.fit
-    HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp), onClick = onEdit) {
+    HaCard(modifier, onClick = onOpen) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             // The dish's own photo when there is one: food is chosen by eye.
-            view.recipe.photos.firstOrNull()?.let { id ->
-                var open by remember { mutableStateOf(false) }
-                com.houseaffairs.app.core.photo.PhotoThumb(id, 56.dp) { open = true }
-                if (open) com.houseaffairs.app.core.photo.PhotoViewer(id, onDismiss = { open = false })
-            } ?: IconBlob(Icons.Outlined.RestaurantMenu, accent, size = 44.dp)
-            Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(view.recipe.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                    // Edit and delete, one tap away on every recipe; delete has Undo.
-                    var menu by remember { mutableStateOf(false) }
-                    androidx.compose.foundation.layout.Box {
-                        IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, contentDescription = "Edit or delete ${view.recipe.title}") }
-                        androidx.compose.material3.DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                            androidx.compose.material3.DropdownMenuItem(text = { Text("Edit recipe") }, leadingIcon = { Icon(Icons.Outlined.Edit, null) }, onClick = { menu = false; onChange() })
-                            androidx.compose.material3.DropdownMenuItem(
-                                text = { Text("Delete recipe", color = MaterialTheme.colorScheme.error) },
-                                leadingIcon = { Icon(Icons.Outlined.DeleteOutline, null, tint = MaterialTheme.colorScheme.error) },
-                                onClick = { menu = false; onDelete() },
-                            )
-                        }
-                    }
+            view.recipe.photos.firstOrNull()?.let { com.houseaffairs.app.core.photo.PhotoThumb(it, 44.dp) }
+                ?: Box(Modifier.size(44.dp).clip(CircleShape).background(accent.container), contentAlignment = Alignment.Center) {
+                    Text(com.houseaffairs.app.core.data.mealEmoji(meal), style = MaterialTheme.typography.titleLarge)
                 }
-                // The saved reel or recipe page, or a YouTube search to see how it's made.
-                com.houseaffairs.app.core.ui.LinkChips(com.houseaffairs.app.core.data.recipeLinks(view.recipe.title, view.recipe.link), Modifier.padding(vertical = 4.dp))
-                Text(
-                    when {
-                        fit.total == 0 -> "Add ingredients to track the pantry"
-                        fit.canCook -> "You have everything"
-                        else -> fit.summary
-                    } + (com.houseaffairs.app.core.data.lastMadeText(lastMade, LocalDate.now())?.let { " · $it" } ?: ""),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (fit.canCook) accent.color else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            FilledTonalButton(onClick = onCook, shape = CircleShape) { Text("Cook") }
+            Spacer(Modifier.weight(1f))
+            if (fit.canCook && fit.total > 0) Tag("Ready", accent.color)
         }
-        if (fit.usesExpiring.isNotEmpty() || view.recipe.mood.isNotEmpty()) {
-            Spacer(Modifier.height(10.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                fit.usesExpiring.forEach { Tag("Uses $it before it expires", MaterialTheme.colorScheme.error) }
-                view.recipe.mood.forEach { Tag(it, accent.color) }
-            }
-        }
+        Spacer(Modifier.height(10.dp))
+        Text(view.recipe.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, minLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(
+            when {
+                fit.usesExpiring.isNotEmpty() -> "Uses ${fit.usesExpiring.first()} before it expires"
+                fit.total == 0 -> "No ingredients yet"
+                fit.canCook -> com.houseaffairs.app.core.data.lastMadeText(lastMade, LocalDate.now()) ?: "You have everything"
+                else -> fit.summary
+            },
+            style = MaterialTheme.typography.bodySmall, maxLines = 2, minLines = 2, overflow = TextOverflow.Ellipsis,
+            color = if (fit.usesExpiring.isNotEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        FilledTonalButton(onClick = onCook, shape = CircleShape, modifier = Modifier.fillMaxWidth()) { Text("Cook") }
     }
 }
 

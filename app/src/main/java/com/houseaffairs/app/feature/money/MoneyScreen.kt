@@ -121,6 +121,18 @@ fun MoneyScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     var editing by remember { mutableStateOf(false) }
     var moving by remember { mutableStateOf<Pair<Pocket, String>?>(null) }
+    // A category opened for its whole history: "where did the grocery money go?".
+    var category by remember { mutableStateOf<String?>(null) }
+    category?.let { c ->
+        state.money?.let { m ->
+            CategorySheet(
+                com.houseaffairs.app.core.data.categoryReport(m.txns, c, java.time.LocalDate.now()),
+                { com.houseaffairs.app.core.util.formatMinor(it, state.currency) },
+                onOpen = { id -> category = null; onEdit(EntryType.EXPENSE, id) },
+                onDismiss = { category = null },
+            )
+        }
+    }
     // A goal gullak's "Add money" opens the move sheet with that goal already picked.
     var moveTarget by remember { mutableStateOf<Pocket?>(null) }
     var tab by rememberSaveable { mutableStateOf(MoneyTab.MONTH) }
@@ -132,7 +144,7 @@ fun MoneyScreen(
     val summary = state.summary
     val money: (Long) -> String = { if (state.hideAmounts) HIDDEN_AMOUNT else formatMinor(it, state.currency) }
 
-    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val listState = com.houseaffairs.app.core.ui.rememberTopListState(tab)
     // "Planned spend" in Coming up goes to This month's "Planned & upcoming": the header, the tab
     // chips, the budget and the add chips come before it, so it's the fifth item.
     var showPlanned by remember { mutableStateOf(0) }
@@ -226,7 +238,7 @@ fun MoneyScreen(
                                 modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 8.dp),
                             )
                         }
-                        item { EnvelopesCard(m, summary.categories, money, showAll = allEnvelopes) { pocket, label -> moving = pocket to label } }
+                        item { EnvelopesCard(m, summary.categories, money, showAll = allEnvelopes, onCategory = { category = it }) { pocket, label -> moving = pocket to label } }
                         item { SectionTitle("Gift cards & coupons", action = "Add", onAction = onAddCredit) }
                         item { CreditsCard(m, money, viewModel::creditUsed) { onEdit(EntryType.CREDIT, it) } }
                         if (m.moves.isNotEmpty()) {
@@ -534,7 +546,7 @@ private fun PotCard(m: MoneyState, money: (Long) -> String, onMove: () -> Unit) 
 }
 
 @Composable
-private fun EnvelopesCard(m: MoneyState, categories: List<CategoryStatus>, money: (Long) -> String, showAll: Boolean = true, onMove: (Pocket, String) -> Unit) {
+private fun EnvelopesCard(m: MoneyState, categories: List<CategoryStatus>, money: (Long) -> String, showAll: Boolean = true, onCategory: (String) -> Unit = {}, onMove: (Pocket, String) -> Unit) {
     val accent = LocalHouseColors.current.money
     HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
         // Tightest first, so the ones that need attention are in the first few.
@@ -547,7 +559,8 @@ private fun EnvelopesCard(m: MoneyState, categories: List<CategoryStatus>, money
             // Over only because of planned spends: a heads-up, not overspending.
             val overWithPlans = negative && e.availableMinor + e.plannedMinor >= 0
             val warn = if (overWithPlans) LocalHouseColors.current.coral else MaterialTheme.colorScheme.error
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // Tap for the category's whole history.
+            Row(Modifier.clickable { onCategory(e.category) }, verticalAlignment = Alignment.CenterVertically) {
                 IconBlob(categoryIcon(e.category), accent, size = 40.dp)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
@@ -589,7 +602,7 @@ private fun EnvelopesCard(m: MoneyState, categories: List<CategoryStatus>, money
         }
         if (showAll) categories.filter { it.limitMinor == null && it.spentMinor > 0 }.forEach { c ->
             Spacer(Modifier.height(14.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.clickable { onCategory(c.name) }, verticalAlignment = Alignment.CenterVertically) {
                 IconBlob(categoryIcon(c.name), accent, size = 40.dp)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {

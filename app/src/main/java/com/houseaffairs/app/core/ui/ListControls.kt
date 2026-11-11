@@ -60,3 +60,11 @@ fun TickCircle(color: Color, onTick: () -> Unit, modifier: Modifier = Modifier, 
 /** The rest of a row: tap opens it to edit, and so does tap-and-hold. */
 @OptIn(ExperimentalFoundationApi::class)
 fun Modifier.opensEdit(onEdit: () -> Unit): Modifier = combinedClickable(onClickLabel = "Edit", onClick = onEdit, onLongClick = onEdit)
+
+/**
+ * A tab's list that opens at the top. Coming back to a tab, or switching its sub-tab, starts at
+ * the heading instead of wherever it was left, which looked like the tab had scrolled by itself.
+ */
+@Composable
+fun rememberTopListState(vararg keys: Any?): androidx.compose.foundation.lazy.LazyListState =
+    remember(*keys) { androidx.compose.foundation.lazy.LazyListState() }

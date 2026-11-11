@@ -348,6 +348,13 @@ class PantryRepository @Inject constructor(
      * "It's finished" (or [thrown] away): out of the pantry (or the medicine cabinet), onto the shopping list.
      * Returns the shopping item it added, if any, so "don't buy again" can take it off.
      */
+    /** "Put it back": undoes Bin it or Used up, so it's in stock again (and off the buy list if it went on). */
+    fun putBack(householdId: String, stock: PantryStock, from: String = "stock", shoppingId: String? = null) {
+        val del = com.google.firebase.firestore.FieldValue.delete()
+        collection(householdId, from).document(stock.id).update(mapOf("status" to "IN_STOCK", "wastedAt" to del, "usedUpAt" to del, "level" to (stock.initialAmount?.takeIf { it > 0 }?.let { ((stock.amount ?: it) / it * 100).toInt().coerceIn(0, 100) } ?: 100)))
+        shoppingId?.let { collection(householdId, "shopping").document(it).delete() }
+    }
+
     fun usedUp(householdId: String, uid: String, stock: PantryStock, openShopping: List<String>, from: String = "stock", thrown: Boolean = false, addToList: Boolean = true): String? {
         val batch = db.batch()
         batch.update(

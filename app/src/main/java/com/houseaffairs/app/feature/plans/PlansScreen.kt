@@ -127,6 +127,10 @@ fun PlansScreen(
     var pendingDream by remember { mutableStateOf<String?>(null) }
     // The vision board as a pinboard by default; "By when" groups it into rows.
     var boardView by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
+    var showGallery by remember { mutableStateOf(false) }
+    var allTasks by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    var openBuckets by remember { mutableStateOf(setOf<String>()) }
+    if (showGallery) com.houseaffairs.app.core.photo.GallerySheet(onDismiss = { showGallery = false }, onOpenEntry = { type, id -> onEdit(EntryType.valueOf(type), id) })
     LaunchedEffect(requestedTab) {
         // "GIFTS" opens Lists filtered to gift ideas (from an event's "🎁 gift ideas").
         if (requestedTab == "GIFTS") {
@@ -151,7 +155,7 @@ fun PlansScreen(
     if (showYear) PlansYearSheet(state, onDismiss = { showYear = false })
     val money = state.money
 
-    LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(bottom = 24.dp)) {
+    LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), state = com.houseaffairs.app.core.ui.rememberTopListState(state.tab), contentPadding = PaddingValues(bottom = 24.dp)) {
         item {
             Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp)) {
                 Text("Plans", style = MaterialTheme.typography.headlineLarge)
@@ -216,6 +220,7 @@ fun PlansScreen(
                 item(key = "board-switch") {
                     Row(Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("Vision board", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                        androidx.compose.material3.IconButton(onClick = { showGallery = true }) { Text("📷") }
                         FilterChip(selected = boardView, onClick = { boardView = true }, label = { Text("Board") }, shape = CircleShape)
                         FilterChip(selected = !boardView, onClick = { boardView = false }, label = { Text("By when") }, shape = CircleShape)
                     }
@@ -324,7 +329,29 @@ fun PlansScreen(
                     keep = viewModel::keepTask,
                     reassign = { onEdit(EntryType.TASK, it.id) },
                 )
-                items(state.tasks.sortedBy { it !in waiting }, key = { it.id }) { task ->
+                // Mine (given to me, or to nobody) or everyone's; grouped by when, long groups folded.
+                item(key = "task-filter") {
+                    Row(Modifier.padding(horizontal = 20.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = !allTasks, onClick = { allTasks = false }, label = { Text("Mine") }, shape = CircleShape)
+                        FilterChip(selected = allTasks, onClick = { allTasks = true }, label = { Text("Everyone's") }, shape = CircleShape)
+                    }
+                }
+                val shown = if (allTasks) state.tasks else state.tasks.filter { it.assignee == null || it.assignee == me || it.id in waiting.map { w -> w.id } }
+                com.houseaffairs.app.core.data.taskBuckets(shown, LocalDate.now(), waiting.map { it.id }.toSet()).forEach { (bucket, list) ->
+                    val foldable = bucket in setOf(com.houseaffairs.app.core.data.TaskBucket.LATER, com.houseaffairs.app.core.data.TaskBucket.NO_DATE) && list.size > 4
+                    val open = !foldable || bucket.name in openBuckets
+                    item(key = "bucket-" + bucket.name) {
+                        Row(
+                            Modifier.fillMaxWidth().then(if (foldable) Modifier.clickable { openBuckets = if (open) openBuckets - bucket.name else openBuckets + bucket.name } else Modifier)
+                                .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(bucket.label, style = MaterialTheme.typography.titleSmall, color = if (bucket == com.houseaffairs.app.core.data.TaskBucket.OVERDUE) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
+                            Text("  ${list.size}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                            if (foldable) Text(if (open) "Hide" else "Show", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                    if (open) items(list, key = { it.id }) { task ->
                     val plans = LocalHouseColors.current.plans
                     Column {
                         // Circle = done (with Undo); the rest of the row, tapped or held, = edit.
@@ -342,6 +369,7 @@ fun PlansScreen(
                             task.dueDate?.let { Text(formatDate(it), style = MaterialTheme.typography.labelLarge, color = plans.color) }
                         }
                         com.houseaffairs.app.core.ui.HandoffButtons(task, me, answers, Modifier.padding(start = 58.dp, bottom = 8.dp))
+                    }
                     }
                 }
             }
@@ -403,13 +431,19 @@ fun PlansScreen(
                     }
                 }
                 shown.forEach { template ->
-                    val mediaItems = media[template].orEmpty()
-                    val wishItems = others[template].orEmpty()
-                    val dreamItems = dreamsIn[template].orEmpty()
-                    if (mediaItems.isEmpty() && wishItems.isEmpty() && dreamItems.isEmpty()) return@forEach
-                    if (state.listFilter == null) item(key = "h-" + template.name) { ListHeader("${template.emoji} ${template.title}") }
                     // Planned first, then the most ❤️'d.
-                    items(mediaItems.sortedWith(compareBy({ it.status != "PLANNED" }, { -it.votes.size })), key = { "media-" + it.id }) { w ->
+                    val allMedia = media[template].orEmpty().sortedWith(compareBy({ it.status != "PLANNED" }, { -it.votes.size }))
+                    val allWishes = others[template].orEmpty().sortedWith(compareBy({ it.status != "PLANNED" }, { -it.votes.size }))
+                    val allDreams = dreamsIn[template].orEmpty()
+                    val total = allMedia.size + allWishes.size + allDreams.size
+                    if (total == 0) return@forEach
+                    // With every list showing, each keeps only its top few so the page stays short; its chip shows the rest.
+                    val cap = if (state.listFilter == null) LIST_PEEK else Int.MAX_VALUE
+                    val mediaItems = allMedia.take(cap)
+                    val dreamItems = allDreams.take((cap - mediaItems.size).coerceAtLeast(0))
+                    val wishItems = allWishes.take((cap - mediaItems.size - dreamItems.size).coerceAtLeast(0))
+                    if (state.listFilter == null) item(key = "h-" + template.name) { ListHeader("${template.emoji} ${template.title}") }
+                    items(mediaItems, key = { "media-" + it.id }) { w ->
                         WishRow(
                             title = w.title,
                             detail = listOfNotNull(
@@ -430,7 +464,7 @@ fun PlansScreen(
                     items(dreamItems, key = { "dream-" + it.id }) { dream ->
                         DreamListRow(dream, state.progress?.firstOrNull { it.dream.id == dream.id }, state.currency) { open = dream }
                     }
-                    items(wishItems.sortedWith(compareBy({ it.status != "PLANNED" }, { -it.votes.size })), key = { "wish-" + it.id }) { wish ->
+                    items(wishItems, key = { "wish-" + it.id }) { wish ->
                         WishRow(
                             title = wish.title,
                             detail = listOfNotNull(wish.event?.let { "🎁 $it" }, wish.place, wish.budgetText).joinToString(" · ").ifEmpty { template.title },
@@ -442,6 +476,13 @@ fun PlansScreen(
                             onVote = { on -> viewModel.vote(wish.id, on) }, onPlan = { viewModel.togglePlanned(wish.id, wish.status) },
                             links = com.houseaffairs.app.core.data.wishLinks(wish.link),
                         )
+                    }
+                    if (total > mediaItems.size + dreamItems.size + wishItems.size) {
+                        item(key = "more-" + template.name) {
+                            TextButton(onClick = { viewModel.selectList(template) }, modifier = Modifier.padding(start = 8.dp)) {
+                                Text("See all $total in ${template.title.lowercase()} ›")
+                            }
+                        }
                     }
                 }
                 val doneItems = state.finished.filter { f -> f.collection == "listItems" && (state.listFilter == null || ListTemplate.of(f.template) == state.listFilter) }
@@ -930,3 +971,6 @@ internal fun PriorityTag(priority: String) {
         modifier = Modifier.padding(end = 8.dp).clip(CircleShape).background(color.copy(alpha = 0.12f)).padding(horizontal = 8.dp, vertical = 2.dp),
     )
 }
+
+/** How many of each list show when every list is on screen at once. */
+private const val LIST_PEEK = 4

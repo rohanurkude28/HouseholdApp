@@ -35,6 +35,9 @@ class GeminiAssistant @Inject constructor() : Assistant {
 
     override suspend fun coach(about: String): String? = ask(coachPrompt(about))?.let(::coachFromAi)
 
+    override suspend fun readBill(text: String): com.houseaffairs.app.core.data.BillScan? =
+        ask(billPrompt(text))?.let { billFromAi(it, java.time.LocalDate.now()) }
+
     private suspend fun ask(prompt: String): String? =
         withTimeoutOrNull(TIMEOUT_MS) { runCatching { model.generateContent(prompt).text }.getOrNull() }
 

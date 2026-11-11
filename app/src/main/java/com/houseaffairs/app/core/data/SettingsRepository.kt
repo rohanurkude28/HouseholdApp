@@ -49,6 +49,16 @@ class SettingsRepository @Inject constructor(
      */
     val toggledGroups: Flow<Set<String>> = dataStore.data.map { it[TOGGLED_GROUPS].orEmpty() }
 
+    /** How often each kind was added on this phone ("EXPENSE:5,TASK:2"), for the add sheet's usual tiles. */
+    val addedKinds: Flow<Map<String, Int>> = dataStore.data.map { parseCounts(it[ADDED_KINDS]) }
+
+    suspend fun countAdded(kind: String) {
+        dataStore.edit { p ->
+            val now = parseCounts(p[ADDED_KINDS])
+            p[ADDED_KINDS] = encodeCounts(now + (kind to (now[kind] ?: 0) + 1))
+        }
+    }
+
     suspend fun toggleGroup(key: String) {
         dataStore.edit { prefs ->
             val now = prefs[TOGGLED_GROUPS].orEmpty()
@@ -122,6 +132,44 @@ class SettingsRepository @Inject constructor(
         dataStore.edit { it[NUDGE_DISMISSED] = day }
     }
 
+    /** Days the "how was your day?" pop-up was skipped on this phone, and the day it last showed. */
+    val diarySkipped: Flow<Set<String>> = dataStore.data.map { it[DIARY_SKIPPED].orEmpty() }
+    val diaryAskedDay: Flow<String?> = dataStore.data.map { it[DIARY_ASKED] }
+
+    suspend fun skipDiaryDay(day: String) = dataStore.edit { p -> p[DIARY_SKIPPED] = (p[DIARY_SKIPPED].orEmpty() + day).toList().takeLast(30).toSet() }
+    suspend fun markDiaryAsked(day: String) = dataStore.edit { it[DIARY_ASKED] = day }
+
+    /** The day Home's "Tidy up" card was put away; it comes back tomorrow. */
+    val tidyDismissedDay: Flow<String?> = dataStore.data.map { it[TIDY_DISMISSED] }
+
+    /** Days this person opened the app on this phone (ISO dates), for the streak on Home. */
+    val openedDays: Flow<Set<String>> = dataStore.data.map { p -> p[OPENED_DAYS].orEmpty().split(",").filter { it.isNotBlank() }.toSet() }
+
+    suspend fun markOpened(today: java.time.LocalDate) {
+        dataStore.edit { p ->
+            val days = p[OPENED_DAYS].orEmpty().split(",").filter { it.isNotBlank() }.toSet()
+            p[OPENED_DAYS] = keptDays(days, today).sorted().joinToString(",")
+        }
+    }
+
+    /** What this person dealt with or put off on Home on [day] (ISO date); empty on any other day. */
+    fun handledOn(day: String): Flow<Set<String>> = dataStore.data.map { p ->
+        val lines = p[HANDLED_DAY].orEmpty().split("\n")
+        if (lines.firstOrNull() == day) lines.drop(1).filter { it.isNotBlank() }.toSet() else emptySet()
+    }
+
+    suspend fun setHandled(day: String, id: String, handled: Boolean) {
+        dataStore.edit { p ->
+            val lines = p[HANDLED_DAY].orEmpty().split("\n")
+            val ids = if (lines.firstOrNull() == day) lines.drop(1).filter { it.isNotBlank() }.toSet() else emptySet()
+            p[HANDLED_DAY] = (listOf(day) + if (handled) ids + id else ids - id).joinToString("\n")
+        }
+    }
+
+    suspend fun dismissTidy(day: String) {
+        dataStore.edit { it[TIDY_DISMISSED] = day }
+    }
+
     suspend fun setThemeMode(mode: ThemeMode) {
         dataStore.edit { it[THEME_MODE] = mode.name }
     }
@@ -174,6 +222,13 @@ class SettingsRepository @Inject constructor(
         dataStore.edit { it[FEEDBACK] = on }
     }
 
+    /** Every permission on the setup screen got an answer on this phone (yes or not now). */
+    val setupDone: Flow<Boolean> = dataStore.data.map { it[SETUP_DONE] == true }
+
+    suspend fun markSetupDone() {
+        dataStore.edit { it[SETUP_DONE] = true }
+    }
+
     suspend fun markQuickAddTried() {
         dataStore.edit { it[QUICK_ADD_TRIED] = true }
     }
@@ -186,13 +241,20 @@ class SettingsRepository @Inject constructor(
         val SMART_ADD = booleanPreferencesKey("smart_add")
         val SMART_SUGGEST = booleanPreferencesKey("smart_suggest")
         val TOGGLED_GROUPS = stringSetPreferencesKey("toggled_groups")
+        val ADDED_KINDS = stringPreferencesKey("added_kinds")
         val DIGEST_ENABLED = booleanPreferencesKey("digest_enabled")
         val REVIEW_SEEN = stringPreferencesKey("review_seen_week")
         val NUDGE_DISMISSED = stringPreferencesKey("nudge_dismissed_day")
+        val TIDY_DISMISSED = stringPreferencesKey("tidy_dismissed_day")
+        val OPENED_DAYS = stringPreferencesKey("opened_days")
+        val HANDLED_DAY = stringPreferencesKey("handled_day")
+        val DIARY_SKIPPED = stringSetPreferencesKey("diary_skipped_days")
+        val DIARY_ASKED = stringPreferencesKey("diary_asked_day")
         val DIGEST_HOUR = intPreferencesKey("digest_hour")
         val DIGEST_AREAS_OFF = stringSetPreferencesKey("digest_areas_off")
         val TOUR_STEP = intPreferencesKey("tour_step")
         val TOUR_DONE = booleanPreferencesKey("tour_done")
+        val SETUP_DONE = booleanPreferencesKey("setup_done")
         val FEEDBACK = booleanPreferencesKey("feedback_on")
         val BACKUP_MODE = stringPreferencesKey("backup_mode")
         val BACKUP_WIFI = booleanPreferencesKey("backup_wifi_only")

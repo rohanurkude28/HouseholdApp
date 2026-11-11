@@ -18,6 +18,8 @@ datastore = "1.1.1"
 junit = "4.13.2"
 work = "2.10.0"
 coil = "2.7.0"
+mlkitText = "19.0.1"
+healthConnect = "1.1.0-alpha11"
 # Shared KMP module and the iOS app.
 kotlinxDatetime = "0.6.1"
 composeMultiplatform = "1.7.3"
@@ -54,6 +56,8 @@ org-json = { group = "org.json", name = "json", version = "20240303" }
 kotlinx-coroutines-play-services = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "coroutines" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
+health-connect = { group = "androidx.health.connect", name = "connect-client", version.ref = "healthConnect" }
+mlkit-text = { group = "com.google.android.gms", name = "play-services-mlkit-text-recognition", version.ref = "mlkitText" }
 androidx-work-runtime = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "work" }
 kotlinx-datetime = { group = "org.jetbrains.kotlinx", name = "kotlinx-datetime", version.ref = "kotlinxDatetime" }
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }

@@ -65,6 +65,8 @@ import com.houseaffairs.app.core.data.WeeklyRepository
 enum class HomeSection(val label: String) {
     STATS("Stats at the top"),
     TODAY("Today: tasks and alerts"),
+    FAMILY("What's new at home"),
+    TIDY("Tidy up & add"),
     COMING_UP("Coming up"),
     RIGHT_NOW("For right now"),
     USE_IT_UP("What to cook"),
@@ -134,6 +136,8 @@ data class HomeUiState(
     val watchWhy: Map<String, String> = emptyMap(),
     /** Gift ideas per event, by lower-case event title. */
     val giftsFor: Map<String, Int> = emptyMap(),
+    /** Saved places, for "you loved it last time" when a meal is coming up. */
+    val places: List<PlaceItem> = emptyList(),
 ) {
     val showStats: Boolean get() = layout.firstOrNull { it.section == HomeSection.STATS }?.visible != false
 
@@ -196,6 +200,30 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch { settings.dismissNudge(LocalDate.now().toString()) }
     }
 
+    /** True once "Not today" was tapped on the Tidy up card today. */
+    /** Days in a row this person has opened the app; today counts as soon as Home shows. */
+    val streak: StateFlow<Int> = settings.openedDays.map { com.houseaffairs.app.core.data.streakOf(it, LocalDate.now()) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    fun markOpened() {
+        viewModelScope.launch { settings.markOpened(LocalDate.now()) }
+    }
+
+    /** Today rows dealt with or put off today, so the day's few things can run out. */
+    val handled: StateFlow<Set<String>> = settings.handledOn(LocalDate.now().toString())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    fun setHandled(id: String, handled: Boolean = true) {
+        viewModelScope.launch { settings.setHandled(LocalDate.now().toString(), id, handled) }
+    }
+
+    val tidyHidden: StateFlow<Boolean> = settings.tidyDismissedDay.map { it == LocalDate.now().toString() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    fun dismissTidy() {
+        viewModelScope.launch { settings.dismissTidy(LocalDate.now().toString()) }
+    }
+
     // Re-query only when something that changes the queries changes, not on every profile edit.
     private data class Scope(val householdId: String, val me: Member, val currency: String)
 
@@ -242,6 +270,8 @@ class HomeViewModel @Inject constructor(
         val wishes: List<WishItem> = emptyList(),
         val places: List<PlaceItem> = emptyList(),
         val goals: List<com.houseaffairs.app.core.data.Goal> = emptyList(),
+        /** Tasks ticked off, and when: the family's rhythm for chores nobody set to repeat. */
+        val done: List<com.houseaffairs.app.core.data.Purchase> = emptyList(),
     )
 
     private val plans = ready
@@ -257,6 +287,11 @@ class HomeViewModel @Inject constructor(
                     things.observeWishes(householdId, uid),
                     things.observePlaces(householdId, uid),
                     things.observeGoals(householdId, uid),
+                    things.observeFinished(householdId, uid).map { all ->
+                        all.filter { it.collection == "tasks" }.mapNotNull { f ->
+                            f.at?.let { com.houseaffairs.app.core.data.Purchase(f.title, it.toInstant().atZone(java.time.ZoneId.systemDefault()).toLocalDate()) }
+                        }
+                    },
                     ::Plans,
                 )
             }
@@ -334,7 +369,7 @@ class HomeViewModel @Inject constructor(
                 // An expiring item gets a dish suggestion right in the list.
                 val dish = v.ideas.firstOrNull { idea -> item.area == Area.KITCHEN && idea.rescues.any { it.equals(item.title, ignoreCase = true) } }
                 if (dish != null && item.detail.startsWith("Expires")) item.copy(detail = "${item.detail} · try ${dish.recipe.title}") else item
-            } + restockAlerts(v.kitchen, data.shopping.map { it.name }) + refillAlerts(data.courses, data.shopping.map { it.name }) + goalsRecapAlert(v.plans.goals),
+            } + restockAlerts(v.kitchen, data.shopping.map { it.name }) + refillAlerts(data.courses, data.shopping.map { it.name }) + goalsRecapAlert(v.plans.goals) + habitAlerts(v.plans.done, data.tasks.map { it.title }),
             filter = v.filter,
             layout = v.layout,
             budget = v.budget,
@@ -343,6 +378,7 @@ class HomeViewModel @Inject constructor(
             ideas = v.ideas.sortedBy { idea -> v.picks.cook.indexOfFirst { it.title == idea.recipe.title }.let { if (it < 0) Int.MAX_VALUE else it } },
             watch = v.plans.watch.sortedBy { w -> v.picks.watch.indexOfFirst { it.title == w.title }.let { if (it < 0) Int.MAX_VALUE else it } },
             giftsFor = v.plans.wishes.mapNotNull { it.event?.lowercase() }.groupingBy { it }.eachCount(),
+            places = v.plans.places,
             cookWhy = v.picks.cook.associate { it.title to it.why },
             watchWhy = v.picks.watch.associate { it.title to it.why },
             rightNow = rightNow(
@@ -407,6 +443,21 @@ class HomeViewModel @Inject constructor(
         val task = state.value.data.tasks.firstOrNull { it.id == id } ?: return
         val undo = home.completeTask(r.household.id, r.user.uid, task)
         onDone(com.houseaffairs.app.feature.add.SavedEntry(doneMessage(task, state.value.members), celebrate = true) { undo() })
+    }
+
+    /** "Do laundry?": a chore that's due by the family's own rhythm, with "Add to my day". */
+    private fun habitAlerts(done: List<com.houseaffairs.app.core.data.Purchase>, open: List<String>): List<Attention> {
+        val today = LocalDate.now()
+        return com.houseaffairs.app.core.data.usualTasks(done, open, today).map { u ->
+            Attention("habit-${com.houseaffairs.app.core.data.choreKey(u.title)}", Area.PLANS, Priority.TODAY, "${u.title}?", u.why, today, open = "plans/TASKS", habit = u.title)
+        }
+    }
+
+    /** "Add to my day" on a chore Home noticed: a task for today, mine, with Undo. */
+    fun addHabitTask(title: String, onDone: (com.houseaffairs.app.feature.add.SavedEntry) -> Unit) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        val undo = home.addTask(r.household.id, r.user.uid, title)
+        onDone(com.houseaffairs.app.feature.add.SavedEntry("$title · on today's list") { undo() })
     }
 
     /** "Time to buy rice": due from the family's buying rhythm, as Today items with "+ List". */

@@ -59,6 +59,7 @@ data class WeekReview(
 class WeeklyRepository @Inject constructor(
     private val db: FirebaseFirestore,
     private val pantry: PantryRepository,
+    private val health: com.houseaffairs.app.core.health.HealthRepository,
 ) {
     private fun col(householdId: String, name: String) = db.collection("households").document(householdId).collection(name)
 
@@ -198,7 +199,10 @@ class WeeklyRepository @Inject constructor(
             togetherEvents = tripDocs.size + eventDocs.size,
             savedToDreamsMinor = saved, wasted = wasted, checkIn = check,
             days = dates.size, diaryDays = diary.count { it.note != null }, learned = learned,
-        )
+        ).let { d ->
+            // Steps, sleep and workouts from Health Connect, when this person connected it on this phone.
+            health.read(dates.first(), dates.last())?.let { h -> d.copy(steps = h.steps, sleepHours = h.sleepHoursPerNight, exerciseMinutes = h.exerciseMinutes) } ?: d
+        }
         val plan = loadPlan(householdId, uid)
         return WeekReview(liveWell(data, plan), data, spent, currency, activities.sumOf { it.minutes }, plan, counts, from, diary, me.canAccess(AppModule.STOCK), todayMacros)
     }
@@ -270,6 +274,12 @@ class WeeklyRepository @Inject constructor(
     }
 
     /** Writes (or clears) the day's diary line and mood; private to the person. */
+    /** Which of [days] already have a diary line or mood from this person. */
+    suspend fun writtenDays(householdId: String, uid: String, days: List<LocalDate>): Set<LocalDate> =
+        days.filter { day ->
+            runCatching { col(householdId, "diary").document("${uid}_$day").get().await() }.getOrNull()?.exists() == true
+        }.toSet()
+
     fun saveDiary(householdId: String, uid: String, day: LocalDate, note: String, mood: String?) {
         val ref = col(householdId, "diary").document("${uid}_$day")
         if (note.isBlank() && mood == null) {

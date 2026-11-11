@@ -117,7 +117,7 @@ class HomeRepository @Inject constructor(
                         medicineDocs.map { it.toActivity(ActivityKind.MEDICINE, it.titleOr("title")) } +
                         recurringDocs.map { it.toActivity(ActivityKind.SUBSCRIPTION, it.titleOr("title")) } +
                         eventDocs.map { it.toActivity(ActivityKind.EVENT, it.titleOr("title")) }
-                    ).sortedByDescending { it.createdAtMillis }.take(8),
+                    ).sortedByDescending { it.createdAtMillis }.take(20),
             )
         }
     }
@@ -127,6 +127,20 @@ class HomeRepository @Inject constructor(
 
     private fun DocumentSnapshot.localDate(field: String): LocalDate? =
         getTimestamp(field)?.toDate()?.toInstant()?.atZone(ZoneId.systemDefault())?.toLocalDate()
+
+    /** A task for today, for whoever asked, from a chore Home noticed. Returns the undo. */
+    fun addTask(householdId: String, uid: String, title: String, today: LocalDate = LocalDate.now()): () -> Unit {
+        val ref = collection(householdId, "tasks").document()
+        ref.set(
+            mapOf(
+                "title" to title, "done" to false, "assignee" to uid, "priority" to "Low",
+                "due" to com.google.firebase.Timestamp(java.util.Date.from(today.atStartOfDay(ZoneId.systemDefault()).toInstant())),
+                "createdBy" to uid, "visibleTo" to Visibility.everyone,
+                "createdAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(), "source" to "habit",
+            ),
+        )
+        return { ref.delete() }
+    }
 
     /**
      * Ticks a task off. A repeating one comes back as a new task, due next time and with the

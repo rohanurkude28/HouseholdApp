@@ -43,6 +43,13 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch { settings.setFeedback(on) }
     }
 
+    /** Null until read, so the setup screen never flashes for someone who's done it. */
+    val setupDone: StateFlow<Boolean?> = settings.setupDone.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    fun markSetupDone() {
+        viewModelScope.launch { settings.markSetupDone() }
+    }
+
     fun finishTour() {
         viewModelScope.launch { settings.finishTour() }
     }

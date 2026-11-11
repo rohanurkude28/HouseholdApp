@@ -62,6 +62,7 @@ internal fun HaBottomBar(tabs: List<Tab>, selected: Tab?, onSelect: (Tab) -> Uni
     }
 }
 
+/** Icon with its name always underneath: icons alone leave people guessing. */
 @Composable
 private fun TabItem(tab: Tab, selected: Boolean, onClick: () -> Unit) {
     val background by animateColorAsState(
@@ -69,22 +70,17 @@ private fun TabItem(tab: Tab, selected: Boolean, onClick: () -> Unit) {
         label = "tab background",
     )
     val content = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
-    Row(
+    androidx.compose.foundation.layout.Column(
         Modifier
-            .height(44.dp)
-            .clip(CircleShape)
-            .background(background)
+            .clip(RoundedCornerShape(16.dp))
             .clickable(role = Role.Tab, onClick = onClick)
-            .padding(horizontal = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = 4.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(tab.icon, contentDescription = tab.label, tint = content, modifier = Modifier.size(22.dp))
-        AnimatedVisibility(selected, enter = fadeIn() + expandHorizontally(), exit = fadeOut() + shrinkHorizontally()) {
-            Row {
-                Spacer(Modifier.width(6.dp))
-                Text(tab.label, style = MaterialTheme.typography.labelLarge, color = content, maxLines = 1)
-            }
+        Box(Modifier.height(28.dp).clip(CircleShape).background(background).padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
+            Icon(tab.icon, contentDescription = null, tint = content, modifier = Modifier.size(22.dp))
         }
+        Text(tab.label, style = MaterialTheme.typography.labelSmall, color = content, maxLines = 1)
     }
 }
 

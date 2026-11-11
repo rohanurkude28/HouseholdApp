@@ -57,6 +57,7 @@ fun TourScreen(
     onStep: (Int) -> Unit,
     onFinish: () -> Unit,
     onOpen: (String) -> Unit,
+    onSetupDone: () -> Unit = {},
 ) {
     val context = LocalContext.current
     var index by remember { mutableStateOf(start) }
@@ -92,7 +93,11 @@ fun TourScreen(
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("${index + 1} of ${steps.size}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.weight(1f))
-                if (index < steps.lastIndex && !(step.action == TourAction.SETUP && !setupAnswered)) TextButton(onClick = ::finish) { Text("Skip") }
+                // Skip passes over the feature screens, never the setup: it goes there first if unanswered.
+                val setupAt = steps.indexOfFirst { it.action == TourAction.SETUP }
+                if (index < steps.lastIndex && !(step.action == TourAction.SETUP && !setupAnswered)) {
+                    TextButton(onClick = { if (setupAt > index && !setupAnswered) go(setupAt) else finish() }) { Text("Skip") }
+                }
             }
             AnimatedContent(targetState = step, label = "tour", modifier = Modifier.weight(1f)) { s ->
                 Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
@@ -118,7 +123,7 @@ fun TourScreen(
                             notificationsOn = granted,
                             onNotifications = { asked = true; permission.launch(Manifest.permission.POST_NOTIFICATIONS) },
                             // Answered here (even "not now"): don't ask again at the end of the tour.
-                            onAnswered = { setupAnswered = it; if (it) asked = true },
+                            onAnswered = { setupAnswered = it; if (it) { asked = true; onSetupDone() } },
                         )
                         TourAction.OPEN_MONEY -> OutlinedButton(onClick = { onFinish(); onOpen("money") }, shape = CircleShape) { Text("Set up the budget now") }
                         TourAction.OPEN_KITCHEN -> OutlinedButton(onClick = { onFinish(); onOpen("stock") }, shape = CircleShape) { Text("Open the kitchen") }
@@ -233,5 +238,34 @@ private fun SetupRow(emoji: String, title: String, detail: String, done: Boolean
         Spacer(Modifier.width(8.dp))
         if (done) Text("✓", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
         else Button(onClick = onClick, shape = CircleShape) { Text(action) }
+    }
+}
+
+/**
+ * The setup on its own, at launch, for anyone who hasn't answered it (the tour was skipped
+ * before this screen existed, or was left). It stays until every permission has an answer.
+ */
+@Composable
+fun SetupGate(onDone: () -> Unit) {
+    val context = LocalContext.current
+    val needs = Build.VERSION.SDK_INT >= 33 &&
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+    var granted by remember { mutableStateOf(!needs) }
+    var answered by remember { mutableStateOf(false) }
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
+    // Back can't dismiss it either: one answer per switch, then Continue.
+    BackHandler(enabled = !answered) {}
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+        Column(Modifier.fillMaxSize().systemBarsPadding().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+            Text("📲", fontSize = 64.sp)
+            Spacer(Modifier.height(16.dp))
+            Text("Set up your phone", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(8.dp))
+            Text("A few switches so reminders ring on time and your day shows on the home screen.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(20.dp))
+            PhoneSetup(granted, { permission.launch(Manifest.permission.POST_NOTIFICATIONS) }) { answered = it }
+            Spacer(Modifier.height(20.dp))
+            Button(onClick = onDone, enabled = answered, shape = CircleShape, modifier = Modifier.fillMaxWidth()) { Text("Continue") }
+        }
     }
 }
