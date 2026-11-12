@@ -75,6 +75,8 @@ private const val REVIEW_ROUTE = "review"
 
 @Composable
 fun MainScaffold(session: SessionState.Ready) {
+    // Amounts outside Money follow the owner's "Hide costs from" (Settings → Privacy).
+    androidx.compose.runtime.SideEffect { com.houseaffairs.app.core.ui.CostPrivacy.hidden = session.user.uid in session.household.hideCostsFrom }
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
@@ -160,7 +162,8 @@ fun MainScaffold(session: SessionState.Ready) {
             }
             composable(Tab.MONEY.route) {
                 // Without Money access: just your own spends, no family totals.
-                if (!session.me.canAccess(com.houseaffairs.app.core.model.AppModule.MONEY)) {
+                // Without Money access, or with the family's costs hidden from them: just their own spends.
+                if (!session.me.canAccess(com.houseaffairs.app.core.model.AppModule.MONEY) || session.user.uid in session.household.hideCostsFrom) {
                     com.houseaffairs.app.feature.money.MySpendsScreen(onAdd = { openAdd(EntryType.EXPENSE, emptyMap()) }, onOpen = { openEdit(EntryType.EXPENSE, it) })
                     return@composable
                 }
@@ -198,10 +201,10 @@ fun MainScaffold(session: SessionState.Ready) {
                     onAddGoal = { openAdd(EntryType.GOAL, emptyMap()) },
                     onAddPlace = { openAdd(EntryType.PLACE, emptyMap()) },
                     // Dated inside the trip, so it counts even when added afterwards.
-                    onAddTripExpense = { trip ->
+                    onAddTripExpense = { trip, kind ->
                         val today = LocalDate.now()
                         val date = if (trip.end != null && today.isAfter(trip.end)) trip.end else if (today.isBefore(trip.start)) trip.start else today
-                        openAdd(EntryType.EXPENSE, mapOf("trip" to trip.title, "date" to date))
+                        openAdd(EntryType.EXPENSE, mapOf("trip" to trip.title, "date" to date) + (kind?.let { k -> mapOf("category" to k.category, "subcategory" to k.subcategory) } ?: emptyMap()))
                     },
                     onAddTrip = { dream -> openAdd(EntryType.TRIP, dream?.let { mapOf("forDream" to it, "title" to it) } ?: emptyMap()) },
                     onAddWish = { list -> openAdd(EntryType.WISH, list?.let { mapOf("template" to it.label) } ?: emptyMap()) },

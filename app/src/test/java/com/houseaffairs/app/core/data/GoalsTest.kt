@@ -21,4 +21,11 @@ class GoalsTest {
         assertEquals("1 of 3 goals done this week · Finish a book at 80%", goalsRecap(goals, sunday))
         assertNull(goalsRecap(emptyList(), sunday))
     }
+
+    @Test
+    fun `progress reads as a step`() {
+        assertEquals("Not started", goalStep(0))
+        assertEquals("Halfway", goalStep(60))
+        assertEquals("Done", goalStep(100))
+    }
 }

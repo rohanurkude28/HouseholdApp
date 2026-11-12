@@ -44,3 +44,51 @@ fun likedBefore(places: List<PlaceItem>, meal: String?, today: LocalDate): Idea?
         ?: loved[(today.toEpochDay() % loved.size).toInt()]
     return Idea(pick.title, listOfNotNull("You loved it last time", pick.goodFor?.let { "for $it" }, pick.area).joinToString(" · "))
 }
+
+/** Without a history of times, chore reminders go off mid-morning. */
+const val HABIT_DEFAULT_MINUTE = 10 * 60
+
+/** "Later today" on a chore reminder rings again this many minutes on. */
+const val SNOOZE_MINUTES = 120
+
+/**
+ * The time of day someone usually does a chore: the middle of the times it was ticked off,
+ * rounded to the quarter hour, so the reminder comes when they'd do it anyway.
+ */
+fun usualMinute(minutes: List<Int>): Int {
+    if (minutes.isEmpty()) return HABIT_DEFAULT_MINUTE
+    val sorted = minutes.sorted()
+    val middle = sorted[sorted.size / 2]
+    return (middle + 7) / 15 * 15 % (24 * 60)
+}
+
+/**
+ * Notifications for chores due by the family's own rhythm (see [usualTasks]): on the day it's
+ * due, at the time it's usually done. [putOff] holds chores someone moved to a later day
+ * ("Tomorrow" on the notification). Today's ones whose time has passed are left to Home.
+ */
+fun habitReminders(
+    done: List<DoneTask>,
+    open: List<String>,
+    today: LocalDate,
+    nowMinute: Int,
+    putOff: Map<String, LocalDate> = emptyMap(),
+    days: Int = 7,
+): List<PlannedReminder> {
+    val waiting = open.map(::choreKey).toSet()
+    return done.filter { choreKey(it.title).isNotEmpty() }.groupBy { choreKey(it.title) }.mapNotNull { (key, times) ->
+        if (key in waiting) return@mapNotNull null
+        val every = boughtEvery(times.map { it.date }) ?: return@mapNotNull null
+        val last = times.maxBy { it.date }
+        // Left for three gaps: dropped, not forgotten.
+        if (ChronoUnit.DAYS.between(last.date, today) > every * 3) return@mapNotNull null
+        val due = listOfNotNull(last.date.plusDays(every.toLong()), today, putOff[key]).max()
+        val minute = usualMinute(times.map { it.minute })
+        val ahead = ChronoUnit.DAYS.between(today, due)
+        if (ahead > days || (ahead == 0L && minute <= nowMinute)) return@mapNotNull null
+        PlannedReminder(
+            "habit:$key:$due", "${last.title}?",
+            "You usually do this around ${formatClock(minute)}, every $every days.", due, minute,
+        )
+    }
+}

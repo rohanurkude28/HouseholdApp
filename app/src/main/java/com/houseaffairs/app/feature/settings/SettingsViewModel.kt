@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -46,6 +47,10 @@ data class SettingsUiState(
     /** The last "Test & save" result per service, shown under its row. */
     val keyStatus: Map<String, String> = emptyMap(),
     val calendarSyncing: Boolean = false,
+    /** Who doesn't see the family's costs (owner-set). */
+    val hideCostsFrom: List<String> = emptyList(),
+    /** What can be made private: the sensitive topics, then the kitchen and supply categories. */
+    val privateChoices: List<String> = com.houseaffairs.app.core.data.PRIVATE_TOPICS,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -61,6 +66,7 @@ class SettingsViewModel @Inject constructor(
     @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context,
     private val watch: com.houseaffairs.app.core.data.WatchRepository,
     private val demo: com.houseaffairs.app.core.data.DemoSeeder,
+    private val pantry: com.houseaffairs.app.core.data.PantryRepository,
 ) : ViewModel() {
     private val keyStatus = MutableStateFlow<Map<String, String>>(emptyMap())
 
@@ -83,6 +89,14 @@ class SettingsViewModel @Inject constructor(
     /** Google's consent screen, when Calendar access hasn't been allowed yet; the screen launches it. */
     val calendarConsent = MutableStateFlow<android.app.PendingIntent?>(null)
     private val ready = session.state.filterIsInstance<SessionState.Ready>()
+
+    /** The categories the family's kitchen and supplies use, most-used first, for Privacy's choices. */
+    private val categoriesInUse = ready.map { it.household.id to it.user.uid }.distinctUntilChanged().flatMapLatest { (hid, uid) ->
+        combine(pantry.observePantry(hid, uid), pantry.observeSupplies(hid, uid)) { food, supplies ->
+            (food.map { com.houseaffairs.app.core.data.pantryCategory(it).label } + supplies.map { com.houseaffairs.app.core.data.supplyCategory(it) })
+                .groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.map { it.key }
+        }
+    }.onStart { emit(emptyList()) }
     private val inviteCode = MutableStateFlow<String?>(null)
     private val error = MutableStateFlow<String?>(null)
 
@@ -112,10 +126,11 @@ class SettingsViewModel @Inject constructor(
             smartSuggest = p.smartSuggest,
             privateTopics = r.household.privateTopics,
             integrations = r.household.integrations,
+            hideCostsFrom = r.household.hideCostsFrom,
         )
     }.combine(combine(calendarStore.status, calendarSyncing, keyStatus) { c, busy, k -> Triple(c, busy, k) }) { st, (cal, busy, keys) ->
         st.copy(calendar = cal, calendarSyncing = busy, keyStatus = keys)
-    }
+    }.combine(categoriesInUse) { st, inUse -> st.copy(privateChoices = com.houseaffairs.app.core.data.privateChoices(inUse, USUAL_PRIVATE)) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
 
     /** Switching on asks Google for access first (a consent screen the first time), then syncs. */
@@ -161,6 +176,9 @@ class SettingsViewModel @Inject constructor(
     fun setThemeMode(mode: ThemeMode) {
         viewModelScope.launch { settings.setThemeMode(mode) }
     }
+
+    /** Hides the family's costs from [uids] (trips, dreams and lists stay; amounts don't). */
+    fun setHideCosts(uids: List<String>) = withHousehold { households.setHideCosts(it, uids) }
 
     /** Turns a private topic on (seen by [uids]) or off (null). */
     fun setPrivateTopic(topic: String, uids: List<String>?) = withHousehold { households.setPrivateTopic(it, topic, uids) }
@@ -271,3 +289,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 }
+
+/** Categories offered for Privacy before the family uses them: kitchen aisles, then supply types. */
+private val USUAL_PRIVATE = com.houseaffairs.app.core.data.Aisle.FOOD.map { it.label } + com.houseaffairs.app.core.data.SUPPLY_TYPES

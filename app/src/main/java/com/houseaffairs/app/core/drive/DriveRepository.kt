@@ -60,7 +60,7 @@ class DriveRepository @Inject constructor(
         val file = JSONObject()
             .put("app", "HouseAffairs").put("version", 1).put("householdId", hid)
             .put("exportedAt", System.currentTimeMillis())
-            .put("household", toJson(encode(home.filterKeys { it in setOf("privateTopics", "baseCurrency", "name") })))
+            .put("household", toJson(encode(home.filterKeys { it in setOf("privateTopics", "hideCostsFrom", "baseCurrency", "name") })))
             .put("collections", collections)
         val drive = GoogleDrive(token)
         drive.upload(drive.folder(listOf(DRIVE_ROOT, DRIVE_BACKUPS)), backupFileName(LocalDateTime.now()), "application/json", file.toString().toByteArray())

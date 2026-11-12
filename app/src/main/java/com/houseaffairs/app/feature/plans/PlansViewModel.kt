@@ -170,9 +170,12 @@ class PlansViewModel @Inject constructor(
         return SavedEntry("$title · done", celebrate = true) { undo() }
     }
 
-    fun setGoalProgress(id: String, progress: Int) {
-        val r = session.state.value as? SessionState.Ready ?: return
-        things.setGoalProgress(r.household.id, id, progress)
+    /** A goal moved to another step; Undo puts it back where it was. */
+    fun setGoalProgress(goal: com.houseaffairs.app.core.data.Goal, progress: Int): SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val undo = things.setGoalProgress(r.household.id, goal.id, progress, before = goal.progress)
+        val step = com.houseaffairs.app.core.data.goalStep(progress)
+        return SavedEntry("${goal.title} · ${step.lowercase()}" + if (progress >= 100) " 🎉" else "", celebrate = progress >= 100) { undo() }
     }
 
     /** ❤️ or un-❤️ a list item. */
@@ -266,6 +269,48 @@ class PlansViewModel @Inject constructor(
     fun keepTask(task: com.houseaffairs.app.core.data.TaskItem) {
         val r = session.state.value as? SessionState.Ready ?: return
         home.keepTask(r.household.id, task)
+    }
+
+    private val parser = com.houseaffairs.app.feature.quickadd.QuickAddParser(nowMinute = { java.time.LocalTime.now().let { it.hour * 60 + it.minute } })
+
+    /**
+     * Typed straight into Tasks: "call mom at 5 tomorrow" keeps its date and time; without a
+     * date it goes on [day] (the day picked in the week strip, else today).
+     */
+    fun quickAddTask(text: String, day: java.time.LocalDate?): SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val line = text.trim().takeIf { it.isNotEmpty() } ?: return null
+        val draft = parser.parse(line) as? com.houseaffairs.app.feature.quickadd.QuickAddDraft.Task
+        val title = draft?.title?.takeIf { it.isNotBlank() } ?: line.replaceFirstChar { it.uppercase() }
+        val due = draft?.due ?: day ?: java.time.LocalDate.now()
+        val undo = home.addTask(r.household.id, r.user.uid, title, due = due, time = draft?.time, repeat = draft?.repeat, source = "tasks")
+        return SavedEntry("$title · ${com.houseaffairs.app.feature.add.formatDate(due)}") { undo() }
+    }
+
+    /** A chore added to the family's list: due today, for anyone, repeating. */
+    fun addChore(title: String, repeat: String): SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val undo = home.addTask(r.household.id, r.user.uid, title.trim(), repeat = repeat, source = "chore", assignee = null)
+        return SavedEntry("${title.trim()} · a family chore, ${repeat.lowercase()}") { undo() }
+    }
+
+    fun removeChore(task: TaskItem): SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val undo = home.removeTask(r.household.id, task.id)
+        return SavedEntry("${task.title} · off the chores list") { undo() }
+    }
+
+    fun setChoreRepeat(task: TaskItem, repeat: String): SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val undo = home.setRepeat(r.household.id, task.id, repeat, task.repeat)
+        return SavedEntry("${task.title} · ${repeat.lowercase()}") { undo() }
+    }
+
+    /** A new day from the date chip ("Tomorrow", "This weekend"…), or no date, with Undo. */
+    fun reschedule(task: TaskItem, to: java.time.LocalDate?, label: String): SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val undo = home.moveTask(r.household.id, task.id, to, task.dueDate)
+        return SavedEntry("${task.title} · ${label.lowercase()}") { undo() }
     }
 
     fun completeTask(task: TaskItem): SavedEntry? {

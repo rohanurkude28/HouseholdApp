@@ -60,15 +60,14 @@ internal fun monthLabel(cycle: com.houseaffairs.app.core.data.Cycle): String =
  * Tapping it (outside a category) opens the year, where earlier months are.
  */
 @Composable
-internal fun MonthOverviewCard(m: MoneyState, money: (Long) -> String, onOpen: (String) -> Unit, onYear: () -> Unit) {
-    val cycle = remember(m.budget.cycleStartDay) { com.houseaffairs.app.core.data.cycleFor(LocalDate.now(), m.budget.cycleStartDay) }
+internal fun MonthOverviewCard(m: MoneyState, money: (Long) -> String, cycle: com.houseaffairs.app.core.data.Cycle, onOpen: (String) -> Unit, onYear: () -> Unit) {
     val o = remember(m.txns, cycle) { monthOverview(m.txns, cycle, m.budget.cycleStartDay) }
     com.houseaffairs.app.core.ui.MonthCard(
         "${monthLabel(cycle)} in money", com.houseaffairs.app.core.designsystem.LocalHouseColors.current.money, onYear,
         Modifier.fillMaxWidth().padding(horizontal = 20.dp).animateContentSize(),
     ) {
         Text("${money(o.totalMinor)} · ${o.count} expenses", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 6.dp))
-        MonthOverviewBody(o, money, current = true, onOpen = onOpen)
+        MonthOverviewBody(o, money, current = LocalDate.now() in cycle, onOpen = onOpen)
     }
 }
 

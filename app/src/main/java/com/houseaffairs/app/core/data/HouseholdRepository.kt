@@ -124,6 +124,11 @@ class HouseholdRepository @Inject constructor(
         ).await()
     }
 
+    /** The people who don't see the family's costs. Owner only (rules). */
+    suspend fun setHideCosts(householdId: String, uids: List<String>) {
+        household(householdId).update("hideCostsFrom", uids.distinct()).await()
+    }
+
     /** Makes [topic] private to [uids], or public again when null. Owner only (rules). */
     suspend fun setPrivateTopic(householdId: String, topic: String, uids: List<String>?) {
         household(householdId).update(

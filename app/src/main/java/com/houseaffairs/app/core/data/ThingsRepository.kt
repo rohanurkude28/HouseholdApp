@@ -107,12 +107,16 @@ class ThingsRepository @Inject constructor(
             }
             .catch { emit(emptyList()) }
 
-    fun setGoalProgress(householdId: String, id: String, progress: Int) {
-        val p = progress.coerceIn(0, 100)
-        // When it was reached, so it stays for this year's story and is cleared after.
-        db.collection("households").document(householdId).collection("weeklyGoals").document(id).update(
-            mapOf("progress" to p, "doneAt" to if (p >= 100) com.google.firebase.firestore.FieldValue.serverTimestamp() else com.google.firebase.firestore.FieldValue.delete()),
-        )
+    /** Returns an undo that puts the earlier progress back. */
+    fun setGoalProgress(householdId: String, id: String, progress: Int, before: Int? = null): () -> Unit {
+        val ref = db.collection("households").document(householdId).collection("weeklyGoals").document(id)
+        fun write(value: Int) {
+            val p = value.coerceIn(0, 100)
+            // When it was reached, so it stays for this year's story and is cleared after.
+            ref.update(mapOf("progress" to p, "doneAt" to if (p >= 100) com.google.firebase.firestore.FieldValue.serverTimestamp() else com.google.firebase.firestore.FieldValue.delete()))
+        }
+        write(progress)
+        return { before?.let(::write) }
     }
 
     /** ❤️ a list item, or take the ❤️ back. */

@@ -34,7 +34,7 @@ import com.houseaffairs.app.core.data.PeriodReview
 import com.houseaffairs.app.core.designsystem.LocalHouseColors
 import com.houseaffairs.app.core.ui.HaCard
 import com.houseaffairs.app.core.ui.SectionTitle
-import com.houseaffairs.app.core.util.formatMinor
+import com.houseaffairs.app.core.ui.shownMinor
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
@@ -104,13 +104,13 @@ fun LazyListScope.periodStory(state: ReviewUi, currency: String, onPrev: () -> U
         item { SectionTitle("Kitchen") }
         item {
             HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
-                p.groceriesMinor?.let { Text("${formatMinor(it, currency)} on groceries", style = MaterialTheme.typography.titleMedium) }
+                p.groceriesMinor?.let { Text("${shownMinor(it, currency)} on groceries", style = MaterialTheme.typography.titleMedium) }
                 Text(
                     listOf(
                         count(p.bought, "thing") + " bought",
                         when {
                             p.wasted == 0 -> "🎉 nothing wasted"
-                            p.wastedMinor > 0 -> "🗑️ ${formatMinor(p.wastedMinor, currency)} wasted (${p.wasted})"
+                            p.wastedMinor > 0 -> "🗑️ ${shownMinor(p.wastedMinor, currency)} wasted (${p.wasted})"
                             else -> "🗑️ ${p.wasted} wasted"
                         },
                     ).joinToString(" · "),
@@ -196,7 +196,7 @@ private fun GlanceStat(label: String, value: String, change: Int?, lowerIsBetter
 }
 
 /** "₹35.6k": big numbers read at a glance. */
-private fun formatCompactMoney(minor: Long, currency: String) = com.houseaffairs.app.core.util.formatCompact(minor, currency)
+private fun formatCompactMoney(minor: Long, currency: String) = com.houseaffairs.app.core.ui.shownCompact(minor, currency)
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -223,15 +223,15 @@ private fun Highlights(p: PeriodReview) {
 private fun MoneyCard(p: PeriodReview, spent: Long, currency: String, year: Boolean) {
     val accent = LocalHouseColors.current.money
     HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
-        Text(formatMinor(spent, currency), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+        Text(shownMinor(spent, currency), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
         Text("spent by the home", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (p.topSpends.isNotEmpty()) {
             Text(
-                "Most on " + p.topSpends.joinToString(" · ") { (c, n) -> "$c ${formatMinor(n, currency)}" },
+                "Most on " + p.topSpends.joinToString(" · ") { (c, n) -> "$c ${shownMinor(n, currency)}" },
                 style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp),
             )
         }
-        if (p.savedMinor > 0) Text("💰 ${formatMinor(p.savedMinor, currency)} put towards dreams", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
+        if (p.savedMinor > 0) Text("💰 ${shownMinor(p.savedMinor, currency)} put towards dreams", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
         // A year shows its shape: one bar per month.
         if (year && p.spendByMonth.size > 1) {
             val most = p.spendByMonth.maxOf { it.second }.coerceAtLeast(1)

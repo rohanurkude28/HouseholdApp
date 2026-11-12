@@ -48,6 +48,8 @@ data class TaskItem(
     /** Who said they can't do it, and why; it's back with [assignedBy] then. */
     val declinedBy: String? = null,
     val declineNote: String? = null,
+    /** One of the family's chores: nudged when due, and next due an interval after it's done. */
+    val chore: Boolean = false,
 )
 
 data class StockItem(val id: String, val title: String, val expiry: LocalDate?, val level: Int?)
@@ -95,5 +97,10 @@ data class HomeData(
     val recent: List<ActivityItem> = emptyList(),
     /** Medicines taken on a schedule, for dose reminders and "runs out soon". */
     val courses: List<MedicineCourse> = emptyList(),
+    /** Tasks ticked off, with when: the rhythm of chores nobody set to repeat. */
+    val done: List<DoneTask> = emptyList(),
 )
+
+/** A task ticked off on [date] at [minute] after midnight. */
+data class DoneTask(val title: String, val date: LocalDate, val minute: Int)
 

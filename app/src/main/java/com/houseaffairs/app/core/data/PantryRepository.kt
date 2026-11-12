@@ -374,22 +374,28 @@ class PantryRepository @Inject constructor(
      * "Threw some away": [share] (% of the pack) goes to waste and comes off what's left. When
      * nothing would be left, it's the whole thing thrown away. Returns true if all of it went.
      */
-    suspend fun wastePart(householdId: String, uid: String, stock: PantryStock, openShopping: List<String>, share: Int, from: String = "stock"): Boolean {
+    /** Part of a pack thrown away. Returns what "Put it back" does: the level, amount and waste entry as they were. */
+    suspend fun wastePart(householdId: String, uid: String, stock: PantryStock, openShopping: List<String>, share: Int, from: String = "stock"): () -> Unit {
         val ref = collection(householdId, from).document(stock.id)
-        val level = ref.get().await().getLong("level")?.toInt()
+        val doc = ref.get().await()
+        val level = doc.getLong("level")?.toInt()
         val left = levelAfterWaste(level, share)
         if (left <= 0) {
-            usedUp(householdId, uid, stock, openShopping, from, thrown = true)
-            return true
+            val added = usedUp(householdId, uid, stock, openShopping, from, thrown = true, addToList = false)
+            return { putBack(householdId, stock, from, added) }
         }
+        val entry = mapOf("share" to share, "at" to com.google.firebase.Timestamp.now())
+        val quantity = doc.get("quantity")
         ref.update(
             mapOf(
                 "level" to left,
                 "quantity" to stock.amount?.let { a -> stock.initialAmount?.takeIf { it > 0 }?.let { mapOf("amount" to it * left / 100.0, "unit" to stock.unit) } ?: mapOf("amount" to a, "unit" to stock.unit) },
-                "wasteLog" to FieldValue.arrayUnion(mapOf("share" to share, "at" to com.google.firebase.Timestamp.now())),
+                "wasteLog" to FieldValue.arrayUnion(entry),
             ),
         ).await()
-        return false
+        return {
+            ref.update(mapOf("level" to (level ?: FieldValue.delete()), "quantity" to (quantity ?: FieldValue.delete()), "wasteLog" to FieldValue.arrayRemove(entry)))
+        }
     }
 
     /** "Won't take it today": no dose reminders that day, and what's left isn't counted down for it. */

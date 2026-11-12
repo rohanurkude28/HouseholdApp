@@ -52,6 +52,27 @@ class SettingsRepository @Inject constructor(
     /** How often each kind was added on this phone ("EXPENSE:5,TASK:2"), for the add sheet's usual tiles. */
     val addedKinds: Flow<Map<String, Int>> = dataStore.data.map { parseCounts(it[ADDED_KINDS]) }
 
+    /** The last few searches on this phone, newest first. */
+    val recentSearches: Flow<List<String>> = dataStore.data.map { p -> p[RECENT_SEARCHES].orEmpty().split("\n").filter { it.isNotBlank() } }
+
+    suspend fun rememberSearch(query: String) {
+        dataStore.edit { p -> p[RECENT_SEARCHES] = rememberSearch(p[RECENT_SEARCHES].orEmpty().split("\n").filter { it.isNotBlank() }, query).joinToString("\n") }
+    }
+
+    suspend fun clearSearches() {
+        dataStore.edit { it.remove(RECENT_SEARCHES) }
+    }
+
+    /** Kinds pinned to the top of the add sheet on this phone, in the order pinned. */
+    val pinnedKinds: Flow<List<String>> = dataStore.data.map { p -> p[PINNED_KINDS].orEmpty().split(",").filter { it.isNotBlank() } }
+
+    suspend fun togglePin(kind: String) {
+        dataStore.edit { p ->
+            val now = p[PINNED_KINDS].orEmpty().split(",").filter { it.isNotBlank() }
+            p[PINNED_KINDS] = (if (kind in now) now - kind else now + kind).joinToString(",")
+        }
+    }
+
     suspend fun countAdded(kind: String) {
         dataStore.edit { p ->
             val now = parseCounts(p[ADDED_KINDS])
@@ -242,6 +263,8 @@ class SettingsRepository @Inject constructor(
         val SMART_SUGGEST = booleanPreferencesKey("smart_suggest")
         val TOGGLED_GROUPS = stringSetPreferencesKey("toggled_groups")
         val ADDED_KINDS = stringPreferencesKey("added_kinds")
+        val PINNED_KINDS = stringPreferencesKey("pinned_kinds")
+        val RECENT_SEARCHES = stringPreferencesKey("recent_searches")
         val DIGEST_ENABLED = booleanPreferencesKey("digest_enabled")
         val REVIEW_SEEN = stringPreferencesKey("review_seen_week")
         val NUDGE_DISMISSED = stringPreferencesKey("nudge_dismissed_day")

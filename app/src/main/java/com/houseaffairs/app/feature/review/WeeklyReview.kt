@@ -66,7 +66,7 @@ import com.houseaffairs.app.core.data.isoWeek
 import com.houseaffairs.app.core.ui.Avatar
 import com.houseaffairs.app.core.ui.HaCard
 import com.houseaffairs.app.core.ui.SectionTitle
-import com.houseaffairs.app.core.util.formatMinor
+import com.houseaffairs.app.core.ui.shownMinor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -564,8 +564,8 @@ private fun WeekNumbers(review: WeekReview) {
         })
         if (w.togetherEvents > 0) add("🎉" to if (w.togetherEvents == 1) "1 outing or family event" else "${w.togetherEvents} outings and family events")
         add("📔" to "Diary written on ${w.diaryDays} of ${w.days} days")
-        review.spentMinor?.let { m -> review.currency?.let { add("💰" to "Home spent ${formatMinor(m, it)} this week") } }
-        w.savedToDreamsMinor.takeIf { it > 0 }?.let { m -> review.currency?.let { add("🐷" to "${formatMinor(m, it)} put into goal gullaks") } }
+        review.spentMinor?.let { m -> review.currency?.let { add("💰" to "Home spent ${shownMinor(m, it)} this week") } }
+        w.savedToDreamsMinor.takeIf { it > 0 }?.let { m -> review.currency?.let { add("🐷" to "${shownMinor(m, it)} put into goal gullaks") } }
         if (review.tracksPantry) add("🥬" to if (w.wasted > 0) "${w.wasted} items expired before use" else "Nothing in the pantry went to waste")
     }
     HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {

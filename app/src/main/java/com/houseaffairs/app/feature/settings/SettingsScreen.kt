@@ -114,6 +114,10 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
     var exportNote by remember { mutableStateOf<String?>(null) }
     var showDeleteAccount by remember { mutableStateOf(false) }
     var deleteNote by remember { mutableStateOf<String?>(null) }
+    var showConnected by remember { mutableStateOf(false) }
+    var showPrivacy by remember { mutableStateOf(false) }
+    if (showConnected) ConnectedAppsSheet(state, viewModel) { showConnected = false }
+    if (showPrivacy) PrivacySheet(state, viewModel) { showPrivacy = false }
     val me = state.members.firstOrNull { it.uid == state.myUid }
     val colors = LocalHouseColors.current
 
@@ -163,45 +167,25 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
             }
         }
 
-        item { SectionHeader("Appearance") }
+        item { SectionHeader("Look & sound") }
         item {
             SettingsGroup {
                 Column(Modifier.padding(16.dp)) { ThemeSelector(state.themeMode, viewModel::setThemeMode) }
             }
         }
-
-        // Connections: everything the family links to, in one place.
-        item { SectionHeader("Connections") }
-        item { ServiceKeysGroup(state, viewModel) }
-        item { SectionHeader("Connections · Smart help (each person)") }
-        item {
-            SettingsGroup {
-                // One switch for both: on by default, since it's free and sends no amounts or lists.
-                ListItem(
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    leadingContent = { IconBlob(Icons.Outlined.AutoAwesome, LocalHouseColors.current.vault, size = 40.dp) },
-                    headlineContent = { Text("Smart help", style = MaterialTheme.typography.titleSmall) },
-                    supportingContent = {
-                        Text("Google Gemini understands unclear lines, picks what to cook and watch, and writes the daily tip. Only that line or those names are sent, never amounts. Free.")
-                    },
-                    trailingContent = {
-                        Switch(checked = state.smartAdd && state.smartSuggest, onCheckedChange = { on -> viewModel.setSmartAdd(on); viewModel.setSmartSuggest(on) })
-                    },
-                )
-            }
-        }
-
-        item { SectionHeader("Connections · Google Calendar (each person)") }
-        item { CalendarGroup(state, viewModel) }
-
-        item { SectionHeader("Connections · Health (each person)") }
-        item { SettingsGroup { com.houseaffairs.app.core.health.HealthConnectRow() } }
-
-        item { SectionHeader("Sounds & vibration") }
+        item { Spacer(Modifier.height(8.dp)) }
         item { FeedbackGroup() }
 
-        item { SectionHeader("Backup · Google Drive") }
-        item { DriveBackupGroup(state.isOwner) }
+        // Everything the app links to, behind one row, so Settings stays short.
+        item { SectionHeader("Connections") }
+        item {
+            SettingsGroup {
+                SettingsRow(
+                    Icons.Outlined.AutoAwesome, colors.vault, "Connected apps",
+                    connectedLine(state),
+                ) { showConnected = true }
+            }
+        }
 
         item { SectionHeader("Notifications") }
         item { NotificationsGroup(state.notifications, viewModel::setNotifications) }
@@ -240,8 +224,12 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
         }
 
         if (state.isOwner) {
-            item { SectionHeader("Private topics") }
-            item { PrivateTopicsGroup(state, viewModel::setPrivateTopic) }
+            item { SectionHeader("Privacy") }
+            item {
+                SettingsGroup {
+                    SettingsRow(Icons.Outlined.PersonRemove, colors.coral.let { Accent(it, it.copy(alpha = 0.14f)) }, "Who sees what", privacyLine(state)) { showPrivacy = true }
+                }
+            }
         }
 
         item { SectionHeader("Account") }
@@ -705,45 +693,6 @@ private fun NotificationsGroup(prefs: SettingsRepository.NotificationPrefs, onCh
 }
 
 /**
- * Topics only some people should see. New entries on them (pads, condoms, doctor bills…) are saved
- * visible only to the people ticked here, plus whoever adds them.
- */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun PrivateTopicsGroup(state: SettingsUiState, onChange: (String, List<String>?) -> Unit) {
-    SettingsGroup {
-        Text(
-            "New entries on these are only seen by the people you pick (and whoever adds them).",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp),
-        )
-        com.houseaffairs.app.core.data.PRIVATE_TOPICS.forEach { topic ->
-            val allowed = state.privateTopics[topic]
-            ListItem(
-                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                headlineContent = { Text(topic, style = MaterialTheme.typography.titleSmall) },
-                supportingContent = { Text(if (allowed == null) "Everyone" else "Private") },
-                trailingContent = { Switch(checked = allowed != null, onCheckedChange = { on -> onChange(topic, if (on) listOf(state.myUid) else null) }) },
-            )
-            if (allowed != null) {
-                FlowRow(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    state.members.forEach { m ->
-                        val on = m.uid in allowed
-                        FilterChip(
-                            selected = on,
-                            onClick = { onChange(topic, if (on) (allowed - m.uid).ifEmpty { listOf(state.myUid) } else allowed + m.uid) },
-                            label = { Text(m.displayName.substringBefore(' ')) },
-                            shape = CircleShape,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-/**
  * Two-way sync with a "HouseAffairs" calendar in the person's Google Calendar. The first switch-on
  * shows Google's consent screen; the app can only touch calendars it created.
  */
@@ -835,6 +784,154 @@ private fun ServiceKeysGroup(state: SettingsUiState, viewModel: SettingsViewMode
                     color = if (it == "Connected" || it == "Checking…") MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
                 )
+            }
+        }
+    }
+}
+
+/** The Connected apps row: what's there, and what's on. */
+private fun connectedLine(state: SettingsUiState): String {
+    val on = listOfNotNull(
+        "Smart help".takeIf { state.smartAdd && state.smartSuggest },
+        "Calendar".takeIf { state.calendar.enabled },
+        "Movies".takeIf { state.integrations.isNotEmpty() },
+    )
+    val rest = listOf("Smart help", "Calendar", "Health", "Drive", "Movies").filter { it !in on }
+    return if (on.isEmpty()) "Smart help, Google Calendar, Health, Drive backups and movie lookups"
+    else "${on.joinToString(" and ")} on · also ${rest.joinToString(", ")}"
+}
+
+/** The Privacy row: who costs are hidden from, and how many categories are private. */
+private fun privacyLine(state: SettingsUiState): String {
+    val names = state.members.filter { it.uid in state.hideCostsFrom }.map { it.displayName.substringBefore(' ') }
+    val parts = listOfNotNull(
+        names.takeIf { it.isNotEmpty() }?.let { "Costs hidden from ${it.joinToString(", ")}" },
+        state.privateTopics.size.takeIf { it > 0 }?.let { "$it private ${if (it == 1) "category" else "categories"}" },
+    )
+    return parts.joinToString(" · ").ifEmpty { "Hide costs, or whole categories, from anyone in the family" }
+}
+
+/** Everything the app links to, each with its own switch: Gemini, Calendar, Health, Drive and movie services. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ConnectedAppsSheet(state: SettingsUiState, viewModel: SettingsViewModel, onDismiss: () -> Unit) {
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss, sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = MaterialTheme.colorScheme.background) {
+        LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 32.dp)) {
+            item {
+                Column(Modifier.padding(horizontal = 20.dp)) {
+                    Text("Connected apps", style = MaterialTheme.typography.headlineSmall)
+                    Text("Each one is optional. The app only sees what it made in your Google account.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            item { SectionHeader("Smart help · each person") }
+            item {
+                SettingsGroup {
+                    // One switch for both: on by default, since it's free and sends no amounts or lists.
+                    ListItem(
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        leadingContent = { IconBlob(Icons.Outlined.AutoAwesome, LocalHouseColors.current.vault, size = 40.dp) },
+                        headlineContent = { Text("Smart help", style = MaterialTheme.typography.titleSmall) },
+                        supportingContent = {
+                            Text("Google Gemini understands unclear lines, picks what to cook and watch, and writes the daily tip. Only that line or those names are sent, never amounts. Free.")
+                        },
+                        trailingContent = {
+                            Switch(checked = state.smartAdd && state.smartSuggest, onCheckedChange = { on -> viewModel.setSmartAdd(on); viewModel.setSmartSuggest(on) })
+                        },
+                    )
+                }
+            }
+            item { SectionHeader("Google Calendar · each person") }
+            item { CalendarGroup(state, viewModel) }
+            item { SectionHeader("Health · each person") }
+            item { SettingsGroup { com.houseaffairs.app.core.health.HealthConnectRow() } }
+            item { SectionHeader("Google Drive · backups") }
+            item { DriveBackupGroup(state.isOwner) }
+            item { SectionHeader("Movies & shows · the family") }
+            item { ServiceKeysGroup(state, viewModel) }
+        }
+    }
+}
+
+/**
+ * Who sees what, set by the owner: the family's costs hidden from some people (trips and dreams
+ * still show, their amounts don't), and categories whose new entries are hidden from some people.
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun PrivacySheet(state: SettingsUiState, viewModel: SettingsViewModel, onDismiss: () -> Unit) {
+    val others = state.members.filter { it.uid != state.myUid }
+    val everyone = state.members.map { it.uid }
+    @Composable
+    fun People(hidden: Collection<String>, onToggle: (String) -> Unit) {
+        if (others.isEmpty()) {
+            Text("Once others join, pick who it's hidden from.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            return
+        }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            others.forEach { m ->
+                FilterChip(
+                    selected = m.uid in hidden,
+                    onClick = { onToggle(m.uid) },
+                    label = { Text(m.displayName.substringBefore(' ')) },
+                    shape = CircleShape,
+                )
+            }
+        }
+    }
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss, sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = MaterialTheme.colorScheme.background) {
+        LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            item {
+                Text("Who sees what", style = MaterialTheme.typography.headlineSmall)
+                Text("Only you can change this.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            item {
+                Text("Hide costs from", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
+                Text(
+                    "They still see trips, dreams and lists, just not what they cost. Money shows only what they spent themselves.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp),
+                )
+                People(state.hideCostsFrom) { uid ->
+                    viewModel.setHideCosts(if (uid in state.hideCostsFrom) state.hideCostsFrom - uid else state.hideCostsFrom + uid)
+                }
+            }
+            item {
+                Text("Private categories", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp))
+                Text(
+                    "New things in these are hidden from the people you pick. Whoever adds one always sees it.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            val private = state.privateTopics.keys.sorted()
+            items(private.size) { i ->
+                val topic = private[i]
+                val allowed = state.privateTopics.getValue(topic)
+                val hidden = others.map { it.uid }.filter { it !in allowed }
+                Column(Modifier.fillMaxWidth().clip(androidx.compose.foundation.shape.RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceContainerLow).padding(start = 14.dp, end = 4.dp, top = 8.dp, bottom = 10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(topic, style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                if (hidden.isEmpty()) "Hidden from nobody yet" else "Hidden from " + state.members.filter { it.uid in hidden }.joinToString(", ") { it.displayName.substringBefore(' ') },
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(onClick = { viewModel.setPrivateTopic(topic, null) }) { Text("Make public") }
+                    }
+                    People(hidden) { uid ->
+                        val now = if (uid in hidden) hidden - uid else hidden + uid
+                        viewModel.setPrivateTopic(topic, if (now.isEmpty()) null else com.houseaffairs.app.core.data.seenByAllBut(everyone, now, state.myUid))
+                    }
+                }
+            }
+            item {
+                Text("Make one private", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
+                Text("Your kitchen and supply categories, the ones you use first.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    state.privateChoices.filter { c -> state.privateTopics.keys.none { it.equals(c, ignoreCase = true) } }.forEach { c ->
+                        // Starts hidden from everyone else; untick the people who may see it.
+                        androidx.compose.material3.SuggestionChip(onClick = { viewModel.setPrivateTopic(c, listOf(state.myUid)) }, label = { Text("+ $c") }, shape = CircleShape)
+                    }
+                }
             }
         }
     }

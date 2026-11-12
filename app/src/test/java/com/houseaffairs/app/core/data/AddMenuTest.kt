@@ -19,18 +19,17 @@ class AddMenuTest {
     }
 
     @Test
-    fun `kinds they can't add never show`() {
-        val kid = listOf("EXPENSE", "TASK")
-        assertEquals(listOf("EXPENSE", "TASK"), usualKinds(mapOf("RECIPE" to 9), kid, defaults))
+    fun `pinned kinds come first and can fill two rows`() {
+        val counts = mapOf("TASK" to 9)
+        assertEquals(listOf("TRIP", "RECIPE", "TASK", "EXPENSE"), usualKinds(counts, allowed, defaults, pinned = listOf("TRIP", "RECIPE")))
+        assertEquals(allowed.take(6), usualKinds(emptyMap(), allowed, defaults, pinned = allowed.take(6)))
+        assertEquals(defaults, usualKinds(emptyMap(), allowed, defaults, pinned = listOf("GOAL")))
     }
 
     @Test
-    fun `the groups repeat nothing and drop empty ones`() {
-        val groups = listOf("Money" to listOf("EXPENSE", "SUBSCRIPTION"), "Kitchen" to listOf("SHOPPING"), "Plans" to listOf("TASK", "TRIP", "GOAL"))
-        assertEquals(
-            listOf("Money" to listOf("SUBSCRIPTION"), "Plans" to listOf("TRIP")),
-            addGroups(groups, allowed, shown = listOf("EXPENSE", "SHOPPING", "TASK")),
-        )
+    fun `kinds they can't add never show`() {
+        val kid = listOf("EXPENSE", "TASK")
+        assertEquals(listOf("EXPENSE", "TASK"), usualKinds(mapOf("RECIPE" to 9), kid, defaults))
     }
 
     @Test

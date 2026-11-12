@@ -96,3 +96,45 @@ fun nextUp(moment: Moment): String = when (moment) {
     Moment.EVENING -> "Later tonight: a quick look back at the day."
     Moment.NIGHT -> "Breakfast ideas will be here in the morning."
 }
+
+/** Rows shown under the deck before "Show all". */
+const val CLEAR_PEEK = 3
+
+/** Said when nothing is left for this person: a different one each day, never a lecture. */
+private val CHEERS = listOf(
+    "Go for a walk. You've earned it.",
+    "A clear list is a calm mind. Enjoy it.",
+    "Call someone you love. There's time today.",
+    "Make a cup of tea and sit down for ten minutes.",
+    "Nothing waiting. That's a good day at home.",
+    "Cook something slow tonight, just because.",
+    "Share one good thing from today with the family.",
+)
+
+fun cheerLine(today: java.time.LocalDate): String = CHEERS[(today.toEpochDay() % CHEERS.size).toInt()]
+
+/** "3 cleared today · 5 to go": the list as something that gets smaller. */
+fun clearedLine(cleared: Int, left: Int): String = when {
+    cleared == 0 -> if (left == 1) "1 to clear" else "$left to clear"
+    else -> "$cleared cleared today · $left to go"
+}
+
+/** Cleared-in-a-day counts worth a cheer: early and often, so a small effort is noticed too. */
+val CLEAR_MILESTONES = listOf(3, 5, 10, 15, 20, 30)
+
+/** The cheer card's id for milestone [n], kept in the same handled set so it shows once. */
+fun milestoneId(n: Int): String = "${MOMENT_PREFIX}CHEER:$n"
+
+/**
+ * The milestone to celebrate now: the highest one [cleared] has reached that hasn't been
+ * cheered yet ([handled] holds the ones already shown). Null when there's nothing new.
+ */
+fun milestoneReached(cleared: Int, handled: Set<String>): Int? =
+    CLEAR_MILESTONES.filter { it <= cleared }.maxOrNull()?.takeIf { milestoneId(it) !in handled }
+
+fun milestoneTitle(n: Int): String = when (n) {
+    3 -> "3 done already!"
+    5 -> "5 cleared. Great going!"
+    10 -> "10 today. You're on fire!"
+    else -> "$n cleared today. Amazing!"
+}

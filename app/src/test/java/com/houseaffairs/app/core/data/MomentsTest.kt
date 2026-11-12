@@ -75,4 +75,23 @@ class MomentsTest {
         assertEquals("All sorted for evening 🎉", momentLine(Moment.EVENING, emptyList()))
         assertEquals("All sorted for tonight 🎉", momentLine(Moment.NIGHT, emptyList()))
     }
+
+    @Test
+    fun `the clear list counts down and the cheer changes daily`() {
+        assertEquals("5 to clear", clearedLine(0, 5))
+        assertEquals("1 to clear", clearedLine(0, 1))
+        assertEquals("3 cleared today · 2 to go", clearedLine(3, 2))
+        val day = java.time.LocalDate.of(2026, 11, 12)
+        assertTrue(cheerLine(day) != cheerLine(day.plusDays(1)))
+    }
+
+    @Test
+    fun `milestones cheer once each, the latest one reached`() {
+        assertEquals(null, milestoneReached(2, emptySet()))
+        assertEquals(3, milestoneReached(3, emptySet()))
+        assertEquals(null, milestoneReached(4, setOf(milestoneId(3))))
+        assertEquals(5, milestoneReached(6, setOf(milestoneId(3))))
+        // Cleared a lot at once: one cheer for the highest, not a queue of them.
+        assertEquals(10, milestoneReached(12, emptySet()))
+    }
 }

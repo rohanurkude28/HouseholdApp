@@ -1,7 +1,10 @@
 package com.houseaffairs.app.feature.add
 
+import com.houseaffairs.app.core.data.line
+import com.houseaffairs.app.feature.home.entryType
+import androidx.compose.material3.Surface
+import androidx.compose.foundation.combinedClickable
 import com.houseaffairs.app.core.data.USUAL_COUNT
-import com.houseaffairs.app.core.data.addGroups
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.speech.RecognizerIntent
@@ -113,6 +116,8 @@ fun AddSheet(
     viewModel: AddViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    // One box to ask, add or find: what's at home is read as the sheet opens.
+    LaunchedEffect(Unit) { viewModel.loadFinds() }
     LaunchedEffect(request) {
         // Shared plain text lands in quick add, read like anything typed.
         (request.preset[QUICK_TEXT] as? String)?.let { viewModel.onTextChange(it) }
@@ -171,7 +176,11 @@ fun AddSheet(
                     onApplyChange = { finish(viewModel.applyChange()) },
                 )
             } else {
-                EntryForm(form, state, viewModel, onSave = { finish(viewModel.save()) }, onDelete = { scope.launch { finish(viewModel.deleteEditing()) } })
+                EntryForm(
+                    form, state, viewModel, onSave = { finish(viewModel.save()) }, onDelete = { scope.launch { finish(viewModel.deleteEditing()) } },
+                    // Several expenses or items in a row: saved with its Undo, and a fresh form of the same kind.
+                    onSaveAnother = { viewModel.save()?.let { saved -> onSaved(saved); viewModel.openForm(form.type) } },
+                )
             }
         }
     }
@@ -204,7 +213,7 @@ private fun Picker(
             .padding(start = 20.dp, end = 20.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("Add anything", style = MaterialTheme.typography.headlineSmall)
+        Text("Ask, add or find", style = MaterialTheme.typography.headlineSmall)
 
         // One box for everything: type, speak, or scan a bill. Its hint cycles through real examples.
         var hint by remember { androidx.compose.runtime.mutableIntStateOf(0) }
@@ -260,6 +269,14 @@ private fun Picker(
             Text("Voice input isn't available on this device.", color = MaterialTheme.colorScheme.error)
         }
 
+        // Things already at home that match what's typed: found first when the line would only
+        // become a new task, otherwise under the suggestion.
+        val finds by viewModel.finds.collectAsStateWithLifecycle()
+        val found = remember(state.text, finds) {
+            if (state.text.trim().length < 2) emptyList() else com.houseaffairs.app.core.data.searchAll(state.text, finds, viewModel::categoryOfWord).flatMap { it.items }.take(5)
+        }
+        val findsFirst = found.isNotEmpty() && (suggestion == null || suggestion.type == EntryType.TASK) && state.answer == null && state.batch == null
+        if (findsFirst) FoundAtHome(found, viewModel)
         val cook = state.cook
         val batch = state.batch
         val change = state.change
@@ -293,8 +310,14 @@ private fun Picker(
             )
         }
 
+        if (found.isNotEmpty() && !findsFirst) FoundAtHome(found, viewModel)
         // While something is typed, the suggestion is the only thing to look at.
-        if (state.text.isBlank()) AddMenu(state, usual = viewModel.usual.collectAsStateWithLifecycle().value, onPick = viewModel::openForm)
+        if (state.text.isBlank()) AddMenu(
+            usual = viewModel.usual.collectAsStateWithLifecycle().value,
+            groups = viewModel.options.collectAsStateWithLifecycle().value,
+            pinned = viewModel.pinned.collectAsStateWithLifecycle().value,
+            onPick = viewModel::pick, onPin = viewModel::togglePin, onExample = viewModel::onTextChange,
+        )
     }
 }
 
@@ -730,75 +753,93 @@ private fun CookCard(
     }
 }
 
-/** What each kind is called in the add menu: what people say, not what the app calls it. */
-private val PLAIN: Map<EntryType, Pair<String, String>> = mapOf(
-    EntryType.EXPENSE to ("💸" to "I spent"),
-    EntryType.SHOPPING to ("🛒" to "Need to buy"),
-    EntryType.TASK to ("✅" to "To do"),
-    EntryType.MEDICINE to ("💊" to "Medicine"),
-    EntryType.SUBSCRIPTION to ("🔁" to "Subscription"),
-    EntryType.CREDIT to ("🎟️" to "Gift card or coupon"),
-    EntryType.TRIP to ("🧳" to "Trip"),
-    EntryType.GROCERY to ("🥫" to "Pantry"),
-    EntryType.HOUSEHOLD to ("🧴" to "Supplies"),
-    EntryType.RECIPE to ("🍳" to "Recipe"),
-    EntryType.EVENT to ("🎂" to "Birthday or event"),
-    EntryType.GOAL to ("🏆" to "Weekly goal"),
-    EntryType.ACTIVITY to ("🚶" to "Activity"),
-    EntryType.WISH to ("⭐" to "Wish or idea"),
-    EntryType.DREAM to ("✨" to "Dream or gullak"),
-    EntryType.PLACE to ("📍" to "Place"),
-    EntryType.KEPT to ("📦" to "Where it's kept"),
-    EntryType.DOCUMENT to ("📄" to "Document"),
-)
-
-/** The big tiles on a new phone, before this person's own habits show. */
-internal val USUAL_DEFAULTS = listOf(EntryType.EXPENSE, EntryType.SHOPPING, EntryType.TASK, EntryType.MEDICINE)
-
-/** Everything else, by area, so a kind is found by what it's about rather than in a wall of icons. */
-private val MENU_GROUPS: List<Pair<String, List<EntryType>>> = listOf(
-    "Money" to listOf(EntryType.EXPENSE, EntryType.SUBSCRIPTION, EntryType.CREDIT, EntryType.TRIP),
-    "Kitchen" to listOf(EntryType.SHOPPING, EntryType.GROCERY, EntryType.RECIPE, EntryType.HOUSEHOLD),
-    "Plans" to listOf(EntryType.TASK, EntryType.EVENT, EntryType.GOAL, EntryType.ACTIVITY),
-    "Home & health" to listOf(EntryType.MEDICINE, EntryType.KEPT, EntryType.DOCUMENT),
-    "Wishes & dreams" to listOf(EntryType.WISH, EntryType.DREAM, EntryType.PLACE),
-)
-
-/**
- * The add menu before anything is typed: four big tiles for what this person adds most, then
- * the rest as small chips under a few plain headings, each kind once.
- */
-@OptIn(ExperimentalLayoutApi::class)
+/** "In your home": up to five things that match what's typed, each opening its own form. */
 @Composable
-private fun AddMenu(state: AddUiState, usual: List<EntryType>, onPick: (EntryType) -> Unit) {
-    val allowed = state.allowedTypes.filter { it.listed && it.available }
-    val tiles = usual.filter { it in allowed }
-    // Equal heights, even when one label takes two lines.
-    Row(Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        tiles.forEach { type ->
-            val (emoji, label) = PLAIN[type] ?: ("➕" to type.label)
-            Column(
-                Modifier.weight(1f).fillMaxHeight().clip(MaterialTheme.shapes.large).background(MaterialTheme.colorScheme.surfaceContainer)
-                    .clickable { onPick(type) }.padding(vertical = 14.dp, horizontal = 4.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(emoji, style = MaterialTheme.typography.headlineSmall)
-                Spacer(Modifier.height(4.dp))
-                Text(label, style = MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center, maxLines = 2)
+private fun FoundAtHome(found: List<com.houseaffairs.app.core.data.Findable>, viewModel: AddViewModel) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("In your home", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.large).background(MaterialTheme.colorScheme.surfaceContainer)) {
+            found.forEach { hit ->
+                val type = hit.entryType()
+                Row(
+                    Modifier.fillMaxWidth().clickable(enabled = type != null) { type?.let { viewModel.openEdit(it, hit.id) } }.padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (hit.photo != null) com.houseaffairs.app.core.photo.PhotoThumb(hit.photo, 32.dp)
+                    else type?.let { Icon(it.icon, contentDescription = null, tint = it.accent(LocalHouseColors.current).color, modifier = Modifier.size(22.dp)) }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(hit.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                        Text(listOf(hit.group, hit.line({ m, c -> com.houseaffairs.app.core.ui.shownMinor(m, c ?: "INR") }, java.time.LocalDate.now())).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    }
+                }
             }
         }
-        repeat(USUAL_COUNT - tiles.size) { Spacer(Modifier.weight(1f)) }
     }
-    val groups = addGroups(MENU_GROUPS.map { (name, kinds) -> name to kinds.map { it.name } }, allowed.map { it.name }, tiles.map { it.name })
-    if (groups.isEmpty()) return
-    Text("Something else", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    groups.forEach { (name, kinds) ->
+}
+
+/** Typed together, these become several entries at once (the parser splits them). */
+private val SEVERAL_EXAMPLES = listOf("200 uber and 500 groceries", "add milk, eggs and bread to shopping list")
+
+/**
+ * The add menu before anything is typed: big tiles for what this person pinned or adds most,
+ * then everything else the app can add, one swipeable row per area, each option once. Holding
+ * any option pins it to the tiles; holding a tile unpins it.
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun AddMenu(
+    usual: List<AddOption>,
+    groups: List<Pair<String, List<AddOption>>>,
+    pinned: Set<String>,
+    onPick: (AddOption) -> Unit,
+    onPin: (AddOption) -> Unit,
+    onExample: (String) -> Unit,
+) {
+    usual.chunked(USUAL_COUNT).forEach { row ->
+        // Equal heights, even when one label takes two lines.
+        Row(Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            row.forEach { option ->
+                Column(
+                    Modifier.weight(1f).fillMaxHeight().clip(MaterialTheme.shapes.large).background(MaterialTheme.colorScheme.surfaceContainer)
+                        .combinedClickable(onClick = { onPick(option) }, onLongClick = { onPin(option) }, onLongClickLabel = if (option.key in pinned) "Unpin" else "Pin to top")
+                        .padding(vertical = 14.dp, horizontal = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(option.emoji, style = MaterialTheme.typography.headlineSmall)
+                    Spacer(Modifier.height(4.dp))
+                    Text(option.label, style = MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center, maxLines = 2)
+                }
+            }
+            repeat(USUAL_COUNT - row.size) { Spacer(Modifier.weight(1f)) }
+        }
+    }
+    Text(
+        if (pinned.isEmpty()) "Hold anything below to pin it up here." else "Hold a tile to unpin it.",
+        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    val shown = usual.map { it.key }.toSet()
+    // One row per area, swiped sideways: everything is there, nothing piles up.
+    (listOf("Several at once" to SEVERAL_EXAMPLES.map { AddOption("EX:$it", "✍️", it, text = it) }) + groups).forEach { (name, all) ->
+        val options = all.filter { it.key !in shown }
+        if (options.isEmpty()) return@forEach
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(name, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                kinds.map { EntryType.valueOf(it) }.forEach { type ->
-                    val (emoji, label) = PLAIN[type] ?: ("➕" to type.label)
-                    SuggestionChip(onClick = { onPick(type) }, label = { Text("$emoji  $label") }, shape = CircleShape)
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                options.forEach { option ->
+                    val example = option.key.startsWith("EX:")
+                    Surface(
+                        shape = CircleShape,
+                        color = Color.Transparent,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.clip(CircleShape).combinedClickable(
+                            onClick = { if (example) onExample(option.text!!) else onPick(option) },
+                            onLongClick = { if (!example) onPin(option) },
+                            onLongClickLabel = "Pin to top",
+                        ),
+                    ) {
+                        Text(if (example) option.label else "${option.emoji}  ${option.label}", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                    }
                 }
             }
         }
@@ -824,7 +865,7 @@ private fun VoiceButton(onClick: () -> Unit, size: androidx.compose.ui.unit.Dp =
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun EntryForm(form: FormState, state: AddUiState, viewModel: AddViewModel, onSave: () -> Unit, onDelete: () -> Unit = {}) {
+private fun EntryForm(form: FormState, state: AddUiState, viewModel: AddViewModel, onSave: () -> Unit, onDelete: () -> Unit = {}, onSaveAnother: () -> Unit = {}) {
     val accent = form.type.accent(LocalHouseColors.current)
     val startVoice = rememberVoiceInput(viewModel::fillByVoice, viewModel::onVoiceUnavailable)
     val visible = form.type.fields.filter { spec ->
@@ -905,8 +946,29 @@ private fun EntryForm(form: FormState, state: AddUiState, viewModel: AddViewMode
                 OutlinedButton(onClick = { viewModel.openEdit(EntryType.RECIPE, id) }, shape = CircleShape) { Text("Open $title") }
             }
         }
+        // A subscription's logged payments: tap one to fix just that one (a backdated price, say).
+        if (form.pastPayments.isNotEmpty()) {
+            Text("Past payments", style = MaterialTheme.typography.titleSmall)
+            Text("Tap one to change just that payment.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Column(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.large).background(MaterialTheme.colorScheme.surfaceContainer)) {
+                form.pastPayments.take(12).forEach { p ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { viewModel.openEdit(EntryType.EXPENSE, p.id) }.padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(p.date.format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy")), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        Text(com.houseaffairs.app.core.util.formatMinor(p.amountMinor, p.currency), style = MaterialTheme.typography.titleSmall)
+                    }
+                }
+            }
+        }
         Button(onClick = onSave, shape = CircleShape, modifier = Modifier.fillMaxWidth().height(56.dp)) {
             Text(if (form.editId != null) "Save changes" else "Save", style = MaterialTheme.typography.titleMedium)
+        }
+        if (form.editId == null) {
+            OutlinedButton(onClick = onSaveAnother, shape = CircleShape, modifier = Modifier.fillMaxWidth()) {
+                Text("Save + add another ${form.type.label.lowercase()}")
+            }
         }
         if (form.editId != null) {
             // Two taps, so a stray one doesn't delete; Undo is offered afterwards too.

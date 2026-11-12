@@ -74,4 +74,22 @@ class LiveWellTest {
         assertEquals(0.5f, sleepScore(5.0), 0.001f)
         assertEquals(0.75f, sleepScore(10.0), 0.001f)
     }
+
+    @Test
+    fun `daily check-ins score each pillar and come before the weekly one`() {
+        val checks = listOf(DayCheck(2, 1, 2, 0), DayCheck(2, 1, 0, 2))
+        val wheel = liveWell(WeekData(days = 2, dayChecks = checks, checkIn = CheckIn(unwind = 0, social = 0, gratitude = 0)))
+        fun habit(name: String) = wheel.habits.first { it.name == name }
+        assertEquals(1f, habit("Moved each day").score!!, 0.001f)
+        assertEquals(0.5f, habit("Ate well").score!!, 0.001f)
+        assertEquals(0.5f, habit("Right tribe").score!!, 0.001f)
+        assertEquals(0.5f, habit("Unwind").score!!, 0.001f)
+        assertEquals("Yes on 2 of 2 days you checked in", habit("Moved each day").detail)
+    }
+
+    @Test
+    fun `no check-ins means no check-in habits`() {
+        val wheel = liveWell(WeekData())
+        assertNull(wheel.habits.firstOrNull { it.name == "Moved each day" })
+    }
 }

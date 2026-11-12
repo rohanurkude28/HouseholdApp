@@ -62,9 +62,49 @@ object Reminders {
         // Doses two days ahead: re-planned every few hours and on every change, so that's plenty.
         val planned = (plannedReminders(data.tasks, data.events, me, LocalDate.now(), minute) +
             com.houseaffairs.app.core.data.doseReminders(data.courses, me, LocalDate.now(), minute) +
-            com.houseaffairs.app.core.data.refillReminders(data.courses, me, LocalDate.now(), minute))
+            com.houseaffairs.app.core.data.refillReminders(data.courses, me, LocalDate.now(), minute) +
+            // Chores the family does by habit ("do laundry"), at the time they usually do them.
+            com.houseaffairs.app.core.data.habitReminders(data.done, data.tasks.map { it.title }, LocalDate.now(), minute, putOff(context)) +
+            // The family's chores: a few due ones, at the time they're usually done; late ones twice.
+            com.houseaffairs.app.core.data.choreNudges(data.tasks, data.done, me, LocalDate.now(), minute) +
+            // The live-to-100 check-in, each evening until it's answered.
+            com.houseaffairs.app.core.data.checkInReminders(LocalDate.now(), minute, checkedIn(context)))
             .sortedWith(compareBy({ it.date.toEpochDay() }, { it.minute }))
         schedule(context, planned)
+    }
+
+    private const val KEY_PUT_OFF = "put_off"
+    private const val KEY_CHECKED_IN = "checked_in"
+
+    fun checkedIn(context: Context): LocalDate? =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_CHECKED_IN, null)?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+
+    /** Today's check-in is in: drop tonight's reminder. */
+    fun markCheckedIn(context: Context, day: LocalDate) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_CHECKED_IN, day.toString()).apply()
+        syncSoon(context)
+    }
+
+    /** Chores moved to a later day from their notification, by chore ("do laundry" → that day). */
+    fun putOff(context: Context): Map<String, LocalDate> =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getStringSet(KEY_PUT_OFF, emptySet()).orEmpty().mapNotNull { entry ->
+            val (chore, day) = entry.split("|").takeIf { it.size == 2 } ?: return@mapNotNull null
+            runCatching { chore to LocalDate.parse(day) }.getOrNull()
+        }.filter { !it.second.isBefore(LocalDate.now()) }.toMap()
+
+    fun putOffTill(context: Context, chore: String, day: LocalDate) {
+        val now = putOff(context) + (chore to day)
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putStringSet(KEY_PUT_OFF, now.map { "${it.key}|${it.value}" }.toSet()).apply()
+    }
+
+    /** "Later today": the same reminder again in a couple of hours, outside the planned set so a re-plan keeps it. */
+    fun snooze(context: Context, key: String, title: String, body: String) {
+        val at = System.currentTimeMillis() + com.houseaffairs.app.core.data.SNOOZE_MINUTES * 60_000L
+        val alarms = context.getSystemService(AlarmManager::class.java)
+        val intent = pending(context, "snooze:" + key.removePrefix("snooze:"), PlannedReminder("snooze:" + key.removePrefix("snooze:"), title, body, LocalDate.now(), 0))
+        if (Build.VERSION.SDK_INT < 31 || alarms.canScheduleExactAlarms()) alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, intent)
+        else alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, intent)
     }
 
     fun schedule(context: Context, planned: List<PlannedReminder>) {
@@ -122,6 +162,16 @@ object Reminders {
             )
             builder.addAction(0, "Taken ✓", action("taken")).addAction(0, "Skip today", action("skip"))
         }
+        // A chore by habit: done now, a bit later today, or tomorrow, without opening the app.
+        if (key.removePrefix("snooze:").let { it.startsWith("habit:") || it.startsWith("chore:") }) {
+            fun action(what: String) = PendingIntent.getBroadcast(
+                context, (key + what).hashCode(),
+                Intent(context, HabitActionReceiver::class.java).setAction("habit:$what:$key")
+                    .putExtra("what", what).putExtra("key", key).putExtra("title", title).putExtra("body", body).putExtra("notification", key.hashCode()),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            builder.addAction(0, "Done ✓", action("done")).addAction(0, "Later today", action("later")).addAction(0, "Tomorrow", action("tomorrow"))
+        }
         // "Call mom": one tap from the notification to the dialer or WhatsApp.
         reachIntent(reach, phone)?.let { reachOut ->
             builder.addAction(0, reach, PendingIntent.getActivity(context, key.hashCode() + 1, reachOut.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_IMMUTABLE))
@@ -176,6 +226,65 @@ class DoseActionReceiver : BroadcastReceiver() {
                 }
             } finally {
                 pending.finish()
+            }
+        }
+    }
+}
+
+/**
+ * The buttons on a chore reminder. "Done ✓" saves it as done (so its rhythm carries on),
+ * "Later today" rings again in a couple of hours, "Tomorrow" moves it to tomorrow.
+ */
+class HabitActionReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        NotificationManagerCompat.from(context).cancel(intent.getIntExtra("notification", 0))
+        val key = intent.getStringExtra("key") ?: return
+        val title = intent.getStringExtra("title").orEmpty()
+        // A family chore ("chore:<task id>:<day>:<slot>"): done ticks that task off (and plans the next),
+        // tomorrow moves it, later rings again.
+        if (key.removePrefix("snooze:").startsWith("chore:")) {
+            val taskId = key.removePrefix("snooze:").split(":").getOrNull(1) ?: return
+            if (intent.getStringExtra("what") == "later") return Reminders.snooze(context, key, title, intent.getStringExtra("body").orEmpty())
+            val pending = goAsync()
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                try {
+                    val deps = EntryPointAccessors.fromApplication(context.applicationContext, DigestEntryPoint::class.java)
+                    val ready = withTimeoutOrNull(10_000) { deps.session().state.first { it is SessionState.Ready || it == SessionState.SignedOut } } as? SessionState.Ready
+                    val data = ready?.let { r -> withTimeoutOrNull(15_000) { deps.home().observe(r.household.id, r.me, r.household.baseCurrency).first { it.loaded } } }
+                    val task = data?.tasks?.firstOrNull { it.id == taskId }
+                    if (ready != null && task != null) {
+                        if (intent.getStringExtra("what") == "done") deps.home().completeTask(ready.household.id, ready.user.uid, task)
+                        else deps.home().moveTask(ready.household.id, task.id, LocalDate.now().plusDays(1), task.dueDate)
+                        Reminders.syncSoon(context)
+                    }
+                } finally {
+                    pending.finish()
+                }
+            }
+            return
+        }
+        // "habit:<chore>:<day>", possibly behind "snooze:".
+        val chore = key.removePrefix("snooze:").split(":").getOrNull(1) ?: return
+        when (intent.getStringExtra("what")) {
+            "later" -> Reminders.snooze(context, key, title, intent.getStringExtra("body").orEmpty())
+            "tomorrow" -> {
+                Reminders.putOffTill(context, chore, LocalDate.now().plusDays(1))
+                Reminders.syncSoon(context)
+            }
+            "done" -> {
+                val pending = goAsync()
+                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                    try {
+                        val deps = EntryPointAccessors.fromApplication(context.applicationContext, DigestEntryPoint::class.java)
+                        val ready = withTimeoutOrNull(10_000) { deps.session().state.first { it is SessionState.Ready || it == SessionState.SignedOut } } as? SessionState.Ready
+                        if (ready != null) {
+                            deps.home().logDone(ready.household.id, ready.user.uid, title.removeSuffix("?"))
+                            Reminders.syncSoon(context)
+                        }
+                    } finally {
+                        pending.finish()
+                    }
+                }
             }
         }
     }

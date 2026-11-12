@@ -61,7 +61,7 @@ import com.houseaffairs.app.core.designsystem.Accent
 import com.houseaffairs.app.core.designsystem.LocalHouseColors
 import com.houseaffairs.app.core.model.AppModule
 import com.houseaffairs.app.core.model.RolePolicy
-import com.houseaffairs.app.core.util.formatMinor
+import com.houseaffairs.app.core.ui.shownMinor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -128,10 +128,14 @@ class UsageViewModel @Inject constructor(session: SessionManager, private val pa
         viewModelScope.launch {
             val w = who.first()
             val from = if (kind == StockKind.MEDICINES) "medicines" else "stock"
-            runCatching {
-                if (share >= 100) pantry.usedUp(w.hid, w.uid, stock, emptyList(), from, thrown = true)
+            // Same choices as from the list: add to the buy list, or put it back.
+            val undo = runCatching {
+                if (share >= 100) pantry.usedUp(w.hid, w.uid, stock, emptyList(), from, thrown = true, addToList = false).let { added -> { pantry.putBack(w.hid, stock, from, added) } }
                 else pantry.wastePart(w.hid, w.uid, stock, emptyList(), share, from)
-            }
+            }.getOrNull() ?: return@launch
+            com.houseaffairs.app.core.ui.FollowUps.show(
+                com.houseaffairs.app.core.data.wasteFollowUp(stock.title, share, onList = false, add = { pantry.addToShopping(w.hid, w.uid, stock.title) }, putBack = undo),
+            )
         }
     }
 
@@ -171,7 +175,7 @@ private fun changeText(m: KitchenMonth): String? {
 /** "🗑️ ₹57 wasted", or "🗑️ 2 went off" when nothing had a cost; null when nothing was wasted. */
 private fun wasteText(count: Int, minor: Long, currency: String): String? = when {
     count == 0 -> null
-    minor > 0 -> "🗑️ ${formatMinor(minor, currency)} wasted"
+    minor > 0 -> "🗑️ ${shownMinor(minor, currency)} wasted"
     else -> "🗑️ ${things(count)} wasted"
 }
 
@@ -190,7 +194,7 @@ fun StockMonthCard(kind: StockKind, onOpen: () -> Unit, modifier: Modifier = Mod
         val spent = m.spentMinor
         if (spent != null) {
             Row(verticalAlignment = Alignment.Bottom) {
-                Text(formatMinor(spent, currency), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                Text(shownMinor(spent, currency), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
                 Text("  on ${kind.category().lowercase()}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(bottom = 3.dp))
             }
             changeText(m)?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -222,8 +226,8 @@ private fun BudgetBar(spent: Long, budget: Long, currency: String, color: Color,
             drawStopIndicator = {},
         )
         Text(
-            if (over) "${formatMinor(spent - budget, currency)} over the ${formatMinor(budget, currency)} $what budget"
-            else "${formatMinor(budget - spent, currency)} left of ${formatMinor(budget, currency)}",
+            if (over) "${shownMinor(spent - budget, currency)} over the ${shownMinor(budget, currency)} $what budget"
+            else "${shownMinor(budget - spent, currency)} left of ${shownMinor(budget, currency)}",
             style = MaterialTheme.typography.labelMedium,
             color = if (over) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 4.dp),
@@ -282,7 +286,7 @@ fun StockYearSheet(kind: StockKind, onDismiss: () -> Unit, viewModel: UsageViewM
             MonthRow(
                 m.month, longMonth(m),
                 listOfNotNull(
-                    m.spentMinor?.takeIf { it > 0 }?.let { formatMinor(it, currency) },
+                    m.spentMinor?.takeIf { it > 0 }?.let { shownMinor(it, currency) },
                     m.bought.sumOf { it.second }.takeIf { it > 0 }?.let { "${things(it)} bought" },
                     m.usedUp.sumOf { it.second }.takeIf { it > 0 }?.let { "$it used up" },
                     wasteText(m.wasted.size, m.wastedMinor, currency),
@@ -318,7 +322,7 @@ fun StockYearSheet(kind: StockKind, onDismiss: () -> Unit, viewModel: UsageViewM
 private fun ColumnScope.YearSummary(y: StockYear, kind: StockKind, currency: String) {
     run {
         Text(if (y.year == LocalDate.now().year) "${y.year} so far" else "${y.year}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        y.spentMinor?.let { Text("${formatMinor(it, currency)} on ${kind.category().lowercase()}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold) }
+        y.spentMinor?.let { Text("${shownMinor(it, currency)} on ${kind.category().lowercase()}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold) }
         Text(
             listOfNotNull(
                 "${things(y.bought)} bought",
@@ -343,7 +347,7 @@ private fun MonthDetail(m: KitchenMonth, kind: StockKind, currency: String, acce
         m.spentMinor?.let { spent ->
             Column {
                 Text(kind.category(), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(formatMinor(spent, currency), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+                Text(shownMinor(spent, currency), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
                 changeText(m)?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 m.budgetMinor?.let { BudgetBar(spent, it, currency, accent.color, kind.category().lowercase(), Modifier.padding(top = 8.dp)) }
             }
@@ -365,7 +369,7 @@ private fun MonthDetail(m: KitchenMonth, kind: StockKind, currency: String, acce
             Text(
                 when {
                     m.wasted.isEmpty() -> "🎉 Nothing went to waste"
-                    m.wastedMinor > 0 -> "🗑️ Went to waste · ${formatMinor(m.wastedMinor, currency)}"
+                    m.wastedMinor > 0 -> "🗑️ Went to waste · ${shownMinor(m.wastedMinor, currency)}"
                     else -> "🗑️ Went to waste · ${things(m.wasted.size)}"
                 },
                 style = MaterialTheme.typography.titleSmall,
@@ -374,7 +378,7 @@ private fun MonthDetail(m: KitchenMonth, kind: StockKind, currency: String, acce
                 Row {
                     Text(w.title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                     Text(
-                        listOfNotNull((if (w.thrown) "thrown " else "off ") + "${w.date.dayOfMonth} ${shortMonth(m)}", w.lostMinor?.let { formatMinor(it, currency) }).joinToString(" · "),
+                        listOfNotNull((if (w.thrown) "thrown " else "off ") + "${w.date.dayOfMonth} ${shortMonth(m)}", w.lostMinor?.let { shownMinor(it, currency) }).joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }

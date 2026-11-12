@@ -8,7 +8,6 @@ data class CategoryReport(
     val category: String,
     val thisMonthMinor: Long,
     val thisYearMinor: Long,
-    val allMinor: Long,
     /** Last 12 calendar months, oldest first, including empty ones. */
     val months: List<Pair<YearMonth, Long>>,
     /** Shop or payee, how many times, how much; biggest first. */
@@ -29,7 +28,6 @@ fun categoryReport(txns: List<Txn>, category: String, today: LocalDate): Categor
         category,
         thisMonthMinor = paid.filter { YearMonth.from(it.date) == now }.sumOf { it.amountMinor },
         thisYearMinor = paid.filter { it.date.year == today.year }.sumOf { it.amountMinor },
-        allMinor = paid.sumOf { it.amountMinor },
         months = months,
         places = places,
         items = paid.sortedByDescending { it.date },

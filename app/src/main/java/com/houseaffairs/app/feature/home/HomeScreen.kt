@@ -44,7 +44,7 @@ import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import com.houseaffairs.app.core.util.HIDDEN_AMOUNT
-import com.houseaffairs.app.core.util.formatCompact
+import com.houseaffairs.app.core.ui.shownCompact
 import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.Event
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
@@ -138,7 +138,7 @@ import com.houseaffairs.app.core.ui.IconBlob
 import com.houseaffairs.app.core.ui.SectionTitle
 import com.houseaffairs.app.core.ui.TickCircle
 import com.houseaffairs.app.core.ui.opensEdit
-import com.houseaffairs.app.core.util.formatMinor
+import com.houseaffairs.app.core.ui.shownMinor
 import com.houseaffairs.app.feature.review.NudgeCard
 import java.time.LocalDate
 import java.time.LocalTime
@@ -221,16 +221,12 @@ private fun HomeContent(
         // Narrowing Home lives in Customise now; shown here only while a narrowing is on, to undo it.
         if (state.filters.size > 2 && state.filter != HomeFilter.ALL) item { FilterRow(state, viewModel::setFilter) }
         // Setting up, notifications and the daily nudge come after the deck, never before.
+        // Setup, the live-well nudge and tidying up share one row you swipe through, instead of
+        // three full-width cards stacked down the page.
+        val tidyOn = state.layout.any { it.visible && it.section == HomeSection.TIDY }
         val extras: androidx.compose.foundation.lazy.LazyListScope.() -> Unit = {
-            setupSteps(state, onQuickAdd, onOpenSettings) { onOpenTab("money") }.takeIf { steps -> steps.any { !it.done } }?.let { steps ->
-                item { SetupCard(steps, Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp)) }
-            }
             item { NotificationsOffCard() }
-            nudge?.let { n ->
-                item {
-                    NudgeCard(n, Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp), onClick = onOpenReview, onDismiss = viewModel::dismissNudge)
-                }
-            }
+            item { WorthALook(state, nudge, tidyOn, viewModel, onQuickAdd, onOpenSettings, onOpenTab, onOpenReview) }
         }
         if (state.layout.none { it.visible && it.section == HomeSection.TODAY }) extras()
         // Sections in the order (and visibility) each person chose, narrowed by the filter.
@@ -248,13 +244,7 @@ private fun HomeContent(
         state.layout.filter { it.visible }.forEach { pref ->
             when (pref.section) {
                 HomeSection.STATS -> Unit // drawn inside the hero
-                HomeSection.TIDY -> item {
-                    val hidden by viewModel.tidyHidden.collectAsStateWithLifecycle()
-                    val nudges = remember(state.data, state.budget) {
-                        homeNudges(state.data, LocalDate.now(), state.canMoney, state.canStock, state.canMedicine, state.canPlans, hasBudget = state.budget != null)
-                    }
-                    if (!hidden && state.data.loaded && nudges.isNotEmpty()) TidyCard(nudges, onDismiss = viewModel::dismissTidy)
-                }
+                HomeSection.TIDY -> Unit // in the "worth a look" row
                 HomeSection.TODAY -> {
                     item { TodaySection(state, rows, moment, cards, handled, streak, viewModel, onQuickAdd, onAddType) }
                     extras()
@@ -424,16 +414,49 @@ private fun TodaySection(
     val inDeck = cards.map { it.id }.toSet()
     val later = rows.filter { it.key() !in inDeck && it.key() !in handled }
     var expanded by remember { mutableStateOf(false) }
-    val pager = androidx.compose.foundation.pager.rememberPagerState { cards.size + 1 }
+    // No to-dos left: the cheer says it, so the deck has no "that's all" card of its own.
+    val cheered = state.data.loaded && cards.none { it.kind == CardKind.THING } && later.isEmpty()
+    val pages = if (cheered) cards.size else cards.size + 1
+    val pager = androidx.compose.foundation.pager.rememberPagerState { pages }
 
     Column(Modifier.padding(top = 18.dp)) {
         Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("${moment.emoji}  ${moment.label.replaceFirstChar { it.uppercase() }}", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            // Today as a ring that fills as things get cleared, like an activity ring.
+            val done = handled.count { !it.startsWith(com.houseaffairs.app.core.data.MOMENT_PREFIX) }
+            val total = done + cards.count { it.kind == CardKind.THING } + later.size
+            if (total > 0) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(end = 10.dp)) {
+                    CircularProgressIndicator(
+                        progress = { done.toFloat() / total },
+                        modifier = Modifier.size(34.dp),
+                        strokeWidth = 4.dp,
+                        color = LocalHouseColors.current.money.color,
+                        trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    )
+                    Text("$done/$total", style = MaterialTheme.typography.labelSmall)
+                }
+            }
             com.houseaffairs.app.core.data.streakLine(streak)?.let {
                 Text(it, style = MaterialTheme.typography.labelMedium, color = LocalHouseColors.current.coral)
             }
         }
         Spacer(Modifier.height(10.dp))
+        // No to-dos left for this person: say so, loudly. Meal, shopping and other ideas aren't
+        // to-dos, so they stay swipeable underneath instead of holding the cheer back.
+        val cleared = handled.count { !it.startsWith(com.houseaffairs.app.core.data.MOMENT_PREFIX) }
+        // Only once Home has loaded, so an empty list while loading never cheers.
+        if (cheered) {
+            CheerCard(moment, cleared, onQuickAdd, compact = cards.isNotEmpty())
+            if (cards.isEmpty()) return@Column
+            Spacer(Modifier.height(14.dp))
+        } else {
+            // Reaching 3, 5, 10… cleared gets a cheer on the way, not only at the very end.
+            com.houseaffairs.app.core.data.milestoneReached(cleared, handled)?.takeIf { state.data.loaded }?.let { n ->
+                MilestoneCard(n, keepGoing = { viewModel.setHandled(com.houseaffairs.app.core.data.milestoneId(n)) })
+                Spacer(Modifier.height(14.dp))
+            }
+        }
         // The next card peeks in from the right, so it's plain there's more to swipe to.
         androidx.compose.foundation.pager.HorizontalPager(
             state = pager,
@@ -450,7 +473,7 @@ private fun TodaySection(
         }
         if (cards.isNotEmpty()) {
             Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.Center) {
-                repeat(cards.size + 1) { i ->
+                repeat(pages) { i ->
                     val on = i == pager.currentPage
                     Box(
                         Modifier.padding(horizontal = 3.dp).size(width = if (on) 18.dp else 6.dp, height = 6.dp).clip(CircleShape)
@@ -459,21 +482,26 @@ private fun TodaySection(
                 }
             }
         }
-        // Everything else that's open stays one tap away, never in the way.
+        // Everything else that's open, always in view, each one a tap from cleared: Home is
+        // mostly what's left to clear, counting down to the cheer.
         if (later.isNotEmpty()) {
-            TextButton(onClick = { expanded = !expanded }, modifier = Modifier.padding(horizontal = 8.dp)) {
-                Text(if (expanded) "Show less" else if (later.size == 1) "1 more can wait" else "${later.size} more can wait")
+            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 22.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Left to clear", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                Text(com.houseaffairs.app.core.data.clearedLine(cleared, later.size), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (expanded) {
-                HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
-                    later.forEachIndexed { i, row ->
-                        if (i > 0) Spacer(Modifier.height(12.dp))
-                        LaterRow(row, state, viewModel, answers, ::did)
+            HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+                val shown = if (expanded) later else later.take(com.houseaffairs.app.core.data.CLEAR_PEEK)
+                shown.forEachIndexed { i, row ->
+                    if (i > 0) Spacer(Modifier.height(12.dp))
+                    LaterRow(row, state, viewModel, answers, ::did)
+                }
+                if (later.size > com.houseaffairs.app.core.data.CLEAR_PEEK) {
+                    TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                        Text(if (expanded) "Show less" else "Show all ${later.size}")
                     }
-                    if (state.canPlans && state.data.tasks.isNotEmpty()) {
-                        TextButton(onClick = { nav.open("plans/TASKS") }, contentPadding = PaddingValues(horizontal = 0.dp)) {
-                            Text("All tasks (${state.data.tasks.size})")
-                        }
+                } else if (state.canPlans && state.data.tasks.isNotEmpty()) {
+                    TextButton(onClick = { nav.open("plans/TASKS") }, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                        Text("All tasks (${state.data.tasks.size})")
                     }
                 }
             }
@@ -592,6 +620,68 @@ private fun DeckCard(
     }
 }
 
+/** A milestone on the way (3, 5, 10… cleared today): noticed, cheered, then out of the way. */
+@Composable
+private fun MilestoneCard(n: Int, keepGoing: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(28.dp),
+        color = LocalHouseColors.current.money.container,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+    ) {
+        Row(Modifier.padding(start = 20.dp, end = 12.dp, top = 16.dp, bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("🎉", style = MaterialTheme.typography.displaySmall)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(com.houseaffairs.app.core.data.milestoneTitle(n), style = MaterialTheme.typography.titleLarge)
+                Text(com.houseaffairs.app.core.data.cheerLine(LocalDate.now()), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            TextButton(onClick = keepGoing) { Text("Keep going") }
+        }
+    }
+}
+
+/** Nothing left for this person today: a cheer, a different nudge each day, and how much got cleared. */
+@Composable
+private fun CheerCard(moment: Moment, cleared: Int, onQuickAdd: () -> Unit, compact: Boolean = false) {
+    val colors = LocalHouseColors.current
+    // With ideas still to swipe underneath, the cheer is one short row, not a page.
+    if (compact) {
+        Surface(shape = RoundedCornerShape(24.dp), color = colors.money.container, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("🎉", style = MaterialTheme.typography.headlineMedium)
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text("Hurray, nothing for you!", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        (if (cleared > 0) "You cleared $cleared today. " else "") + com.houseaffairs.app.core.data.cheerLine(LocalDate.now()),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        return
+    }
+    Surface(
+        shape = RoundedCornerShape(28.dp),
+        color = colors.money.container,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+    ) {
+        Column(Modifier.padding(24.dp)) {
+            Text("🎉", style = MaterialTheme.typography.displayMedium)
+            Spacer(Modifier.height(8.dp))
+            Text("Hurray, nothing for you!", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                (if (cleared > 0) "You cleared $cleared today. " else "") + com.houseaffairs.app.core.data.cheerLine(LocalDate.now()),
+                style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(nextUp(moment), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            TextButton(onClick = onQuickAdd, contentPadding = PaddingValues(horizontal = 0.dp)) { Text("Add something") }
+        }
+    }
+}
+
 /** The last card: this part of the day is done, and here's what the next one brings. */
 @Composable
 private fun EndCard(moment: Moment, answered: Boolean, onQuickAdd: () -> Unit) {
@@ -648,7 +738,8 @@ private fun LaterRow(
                 } else if (item.habit != null) {
                     TextButton(onClick = { viewModel.addHabitTask(item.habit!!, did(id)) }) { Text("+ Task") }
                 } else {
-                    Text(item.priority.label, style = MaterialTheme.typography.labelMedium, color = priorityColor(item.priority))
+                    // Just something to know: saying so clears it.
+                    TextButton(onClick = { viewModel.setHandled(id) }) { Text("Got it") }
                 }
             }
         }
@@ -831,7 +922,7 @@ private fun StatsStrip(state: HomeUiState, onOpenTab: (String) -> Unit, onToggle
     val stats = heroPeek(
         state.data, LocalDate.now(), state.canMoney, state.canStock, state.canMedicine,
         budgetLeftMinor = state.budget?.leftMinor, hideAmounts = state.hideAmounts,
-    ) { formatCompact(it, state.budget?.currency ?: state.baseCurrency) }.map { p ->
+    ) { shownCompact(it, state.budget?.currency ?: state.baseCurrency) }.map { p ->
         val icon = when (p.kind) {
             PeekKind.BUDGET -> Icons.Outlined.AccountBalanceWallet
             PeekKind.SPENT -> Icons.Outlined.Receipt
@@ -891,7 +982,7 @@ fun greetingFor(time: LocalTime): String = when (time.hour) {
 private fun summaryLine(state: HomeUiState): String {
     val data = state.data
     val parts = buildList {
-        if (state.canMoney && data.monthSpentMinor > 0 && !state.hideAmounts) add("${formatMinor(data.monthSpentMinor, state.baseCurrency)} spent this month")
+        if (state.canMoney && data.monthSpentMinor > 0 && !state.hideAmounts) add("${shownMinor(data.monthSpentMinor, state.baseCurrency)} spent this month")
         if (state.canStock && data.shopping.isNotEmpty()) add("${data.shopping.size} to buy")
         val dueToday = data.tasks.count { task -> task.dueDate?.let { !it.isAfter(LocalDate.now()) } == true }
         if (dueToday > 0) {
@@ -925,7 +1016,7 @@ private fun AskBar(onClick: () -> Unit, modifier: Modifier = Modifier) {
             }
             Spacer(Modifier.width(12.dp))
             Text(
-                "Add anything… “450 groceries”",
+                "Ask, add or find anything…",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -957,7 +1048,7 @@ private fun GlanceRow(state: HomeUiState, onOpenSettings: () -> Unit) {
     ) {
         if (state.canMoney && state.shows(Area.MONEY)) {
             item {
-                GlanceCard(Icons.Outlined.AccountBalanceWallet, colors.money, "This month", formatMinor(data.monthSpentMinor, state.baseCurrency), onClick = { nav.open("money") }) {
+                GlanceCard(Icons.Outlined.AccountBalanceWallet, colors.money, "This month", shownMinor(data.monthSpentMinor, state.baseCurrency), onClick = { nav.open("money") }) {
                     CategoryBar(data.spentByCategory)
                     Spacer(Modifier.height(6.dp))
                     Caption(data.spentByCategory.firstOrNull()?.let { "Most on ${it.first}" } ?: "No spending yet")
@@ -1264,40 +1355,96 @@ private fun ComingUpSection(state: HomeUiState) {
     val upcoming = comingUp(state)
     if (upcoming.isEmpty() && !state.canPlans) return
     SectionTitle("Coming up")
-    HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp).animateContentSize()) {
-        if (upcoming.isEmpty()) {
+    if (upcoming.isEmpty()) {
+        HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
             EmptyHint("Nothing in the next 30 days", "Add birthdays and renewals: “Riya birthday 12 Dec”", onClick = null)
-        } else {
-            upcoming.forEachIndexed { i, row ->
-                if (i > 0) TimelineDivider()
-                val days = java.time.temporal.ChronoUnit.DAYS.between(LocalDate.now(), row.date)
-                TimelineRow(
-                    date = row.date,
-                    accent = areaAccent(row.area),
-                    title = row.title,
-                    detail = row.detail,
-                    urgent = false,
-                    onClick = { nav.edit(if (row.area == Area.MONEY) EntryType.SUBSCRIPTION else EntryType.EVENT, row.id) },
-                ) {
-                    Text(
-                        when (days) {
-                            0L -> "Today"
-                            1L -> "Tomorrow"
-                            else -> "in ${days}d"
-                        },
-                        style = MaterialTheme.typography.labelLarge,
-                        color = areaAccent(row.area).color,
-                    )
+        }
+        return
+    }
+    // A strip of small date cards, like a calendar widget: the next month at a glance, swiped, not scrolled.
+    LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        items(upcoming.size) { i ->
+            val row = upcoming[i]
+            val accent = areaAccent(row.area)
+            val days = java.time.temporal.ChronoUnit.DAYS.between(LocalDate.now(), row.date)
+            Column(
+                Modifier.width(148.dp).height(150.dp).clip(RoundedCornerShape(22.dp)).background(MaterialTheme.colorScheme.surfaceContainerLow)
+                    .clickable { nav.edit(if (row.area == Area.MONEY) EntryType.SUBSCRIPTION else EntryType.EVENT, row.id) }
+                    .padding(14.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    DateTile(row.date, accent, urgent = false)
+                    Spacer(Modifier.weight(1f))
+                    Text(when (days) { 0L -> "Today"; 1L -> "Tmrw"; else -> "${days}d" }, style = MaterialTheme.typography.labelLarge, color = accent.color)
                 }
-                // Its own tap target: the row edits the event, this opens its gift ideas.
+                Spacer(Modifier.height(10.dp))
+                Text(row.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.weight(1f))
+                // Its own tap target: the card edits the event, this opens its gift ideas.
                 if (row.gifts > 0) {
                     Text(
-                        "🎁 ${row.gifts} gift idea${if (row.gifts > 1) "s" else ""} ›",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = areaAccent(row.area).color,
-                        modifier = Modifier.padding(start = 62.dp, top = 2.dp).clip(CircleShape).clickable { nav.open("plans/GIFTS") }.padding(horizontal = 6.dp, vertical = 4.dp),
+                        "🎁 ${row.gifts} idea${if (row.gifts > 1) "s" else ""} ›",
+                        style = MaterialTheme.typography.labelMedium, color = accent.color,
+                        modifier = Modifier.clip(CircleShape).clickable { nav.open("plans/GIFTS") }.padding(vertical = 2.dp),
                     )
+                } else {
+                    Text(row.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
+            }
+        }
+    }
+}
+
+private val WORTH_A_LOOK_HEIGHT = 150.dp
+
+/**
+ * Setting up, the day's live-well nudge and tidying up, as one row of cards to swipe through:
+ * all still there, none pushing Today down the page. Shows nothing when there's nothing.
+ */
+@Composable
+private fun WorthALook(
+    state: HomeUiState,
+    nudge: com.houseaffairs.app.core.data.Nudge?,
+    tidyOn: Boolean,
+    viewModel: HomeViewModel,
+    onQuickAdd: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenTab: (String) -> Unit,
+    onOpenReview: () -> Unit,
+) {
+    val tidyHidden by viewModel.tidyHidden.collectAsStateWithLifecycle()
+    val tidy = remember(state.data, state.budget) {
+        homeNudges(state.data, LocalDate.now(), state.canMoney, state.canStock, state.canMedicine, state.canPlans, hasBudget = state.budget != null)
+    }
+    val steps = setupSteps(state, onQuickAdd, onOpenSettings) { onOpenTab("money") }.takeIf { s -> s.any { !it.done } }
+    // Every card fills the row's height, so short ones don't leave a gap under them.
+    val fill = Modifier.fillMaxHeight()
+    val pages = buildList<@Composable () -> Unit> {
+        steps?.let { add { SetupCard(it, fill) } }
+        nudge?.let { n -> add { NudgeCard(n, fill, onClick = onOpenReview, onDismiss = viewModel::dismissNudge) } }
+        if (tidyOn && !tidyHidden && state.data.loaded && tidy.isNotEmpty()) add { TidyCard(tidy, onDismiss = viewModel::dismissTidy, modifier = fill) }
+    }
+    if (pages.isEmpty()) return
+    if (pages.size == 1) {
+        Box(Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp)) { pages.single()() }
+        return
+    }
+    val pager = androidx.compose.foundation.pager.rememberPagerState { pages.size }
+    Column(Modifier.padding(top = 16.dp)) {
+        androidx.compose.foundation.pager.HorizontalPager(
+            state = pager,
+            contentPadding = PaddingValues(start = 20.dp, end = 44.dp),
+            pageSpacing = 10.dp,
+            verticalAlignment = Alignment.Top,
+            modifier = Modifier.height(WORTH_A_LOOK_HEIGHT),
+        ) { page -> pages[page]() }
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.Center) {
+            repeat(pages.size) { i ->
+                val on = i == pager.currentPage
+                Box(
+                    Modifier.padding(horizontal = 3.dp).size(width = if (on) 14.dp else 6.dp, height = 6.dp).clip(CircleShape)
+                        .background(if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
+                )
             }
         }
     }
@@ -1479,10 +1626,10 @@ private fun WatchRow(watch: List<WatchItem>, why: Map<String, String>, onWatched
 
 /** A few gentle pushes: tidy what's gone stale, add what's missing. "Not today" puts it away till tomorrow. */
 @Composable
-private fun TidyCard(nudges: List<HomeNudge>, onDismiss: () -> Unit) {
+private fun TidyCard(nudges: List<HomeNudge>, onDismiss: () -> Unit, modifier: Modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
     val nav = LocalHomeNav.current
     Column(
-        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).clip(RoundedCornerShape(24.dp))
+        modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp))
             .background(MaterialTheme.colorScheme.surfaceContainerLow).padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 4.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {

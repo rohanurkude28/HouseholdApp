@@ -69,6 +69,19 @@ fun buyAgainFollowUp(title: String, thrown: Boolean, add: () -> Unit) = FollowUp
     groups = listOf(FollowUpGroup("Add it to the buy list?", listOf(FollowUpChoice("Add to buy list", add), FollowUpChoice("No") {}))),
 )
 
+/**
+ * After throwing away part (or all) of something: counted as waste, then one tap to put it on
+ * the buy list (unless it's already there) and one to put it back if it was a mistake.
+ */
+fun wasteFollowUp(title: String, share: Int, onList: Boolean, add: () -> Unit, putBack: () -> Unit) = FollowUp(
+    title = "$title · " + if (share >= 100) "thrown away" else "$share% thrown away",
+    note = "Counted as waste this month." + if (onList) " It's already on the buy list." else "",
+    groups = listOfNotNull(
+        if (onList) null else FollowUpGroup("Add it to the buy list?", listOf(FollowUpChoice("Add to buy list", add), FollowUpChoice("No") {})),
+        FollowUpGroup("Changed your mind?", listOf(FollowUpChoice("Put it back", putBack))),
+    ),
+)
+
 /** After "threw it away": counted as waste and put on the shopping list; one tap takes it off. */
 fun thrownFollowUp(title: String, dontBuy: () -> Unit) = FollowUp(
     title = "$title · thrown away",

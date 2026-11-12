@@ -311,6 +311,8 @@ class QuickAddParserTest {
         assertEquals(QuickAddDraft.Ask(q, "Fever"), parser.parse("I'm feeling feverish"))
         assertEquals(QuickAddDraft.Ask(q, "Loose motions", "Riya"), parser.parse("Riya has loose motions"))
         assertEquals(QuickAddDraft.Ask(q, "Burns"), parser.parse("burnt my hand"))
+        // Several at once: each gets its own care, and "and" doesn't split it into two entries.
+        assertEquals(QuickAddDraft.Ask(q, "Fever|Cold & cough"), parser.parse("I have fever and cold"))
         // A medicine entry is still a medicine entry.
         assertEquals(QuickAddDraft.Medicine("Crocin", "Riya", localDate(2027, 3, 31)), parser.parse("bought crocin for riya expires march 2027"))
     }
@@ -677,5 +679,38 @@ class QuickAddParserTest {
         assertTrue(at10.parse("call Riya and Aman") is QuickAddDraft.Task)
         // A reminder's own "and" stays one reminder.
         assertTrue(at10.parse("remind me to call mom and pay rent") is QuickAddDraft.Task)
+    }
+
+    @Test
+    fun everydayLinesFromTheReview() {
+        // Money: the day said, a clean shop name, a pharmacy bill, money in and lent.
+        assertEquals(localDate(2026, 11, 1), (parser.parse("zomato 640 last night") as QuickAddDraft.Expense).date)
+        assertEquals("zomato", (parser.parse("zomato 640 last night") as QuickAddDraft.Expense).merchant)
+        assertEquals("amazon", (parser.parse("amazon order 1299 headphones") as QuickAddDraft.Expense).merchant)
+        assertEquals("Health", (parser.parse("medicine 340 apollo") as QuickAddDraft.Expense).category)
+        assertEquals(QuickAddDraft.Question.INCOME, (parser.parse("got salary 85000") as QuickAddDraft.Ask).question)
+        assertEquals("Get 5000 back from Ravi", (parser.parse("lent 5000 to ravi") as QuickAddDraft.Task).title)
+        // Times and days.
+        assertEquals("4:30 pm", (parser.parse("pick up kids at 4:30") as QuickAddDraft.Task).time)
+        assertEquals(localDate(2026, 11, 7), (parser.parse("clean fridge this weekend") as QuickAddDraft.Task).due)
+        // Trips and goals aren't money.
+        assertEquals(QuickAddDraft.Trip("Goa", localDate(2026, 12, 20)), parser.parse("trip to goa from 20 dec"))
+        assertEquals(QuickAddDraft.Goal("Run 5k"), parser.parse("goal: run 5k this week"))
+        // Questions answered, not saved.
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.HAVE, "Eggs"), parser.parse("do we have eggs?"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.WHEN, "Riya's birthday"), parser.parse("when is riya's birthday"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.AGENDA, "this week"), parser.parse("what's due this week"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.TO_BUY, null), parser.parse("anything to buy?"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.COOK, null), parser.parse("what's for dinner"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.SPENT, "Groceries", period = "last month"), parser.parse("how much for groceries last month"))
+        // Places, lists and where things are.
+        assertEquals(QuickAddDraft.Kept("Spare keys", "Drawer"), parser.parse("spare keys in drawer"))
+        assertEquals(QuickAddDraft.Place("Vidyarthi Bhavan", "Restaurant", "Dosa"), parser.parse("good dosa at vidyarthi bhavan"))
+        assertEquals(QuickAddDraft.ListItem(ListTemplate.WATCH, "Dune 2"), parser.parse("watch dune 2"))
+        assertEquals(QuickAddDraft.ListItem(ListTemplate.GIFTS, "Smart watch", "Riya"), parser.parse("gift idea for riya: smart watch"))
+        // Symptoms said plainly, but a gas cylinder is not acidity.
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.SYMPTOM, "Headache"), parser.parse("headache since morning"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.SYMPTOM, "Cuts & wounds"), parser.parse("kid fell and cut knee"))
+        assertEquals(false, parser.parse("gas cylinder booking") is QuickAddDraft.Ask)
     }
 }

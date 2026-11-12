@@ -199,6 +199,11 @@ class WeeklyRepository @Inject constructor(
             togetherEvents = tripDocs.size + eventDocs.size,
             savedToDreamsMinor = saved, wasted = wasted, checkIn = check,
             days = dates.size, diaryDays = diary.count { it.note != null }, learned = learned,
+            dayChecks = notes.values.mapNotNull { d ->
+                val well = d?.get("well") as? Map<*, *> ?: return@mapNotNull null
+                fun of(p: Pillar) = (well[p.name] as? Number)?.toInt() ?: 0
+                DayCheck(of(Pillar.MOVE), of(Pillar.EAT), of(Pillar.CONNECT), of(Pillar.OUTLOOK))
+            },
         ).let { d ->
             // Steps, sleep and workouts from Health Connect, when this person connected it on this phone.
             health.read(dates.first(), dates.last())?.let { h -> d.copy(steps = h.steps, sleepHours = h.sleepHoursPerNight, exerciseMinutes = h.exerciseMinutes) } ?: d
@@ -280,9 +285,9 @@ class WeeklyRepository @Inject constructor(
             runCatching { col(householdId, "diary").document("${uid}_$day").get().await() }.getOrNull()?.exists() == true
         }.toSet()
 
-    fun saveDiary(householdId: String, uid: String, day: LocalDate, note: String, mood: String?) {
+    fun saveDiary(householdId: String, uid: String, day: LocalDate, note: String, mood: String?, check: DayCheck? = null) {
         val ref = col(householdId, "diary").document("${uid}_$day")
-        if (note.isBlank() && mood == null) {
+        if (note.isBlank() && mood == null && check == null) {
             ref.delete()
             return
         }
@@ -290,7 +295,9 @@ class WeeklyRepository @Inject constructor(
             mapOf(
                 "note" to note.trim(), "mood" to mood, "date" to day.toString(),
                 "createdBy" to uid, "visibleTo" to listOf(uid), "createdAt" to FieldValue.serverTimestamp(),
-            ),
+            ) + (check?.let { "well" to Pillar.entries.associate { p -> p.name to it.of(p) } }?.let { mapOf(it) } ?: emptyMap()),
+            // Merged, so answering the check-in later keeps a line written earlier.
+            com.google.firebase.firestore.SetOptions.merge(),
         )
     }
 

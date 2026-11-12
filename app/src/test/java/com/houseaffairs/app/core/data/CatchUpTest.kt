@@ -18,4 +18,13 @@ class CatchUpTest {
         assertEquals(today, missedDays(today, nowHour = 21, written = emptySet(), skipped = emptySet()).first())
         assertEquals(emptyList<LocalDate>(), missedDays(today, 9, emptySet(), skipped = (1L..3L).map { today.minusDays(it) }.toSet()))
     }
+
+    @Test
+    fun `the check-in reminder rings each evening until it's answered`() {
+        val keys = { now: Int, done: LocalDate? -> checkInReminders(today, now, done).map { it.date } }
+        assertEquals(listOf(today, today.plusDays(1)), keys(9 * 60, null))
+        assertEquals(listOf(today.plusDays(1)), keys(9 * 60, today))
+        assertEquals(listOf(today.plusDays(1)), keys(21 * 60, null))
+        assertEquals(CHECK_IN_MINUTE, checkInReminders(today, 0, null).first().minute)
+    }
 }

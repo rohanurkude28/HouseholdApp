@@ -42,7 +42,7 @@ internal fun CategorySheet(report: CategoryReport, money: (Long) -> String, onOp
             item { Text(report.category, style = MaterialTheme.typography.headlineSmall) }
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                    listOf("This month" to report.thisMonthMinor, "This year" to report.thisYearMinor, "All time" to report.allMinor).forEach { (l, v) ->
+                    listOf("This month" to report.thisMonthMinor, "This year" to report.thisYearMinor).forEach { (l, v) ->
                         Column {
                             Text(money(v), style = MaterialTheme.typography.titleMedium)
                             Text(l, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

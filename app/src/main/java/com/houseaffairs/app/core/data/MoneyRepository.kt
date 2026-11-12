@@ -215,7 +215,10 @@ class MoneyRepository @Inject constructor(
                         // The planned stops; a new trip's "Places, in order" line is day one until it's edited.
                         stops = (d.get("stops") as? List<*>)?.mapNotNull { raw ->
                             val m = raw as? Map<*, *> ?: return@mapNotNull null
-                            Stop((m["day"] as? Number)?.toInt() ?: 1, m["title"] as? String ?: return@mapNotNull null, m["time"] as? String)
+                            Stop(
+                                (m["day"] as? Number)?.toInt() ?: 1, m["title"] as? String ?: return@mapNotNull null, m["time"] as? String,
+                                about = m["about"] as? String, photo = m["photo"] as? String, note = m["note"] as? String,
+                            )
                         } ?: stopsFrom(d.getString("places")),
                     )
                 }
@@ -241,7 +244,7 @@ class MoneyRepository @Inject constructor(
     fun setStops(householdId: String, tripId: String, stops: List<Stop>) {
         household(householdId).collection("trips").document(tripId).update(
             mapOf(
-                "stops" to stops.map { mapOf("day" to it.day, "title" to it.title, "time" to it.time) },
+                "stops" to stops.map { mapOf("day" to it.day, "title" to it.title, "time" to it.time, "about" to it.about, "photo" to it.photo, "note" to it.note) },
                 "places" to com.google.firebase.firestore.FieldValue.delete(),
             ),
         )
@@ -407,6 +410,33 @@ class MoneyRepository @Inject constructor(
         budgetDoc(householdId).update("paidBills", if (paid) FieldValue.arrayUnion(key) else FieldValue.arrayRemove(key))
     }
 
+    /** A subscription's logged payments, newest first: (expense id, date, amount, currency). */
+    suspend fun pastRenewals(householdId: String, uid: String, subscriptionId: String): List<PastPayment> =
+        runCatching { visible(householdId, "transactions", uid).get().await().documents }.getOrDefault(emptyList())
+            .filter { it.getString("fromSubscription") == subscriptionId }
+            .mapNotNull { d -> d.localDate("date")?.let { PastPayment(d.id, it, d.getLong("amountMinor") ?: 0, d.getString("currency") ?: "") } }
+            .sortedByDescending { it.date }
+
+    /**
+     * A subscription's price changed in its form. [choice] says which renewals it's for: from the
+     * next one, from [date], or every one (a mistake fixed, which also corrects logged payments).
+     * Earlier renewals otherwise keep what they cost, through the price history.
+     */
+    suspend fun changeSubscriptionPrice(householdId: String, uid: String, id: String, oldMinor: Long, newMinor: Long, choice: PriceFrom, date: LocalDate?) {
+        val ref = household(householdId).collection("recurring").document(id)
+        val doc = runCatching { ref.get().await() }.getOrNull() ?: return
+        val from = when (choice) {
+            PriceFrom.ALWAYS -> null
+            PriceFrom.DATE -> date ?: LocalDate.now()
+            PriceFrom.NEXT -> doc.localDate("nextDate")?.let { nextRenewal(it, doc.getString("frequency"), doc.localDate("lastLogged"), LocalDate.now()) } ?: LocalDate.now()
+        }
+        val history = changePrice(decodePrices(doc.get("priceHistory")), oldMinor, newMinor, from)
+        ref.update("priceHistory", if (history.isEmpty()) FieldValue.delete() else encodePrices(history))
+        if (choice == PriceFrom.ALWAYS) {
+            pastRenewals(householdId, uid, id).forEach { household(householdId).collection("transactions").document(it.id).update("amountMinor", newMinor) }
+        }
+    }
+
     /**
      * Logs a subscription's renewal on [date] as an expense and remembers it, so it isn't counted
      * twice. [exclusive] (automatic logging, maybe on several phones) uses a transaction and does
@@ -420,7 +450,8 @@ class MoneyRepository @Inject constructor(
             "type" to "EXPENSE",
             "title" to (doc.getString("title") ?: "Subscription"),
             "merchant" to (doc.getString("title") ?: "Subscription"),
-            "amountMinor" to (doc.getLong("amountMinor") ?: 0L),
+            // What that renewal cost: a price changed from a later date doesn't touch earlier ones.
+            "amountMinor" to priceOn(date, doc.getLong("amountMinor") ?: 0L, decodePrices(doc.get("priceHistory"))),
             "currency" to doc.getString("currency"),
             "category" to (doc.getString("category") ?: "Bills"),
             "paymentMethod" to doc.getString("paymentMethod"),
@@ -520,7 +551,7 @@ class MoneyRepository @Inject constructor(
                         val next = doc.localDate("nextDate") ?: return@mapNotNull null
                         // Once logged, a renewal is spending; until then it's still due (even if the day has passed).
                         val owed = nextRenewal(next, doc.getString("frequency"), doc.localDate("lastLogged"), today)
-                        DuePayment(doc.id, doc.getString("title") ?: "Payment", owed, doc.getLong("amountMinor") ?: 0)
+                        DuePayment(doc.id, doc.getString("title") ?: "Payment", owed, priceOn(owed, doc.getLong("amountMinor") ?: 0, decodePrices(doc.get("priceHistory"))))
                     }
             }
             .catch { emit(emptyList()) }

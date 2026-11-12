@@ -20,7 +20,6 @@ class CategoryReportTest {
         )
         assertEquals(1_500L, r.thisMonthMinor)
         assertEquals(2_300L, r.thisYearMinor)
-        assertEquals(3_200L, r.allMinor)
         assertEquals(Triple("DMart", 3, 2_900L), r.places.first())
         assertEquals(YearMonth.of(2026, 11) to 1_500L, r.months.last())
         assertEquals(12, r.months.size)

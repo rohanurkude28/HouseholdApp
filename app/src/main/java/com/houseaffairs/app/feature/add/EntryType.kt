@@ -58,6 +58,12 @@ val CREDIT_KINDS = listOf("Gift card", "Card points", "Coupon", "Cashback", "Vou
 private fun template(values: FormValues) = ListTemplate.of(values["template"] as? String)
 
 /** Everything that can be added. Each kind is a collection plus the fields its form shows. */
+/** Set while editing a subscription whose amount differs from what was saved; never stored. */
+const val PRICE_CHANGED = "_priceChanged"
+
+/** Form-only keys that steer saving and are never written to the entry. */
+val FORM_ONLY_KEYS = setOf(PRICE_CHANGED, "priceFrom", "priceFromDate")
+
 enum class EntryType(
     val label: String,
     val formTitle: String,
@@ -67,7 +73,7 @@ enum class EntryType(
     val collection: String,
     /** The field saved as the entry's `title`; Home lists show it. */
     val titleKey: String?,
-    val fields: List<FieldSpec>,
+    baseFields: List<FieldSpec>,
     val available: Boolean = true,
     /** Shown in the add menu. Investments stay hidden: this is a household app, not a portfolio. */
     val listed: Boolean = true,
@@ -102,6 +108,9 @@ enum class EntryType(
         listOf(
             TextSpec("title", "Name", "Netflix, rent, gym…", required = true),
             MoneySpec(),
+            // Asked only when an existing subscription's amount is changed: which payments it's for.
+            ChoiceSpec("priceFrom", "New price applies", com.houseaffairs.app.core.data.PriceFrom.entries.map { it.label }, visibleWhen = { it[PRICE_CHANGED] == true }),
+            DateSpec("priceFromDate", "Starting", visibleWhen = { it[PRICE_CHANGED] == true && it["priceFrom"] == com.houseaffairs.app.core.data.PriceFrom.DATE.label }),
             ChoiceSpec("frequency", "How often", FREQUENCIES, required = true),
             DateSpec("nextDate", "Next payment", required = true),
             ChoiceSpec("paymentMethod", "Paid with", PAYMENT_METHODS, dynamicOptions = "cards", replacedByDynamic = "Card", required = true),
@@ -189,7 +198,7 @@ enum class EntryType(
             // "Call mom" / "message Ravi": the task row opens the dialer, WhatsApp or SMS with this number.
             ChoiceSpec("reach", "Reach them by", listOf("Call", "WhatsApp", "SMS"), visibleWhen = { it["reach"] != null || com.houseaffairs.app.feature.quickadd.reachOf(it["title"] as? String ?: "") != null }),
             TextSpec("phone", "Their number", "Pick a contact or type it", isPhone = true, visibleWhen = { it["reach"] != null }),
-            ChoiceSpec("repeat", "Repeat", listOf("Never", "Daily", "Weekly", "Monthly"), essential = false),
+            ChoiceSpec("repeat", "Repeat", com.houseaffairs.app.core.data.REPEAT_CHOICES, essential = false),
             // A chore rota: each time it's done, the next one goes to the next person.
             MembersSpec("rotation", "Take turns", essential = false, visibleWhen = { (it["repeat"] as? String).let { r -> r != null && r != "Never" } }),
             ChoiceSpec("remind", "Remind", REMINDERS, essential = false, visibleWhen = { it["due"] != null }),
@@ -389,6 +398,9 @@ enum class EntryType(
         available = false,
     ),
     ;
+
+    /** Every kind's own fields, plus the family's tags ("goa kids") at the end of More details. */
+    val fields: List<FieldSpec> = baseFields + if (baseFields.any { it.key == "tags" }) emptyList() else listOf(TextSpec("tags", "Tags", "goa, kids, office", essential = false))
 
     /** Pre-filled values for a fresh form. */
     fun defaults(myUid: String, currency: String, today: LocalDate = LocalDate.now()): FormValues = buildMap {

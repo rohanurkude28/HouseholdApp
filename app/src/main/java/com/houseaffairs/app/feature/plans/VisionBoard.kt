@@ -45,7 +45,7 @@ import com.houseaffairs.app.core.data.Dream
 import com.houseaffairs.app.core.data.DreamProgress
 import com.houseaffairs.app.core.data.boardOrdered
 import com.houseaffairs.app.core.data.moved
-import com.houseaffairs.app.core.util.formatCompact
+import com.houseaffairs.app.core.ui.shownCompact
 import kotlin.math.roundToInt
 
 /**
@@ -172,7 +172,7 @@ private fun DreamBack(dream: Dream, progress: DreamProgress?, currency: String, 
         Text("${dream.emoji} ${dream.title}", style = MaterialTheme.typography.titleMedium, color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.weight(1f))
         if (progress != null && dream.targetMinor > 0) {
-            Text("${formatCompact(progress.totalMinor, currency)} of ${formatCompact(dream.targetMinor, currency)}", style = MaterialTheme.typography.headlineSmall, color = Color.White)
+            Text("${shownCompact(progress.totalMinor, currency)} of ${shownCompact(dream.targetMinor, currency)}", style = MaterialTheme.typography.headlineSmall, color = Color.White)
             Row(Modifier.fillMaxWidth().height(8.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.3f))) {
                 val f = if (dream.achieved) 1f else progress.progress
                 if (f > 0f) Box(Modifier.weight(f).fillMaxHeight().background(Color.White))
@@ -181,8 +181,8 @@ private fun DreamBack(dream: Dream, progress: DreamProgress?, currency: String, 
             Text(
                 when {
                     progress.remainingMinor == 0L -> "Fully funded 🎉"
-                    progress.monthlyNeededMinor != null -> "${formatCompact(progress.monthlyNeededMinor, currency)} a month to make it"
-                    else -> "${formatCompact(progress.remainingMinor, currency)} to go"
+                    progress.monthlyNeededMinor != null -> "${shownCompact(progress.monthlyNeededMinor, currency)} a month to make it"
+                    else -> "${shownCompact(progress.remainingMinor, currency)} to go"
                 },
                 style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.9f),
             )

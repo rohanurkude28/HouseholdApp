@@ -1,5 +1,11 @@
 package com.houseaffairs.app.feature.plans
 
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.foundation.shape.RoundedCornerShape
+import com.houseaffairs.app.core.data.TaskItem
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -77,8 +83,8 @@ import com.houseaffairs.app.core.ui.IconBlob
 import com.houseaffairs.app.core.ui.SectionTitle
 import com.houseaffairs.app.core.ui.TickCircle
 import com.houseaffairs.app.core.ui.opensEdit
-import com.houseaffairs.app.core.util.formatCompact
-import com.houseaffairs.app.core.util.formatMinor
+import com.houseaffairs.app.core.ui.shownCompact
+import com.houseaffairs.app.core.ui.shownMinor
 import com.houseaffairs.app.core.util.toMinorUnits
 import com.houseaffairs.app.feature.add.SavedEntry
 import com.houseaffairs.app.feature.add.EntryType
@@ -110,7 +116,8 @@ internal fun gradientFor(kind: String) = DREAM_GRADIENTS[kind] ?: listOf(Color(0
 fun PlansScreen(
     onAddDream: (String?) -> Unit,
     onAddTrip: (String?) -> Unit,
-    onAddTripExpense: (com.houseaffairs.app.core.data.Trip) -> Unit,
+    /** A trip expense, already filed under a kind of trip spending ("Stay", "Cafés") when one was tapped. */
+    onAddTripExpense: (com.houseaffairs.app.core.data.Trip, com.houseaffairs.app.core.data.TripSpend?) -> Unit,
     onAddTask: () -> Unit,
     onAddEvent: () -> Unit,
     onAddGoal: () -> Unit,
@@ -130,6 +137,8 @@ fun PlansScreen(
     var showGallery by remember { mutableStateOf(false) }
     var allTasks by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     var openBuckets by remember { mutableStateOf(setOf<String>()) }
+    var taskText by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
+    var showChores by remember { mutableStateOf(false) }
     if (showGallery) com.houseaffairs.app.core.photo.GallerySheet(onDismiss = { showGallery = false }, onOpenEntry = { type, id -> onEdit(EntryType.valueOf(type), id) })
     LaunchedEffect(requestedTab) {
         // "GIFTS" opens Lists filtered to gift ideas (from an event's "🎁 gift ideas").
@@ -143,6 +152,16 @@ fun PlansScreen(
         requestedTab?.takeIf { it.startsWith("DREAM:") }?.let { viewModel.selectTab(PlansTab.DREAMS); pendingDream = it.removePrefix("DREAM:"); onTabShown() }
     }
     val state by viewModel.state.collectAsStateWithLifecycle()
+    if (showChores) {
+        ChoresSheet(
+            chores = state.tasks.filter { it.chore }.sortedBy { it.dueDate?.toEpochDay() ?: Long.MAX_VALUE },
+            today = LocalDate.now(),
+            onAdd = { title, every -> viewModel.addChore(title, every)?.let(onSaved) },
+            onRemove = { viewModel.removeChore(it)?.let(onSaved) },
+            onRepeat = { t, every -> viewModel.setChoreRepeat(t, every)?.let(onSaved) },
+            onDismiss = { showChores = false },
+        )
+    }
     var open by remember { mutableStateOf<Dream?>(null) }
     // Dreams may still be loading when asked for, so it opens once it's there.
     LaunchedEffect(pendingDream, state.dreams) {
@@ -161,7 +180,7 @@ fun PlansScreen(
                 Text("Plans", style = MaterialTheme.typography.headlineLarge)
                 Text(
                     if (money != null) {
-                        "${state.dreams.count { !it.achieved }} dreams · ${formatMinor(money.envelopes.potMinor, state.currency)} in the gullak"
+                        state.dreams.count { !it.achieved }.let { n -> "$n ${if (n == 1) "dream" else "dreams"}" } + if (com.houseaffairs.app.core.ui.CostPrivacy.hidden) "" else " · ${shownMinor(money.envelopes.potMinor, state.currency)} in the gullak"
                     } else {
                         "${state.dreams.count { !it.achieved }} dreams · ${state.tasks.size} tasks"
                     },
@@ -184,6 +203,7 @@ fun PlansScreen(
             }
         }
         // This month's tasks, finished things and goals, where they're ticked off; tap for the year.
+        // This month's tasks, finished things and goals, at the top where it's seen first; tap for the year.
         if (state.tab == PlansTab.TASKS || state.tab == PlansTab.GOALS || state.tab == PlansTab.LISTS) item(key = "plans-month") {
             PlansMonthCard(state, onOpen = { showYear = true }, modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 4.dp))
         }
@@ -196,9 +216,9 @@ fun PlansScreen(
                     item { SectionTitle("Trips & outings", action = "New", onAction = { onAddTrip(null) }) }
                     item {
                         TripsCard(
-                            trips, { formatMinor(it, state.currency) }, { onAddTrip(null) },
+                            trips, { shownMinor(it, state.currency) }, { onAddTrip(null) },
                             onDone = { viewModel.markTripDone(it.trip)?.let(onSaved) },
-                            onAddExpense = { onAddTripExpense(it.trip) },
+                            onAddExpense = { t, kind -> onAddTripExpense(t.trip, kind) },
                             onStops = viewModel::setStops,
                             places = state.places.map { it.title },
                         ) { onEdit(EntryType.TRIP, it) }
@@ -209,7 +229,7 @@ fun PlansScreen(
                                 Text(if (showPast) "Hide past trips" else "Past trips · ${past.size}")
                             }
                         }
-                        if (showPast) item { TripsCard(past, { formatMinor(it, state.currency) }, { onAddTrip(null) }, onAddExpense = { onAddTripExpense(it.trip) }, onReopen = { viewModel.reopenTrip(it.trip) }) { onEdit(EntryType.TRIP, it) } }
+                        if (showPast) item { TripsCard(past, { shownMinor(it, state.currency) }, { onAddTrip(null) }, onAddExpense = { t, kind -> onAddTripExpense(t.trip, kind) }, onReopen = { viewModel.reopenTrip(it.trip) }) { onEdit(EntryType.TRIP, it) } }
                     }
                 }
                 // One row per horizon, same-size cards, each row ending in its own "add" tile.
@@ -299,10 +319,20 @@ fun PlansScreen(
                 val today = LocalDate.now()
                 val week = com.houseaffairs.app.core.data.thisWeeksGoals(state.goals, today)
                 val earlier = state.goals - week.toSet()
+                // This week at a glance, the same way Tasks shows today.
+                item(key = "goal-head") {
+                    PlansHeader(
+                        "This week",
+                        if (week.isEmpty()) "No goals yet this week" else "${week.count { it.done }} of ${week.size} reached",
+                        done = week.count { it.done }.takeIf { week.isNotEmpty() }, total = week.size.takeIf { week.isNotEmpty() }, emoji = "🎯",
+                    )
+                }
                 item { AddRow("Add a goal for this week", onAddGoal) }
-                com.houseaffairs.app.core.data.goalsRecap(state.goals, today)?.let { recap -> item { Hint(recap) } }
                 if (week.isEmpty()) item { Hint("Something to learn or get done this week: “finish a book”, “3 workouts”, “file taxes”.") }
-                items(week, key = { "goal-" + it.id }) { goal -> GoalRow(goal, onEdit = { onEdit(EntryType.GOAL, goal.id) }, onProgress = { viewModel.setGoalProgress(goal.id, it) }) }
+                items(week.size, key = { "goal-" + week[it].id }) { i ->
+                    val goal = week[i]
+                    CardRow(i == 0, i == week.size - 1) { GoalRow(goal, onEdit = { onEdit(EntryType.GOAL, goal.id) }, onProgress = { p -> viewModel.setGoalProgress(goal, p)?.let(onSaved) }) }
+                }
                 if (earlier.isNotEmpty()) {
                     // Folded by default: this week's goals are what you act on.
                     item(key = "goals-earlier") {
@@ -314,13 +344,7 @@ fun PlansScreen(
                 }
             }
             PlansTab.TASKS -> {
-                item { AddRow("Add a task", onAddTask) }
-                if (state.tasks.isEmpty()) item { Hint("Nothing to do. Say “pay rent tomorrow”.") }
-                val doneTasks = state.finished.filter { it.collection == "tasks" }
-                if (doneTasks.isNotEmpty()) {
-                    item(key = "done-tasks") { FinishedSection("Done", doneTasks, showFinished, { showFinished = !showFinished }, "Not done", viewModel::reopen) }
-                }
-                // Tasks given to me, or that came back to me, come first: they wait on my answer.
+                val today = LocalDate.now()
                 val me = viewModel.myUid
                 val waiting = com.houseaffairs.app.core.data.waitingOnMe(state.tasks, me).toSet()
                 val answers = com.houseaffairs.app.core.ui.TaskAnswers(
@@ -329,48 +353,61 @@ fun PlansScreen(
                     keep = viewModel::keepTask,
                     reassign = { onEdit(EntryType.TASK, it.id) },
                 )
-                // Mine (given to me, or to nobody) or everyone's; grouped by when, long groups folded.
-                item(key = "task-filter") {
-                    Row(Modifier.padding(horizontal = 20.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(selected = !allTasks, onClick = { allTasks = false }, label = { Text("Mine") }, shape = CircleShape)
-                        FilterChip(selected = allTasks, onClick = { allTasks = true }, label = { Text("Everyone's") }, shape = CircleShape)
-                    }
+                val shown = if (allTasks) state.tasks else state.tasks.filter { it.assignee == null || it.assignee == me || it in waiting }
+                val doneTasks = state.finished.filter { it.collection == "tasks" }
+                val doneToday = doneTasks.count { f -> f.at?.toInstant()?.atZone(java.time.ZoneId.systemDefault())?.toLocalDate() == today }
+                val day: LocalDate? = null
+                // Today at a glance: a ring that fills as things get done, and whose list this is.
+                item(key = "task-head") {
+                    TasksHeader(com.houseaffairs.app.core.data.dayProgress(doneToday, shown, today), allTasks) { allTasks = it }
                 }
-                val shown = if (allTasks) state.tasks else state.tasks.filter { it.assignee == null || it.assignee == me || it.id in waiting.map { w -> w.id } }
-                com.houseaffairs.app.core.data.taskBuckets(shown, LocalDate.now(), waiting.map { it.id }.toSet()).forEach { (bucket, list) ->
-                    val foldable = bucket in setOf(com.houseaffairs.app.core.data.TaskBucket.LATER, com.houseaffairs.app.core.data.TaskBucket.NO_DATE) && list.size > 4
-                    val open = !foldable || bucket.name in openBuckets
-                    item(key = "bucket-" + bucket.name) {
+                // The family's shared chores, set up once and nudged when due.
+                item(key = "chores") { ChoresRow(state.tasks.filter { it.chore }, today) { showChores = true } }
+                // Type and press enter; "call mom at 5 tomorrow" keeps its date and time. ⋯ opens the full form.
+                item(key = "task-add") {
+                    TaskQuickAdd(taskText, { taskText = it }, day, onSubmit = {
+                        viewModel.quickAddTask(taskText, day)?.let { saved -> taskText = ""; onSaved(saved) }
+                    }, onMore = onAddTask)
+                }
+                if (state.tasks.isEmpty()) item { Hint("Nothing to do. Type one above, or say “pay rent tomorrow”.") }
+                val groups: List<Pair<String, List<TaskItem>>> = if (day != null) {
+                    listOf((if (day == today) "Today" else day.format(java.time.format.DateTimeFormatter.ofPattern("EEEE d MMM"))) to com.houseaffairs.app.core.data.tasksOn(shown, day, today))
+                } else {
+                    com.houseaffairs.app.core.data.taskBuckets(shown, today, waiting.map { it.id }.toSet()).map { (b, l) -> b.label to l }
+                }
+                if (day != null && groups.single().second.isEmpty()) item { Hint("Nothing on this day. Type above to add one.") }
+                groups.filter { it.second.isNotEmpty() }.forEach { (label, list) ->
+                    val foldable = day == null && label in setOf(com.houseaffairs.app.core.data.TaskBucket.LATER.label, com.houseaffairs.app.core.data.TaskBucket.NO_DATE.label) && list.size > 4
+                    val open = !foldable || label in openBuckets
+                    item(key = "bucket-$label") {
                         Row(
-                            Modifier.fillMaxWidth().then(if (foldable) Modifier.clickable { openBuckets = if (open) openBuckets - bucket.name else openBuckets + bucket.name } else Modifier)
-                                .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 4.dp),
+                            Modifier.fillMaxWidth().then(if (foldable) Modifier.clickable { openBuckets = if (open) openBuckets - label else openBuckets + label } else Modifier)
+                                .padding(start = 24.dp, end = 24.dp, top = 18.dp, bottom = 6.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(bucket.label, style = MaterialTheme.typography.titleSmall, color = if (bucket == com.houseaffairs.app.core.data.TaskBucket.OVERDUE) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
+                            Text(label, style = MaterialTheme.typography.titleSmall, color = if (label == com.houseaffairs.app.core.data.TaskBucket.OVERDUE.label) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
                             Text("  ${list.size}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
                             if (foldable) Text(if (open) "Hide" else "Show", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                         }
                     }
-                    if (open) items(list, key = { it.id }) { task ->
-                    val plans = LocalHouseColors.current.plans
-                    Column {
-                        // Circle = done (with Undo); the rest of the row, tapped or held, = edit.
-                        Row(Modifier.fillMaxWidth().opensEdit { onEdit(EntryType.TASK, task.id) }.padding(start = 10.dp, end = 20.dp, top = 2.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                            TickCircle(plans.color, onTick = { viewModel.completeTask(task)?.let(onSaved) }, contentDescription = "Done: ${task.title}")
-                            Spacer(Modifier.width(4.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(task.title, style = MaterialTheme.typography.bodyLarge)
-                                (com.houseaffairs.app.core.data.handoffLine(task, me, viewModel::nameOf)
-                                    ?: task.assignee?.takeIf { it != me }?.let { "For ${viewModel.nameOf(it)}" })
-                                    ?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = if (task in waiting) plans.color else MaterialTheme.colorScheme.onSurfaceVariant) }
-                            }
-                            PriorityTag(task.priority)
-                            task.reach?.let { com.houseaffairs.app.core.ui.ReachButton(it, task.phone, task.title) }
-                            task.dueDate?.let { Text(formatDate(it), style = MaterialTheme.typography.labelLarge, color = plans.color) }
-                        }
-                        com.houseaffairs.app.core.ui.HandoffButtons(task, me, answers, Modifier.padding(start = 58.dp, bottom = 8.dp))
+                    if (open) items(list.size, key = { list[it].id }) { i ->
+                        val task = list[i]
+                        TaskCardRow(
+                            task, first = i == 0, last = i == list.size - 1, today = today,
+                            meta = listOfNotNull(
+                                task.time?.let { "⏰ $it" },
+                                task.repeat?.let { "↻ $it" },
+                                com.houseaffairs.app.core.data.handoffLine(task, me, viewModel::nameOf) ?: task.assignee?.takeIf { it != me }?.let { "👤 ${viewModel.nameOf(it)}" },
+                            ),
+                            waiting = task in waiting,
+                            onDone = { viewModel.completeTask(task)?.let(onSaved) },
+                            onReschedule = { date, label -> viewModel.reschedule(task, date, label)?.let(onSaved) },
+                            onOpen = { onEdit(EntryType.TASK, task.id) },
+                        ) { com.houseaffairs.app.core.ui.HandoffButtons(task, me, answers, Modifier.padding(start = 48.dp, bottom = 8.dp)) }
                     }
-                    }
+                }
+                if (doneTasks.isNotEmpty()) {
+                    item(key = "done-tasks") { FinishedSection("Done", doneTasks, showFinished, { showFinished = !showFinished }, "Not done", viewModel::reopen) }
                 }
             }
             PlansTab.PLACES -> {
@@ -392,9 +429,9 @@ fun PlansScreen(
                 val near = state.nearby
                 if (near != null) {
                     if (near.isEmpty()) item { Hint("Nothing saved within ${state.radiusKm.toInt()} km of you. Try a bigger radius.") }
-                    items(near, key = { it.place.id }) { PlaceRow(it.place, it.km) { onEdit(EntryType.PLACE, it.place.id) } }
+                    items(near.size, key = { near[it].place.id }) { i -> CardRow(i == 0, i == near.size - 1) { PlaceRow(near[i].place, near[i].km) { onEdit(EntryType.PLACE, near[i].place.id) } } }
                 } else {
-                    items(state.places, key = { it.id }) { place -> PlaceRow(place) { onEdit(EntryType.PLACE, place.id) } }
+                    items(state.places.size, key = { state.places[it].id }) { i -> val place = state.places[i]; CardRow(i == 0, i == state.places.size - 1) { PlaceRow(place) { onEdit(EntryType.PLACE, place.id) } } }
                 }
             }
             PlansTab.LISTS -> {
@@ -443,7 +480,11 @@ fun PlansScreen(
                     val dreamItems = allDreams.take((cap - mediaItems.size).coerceAtLeast(0))
                     val wishItems = allWishes.take((cap - mediaItems.size - dreamItems.size).coerceAtLeast(0))
                     if (state.listFilter == null) item(key = "h-" + template.name) { ListHeader("${template.emoji} ${template.title}") }
-                    items(mediaItems, key = { "media-" + it.id }) { w ->
+                    // One rounded card per list, like Tasks: the first row rounds the top, the last the bottom.
+                    val shownIds = mediaItems.map { it.id } + dreamItems.map { it.id } + wishItems.map { it.id }
+                    fun first(id: String) = shownIds.firstOrNull() == id
+                    fun last(id: String) = shownIds.lastOrNull() == id
+                    items(mediaItems, key = { "media-" + it.id }) { w -> CardRow(first(w.id), last(w.id)) {
                         WishRow(
                             title = w.title,
                             detail = listOfNotNull(
@@ -460,11 +501,11 @@ fun PlansScreen(
                             onVote = { on -> viewModel.vote(w.id, on) }, onPlan = { viewModel.togglePlanned(w.id, w.status) },
                             links = com.houseaffairs.app.core.data.mediaLinks(template, w.title, w.year, w.creator, w.imdbId, w.link),
                         )
-                    }
-                    items(dreamItems, key = { "dream-" + it.id }) { dream ->
+                    } }
+                    items(dreamItems, key = { "dream-" + it.id }) { dream -> CardRow(first(dream.id), last(dream.id)) {
                         DreamListRow(dream, state.progress?.firstOrNull { it.dream.id == dream.id }, state.currency) { open = dream }
-                    }
-                    items(wishItems, key = { "wish-" + it.id }) { wish ->
+                    } }
+                    items(wishItems, key = { "wish-" + it.id }) { wish -> CardRow(first(wish.id), last(wish.id)) {
                         WishRow(
                             title = wish.title,
                             detail = listOfNotNull(wish.event?.let { "🎁 $it" }, wish.place, wish.budgetText).joinToString(" · ").ifEmpty { template.title },
@@ -476,7 +517,7 @@ fun PlansScreen(
                             onVote = { on -> viewModel.vote(wish.id, on) }, onPlan = { viewModel.togglePlanned(wish.id, wish.status) },
                             links = com.houseaffairs.app.core.data.wishLinks(wish.link),
                         )
-                    }
+                    } }
                     if (total > mediaItems.size + dreamItems.size + wishItems.size) {
                         item(key = "more-" + template.name) {
                             TextButton(onClick = { viewModel.selectList(template) }, modifier = Modifier.padding(start = 8.dp)) {
@@ -498,9 +539,16 @@ fun PlansScreen(
                 }
             }
             PlansTab.EVENTS -> {
+                // What's next, the same way Tasks shows today.
+                state.events.minByOrNull { it.next.toEpochDay() }?.let { next ->
+                    val days = java.time.temporal.ChronoUnit.DAYS.between(LocalDate.now(), next.next)
+                    item(key = "event-head") {
+                        PlansHeader(next.title, when (days) { 0L -> "Today"; 1L -> "Tomorrow"; else -> "In $days days · ${formatDate(next.next)}" } + " · ${state.events.size} saved", emoji = if (next.kind.contains("Birthday", true)) "🎂" else "🎉")
+                    }
+                }
                 item { AddRow("Add a birthday or event", onAddEvent) }
                 if (state.events.isEmpty()) item { Hint("Add birthdays, anniversaries and renewals. Say “Riya birthday 12 Dec”.") }
-                items(state.events, key = { it.id }) { event ->
+                items(state.events.size, key = { state.events[it].id }) { i -> val event = state.events[i]; CardRow(i == 0, i == state.events.size - 1) {
                     Row(Modifier.fillMaxWidth().opensEdit { onEdit(EntryType.EVENT, event.id) }.padding(horizontal = 20.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                         IconBlob(Icons.Outlined.Cake, LocalHouseColors.current.plans, size = 40.dp)
                         Spacer(Modifier.width(14.dp))
@@ -519,7 +567,7 @@ fun PlansScreen(
                         }
                         Text(formatDate(event.next), style = MaterialTheme.typography.labelLarge, color = LocalHouseColors.current.plans.color)
                     }
-                }
+                } }
             }
         }
     }
@@ -583,8 +631,8 @@ private fun DreamListRow(dream: Dream, progress: com.houseaffairs.app.core.data.
             Text(
                 listOfNotNull(
                     "Dream on the vision board",
-                    progress?.let { "${formatMinor(it.savedMinor + it.creditsMinor + it.investedMinor, currency)} of ${formatMinor(dream.targetMinor, currency)} saved" }
-                        ?: dream.targetMinor.takeIf { it > 0 }?.let { formatMinor(it, currency) },
+                    progress?.let { "${shownMinor(it.savedMinor + it.creditsMinor + it.investedMinor, currency)} of ${shownMinor(dream.targetMinor, currency)} saved" }
+                        ?: dream.targetMinor.takeIf { it > 0 }?.let { shownMinor(it, currency) },
                     dream.targetDate?.let { com.houseaffairs.app.feature.add.formatDate(it) },
                 ).joinToString(" · "),
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -594,17 +642,17 @@ private fun DreamListRow(dream: Dream, progress: com.houseaffairs.app.core.data.
     }
 }
 
+/** "＋ Add a…": the same rounded box as Tasks' add box, so every tab adds things the same way. */
 @Composable
 private fun AddRow(label: String, onClick: () -> Unit) {
-    val accent = LocalHouseColors.current.plans
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp).clip(MaterialTheme.shapes.large)
-            .background(accent.container).clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 14.dp),
+        Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 4.dp).clip(RoundedCornerShape(24.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLow).clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(Icons.Outlined.Add, contentDescription = null, tint = accent.color)
-        Spacer(Modifier.width(10.dp))
-        Text(label, style = MaterialTheme.typography.titleSmall, color = accent.color)
+        Icon(Icons.Outlined.Add, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.width(12.dp))
+        Text(label, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -800,8 +848,8 @@ internal fun DreamCard(dream: Dream, progress: DreamProgress?, currency: String,
             progress == null -> dream.targetDate?.let { "By ${formatDate(it)}" } ?: "Someday"
             progress.remainingMinor == 0L -> "Fully funded"
             progress.affordableNow -> "You can afford this now"
-            progress.monthlyNeededMinor != null -> "${formatCompact(progress.monthlyNeededMinor, currency)}/mo to make it"
-            else -> "${formatCompact(progress.remainingMinor, currency)} to go"
+            progress.monthlyNeededMinor != null -> "${shownCompact(progress.monthlyNeededMinor, currency)}/mo to make it"
+            else -> "${shownCompact(progress.remainingMinor, currency)} to go"
         }
         Text(status, style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.9f))
         if (progress != null && dream.targetMinor > 0) {
@@ -813,7 +861,7 @@ internal fun DreamCard(dream: Dream, progress: DreamProgress?, currency: String,
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                "${formatCompact(progress.totalMinor, currency)} of ${formatCompact(dream.targetMinor, currency)}",
+                "${shownCompact(progress.totalMinor, currency)} of ${shownCompact(dream.targetMinor, currency)}",
                 style = MaterialTheme.typography.labelSmall,
                 color = Color.White.copy(alpha = 0.85f),
             )
@@ -853,7 +901,7 @@ private fun DreamSheet(
                     Text(dream.title, style = MaterialTheme.typography.headlineSmall)
                     Text(
                         listOfNotNull(
-                            dream.targetMinor.takeIf { it > 0 }?.let { formatMinor(it, currency) },
+                            dream.targetMinor.takeIf { it > 0 }?.let { shownMinor(it, currency) },
                             dream.targetDate?.let { "by ${formatDate(it)}" },
                         ).joinToString(" "),
                         style = MaterialTheme.typography.bodyMedium,
@@ -863,13 +911,13 @@ private fun DreamSheet(
             }
             if (progress != null) {
                 HaCard(Modifier.fillMaxWidth()) {
-                    Text("${formatMinor(progress.savedMinor, currency)} saved" + if (progress.creditsMinor > 0) " + ${formatMinor(progress.creditsMinor, currency)} in credits" else "", style = MaterialTheme.typography.titleSmall)
+                    Text("${shownMinor(progress.savedMinor, currency)} saved" + if (progress.creditsMinor > 0) " + ${shownMinor(progress.creditsMinor, currency)} in credits" else "", style = MaterialTheme.typography.titleSmall)
                     Text(
                         when {
                             progress.remainingMinor == 0L -> "Fully funded. Time to book it!"
-                            progress.affordableNow -> "The gullak (${formatMinor(money!!.envelopes.potMinor, currency)}) covers the remaining ${formatMinor(progress.remainingMinor, currency)}."
-                            progress.monthlyNeededMinor != null -> "Set aside ${formatMinor(progress.monthlyNeededMinor, currency)} a month to make it on time."
-                            else -> "${formatMinor(progress.remainingMinor, currency)} to go."
+                            progress.affordableNow -> "The gullak (${shownMinor(money!!.envelopes.potMinor, currency)}) covers the remaining ${shownMinor(progress.remainingMinor, currency)}."
+                            progress.monthlyNeededMinor != null -> "Set aside ${shownMinor(progress.monthlyNeededMinor, currency)} a month to make it on time."
+                            else -> "${shownMinor(progress.remainingMinor, currency)} to go."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -882,7 +930,7 @@ private fun DreamSheet(
                             FilterChip(
                                 selected = source == s,
                                 onClick = { source = s },
-                                label = { Text("${s.second} · ${formatCompact(s.third, currency)}") },
+                                label = { Text("${s.second} · ${shownCompact(s.third, currency)}") },
                                 shape = CircleShape,
                             )
                         }
@@ -913,7 +961,7 @@ private fun DreamSheet(
                 Text("Trips for this dream", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 linked.forEach { t ->
                     Text(
-                        "🧳 ${t.trip.title} · ${formatDate(t.trip.start)} · ${formatMinor(t.totalMinor, currency)} spent" + (t.leftMinor?.let { if (it >= 0) " · ${formatMinor(it, currency)} left" else "" } ?: ""),
+                        "🧳 ${t.trip.title} · ${formatDate(t.trip.start)} · ${shownMinor(t.totalMinor, currency)} spent" + (t.leftMinor?.let { if (it >= 0) " · ${shownMinor(it, currency)} left" else "" } ?: ""),
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
@@ -931,26 +979,60 @@ private fun DreamSheet(
     }
 }
 
-/** A weekly goal: drag to say how far along it is; earlier weeks are read-only. */
+/**
+ * A weekly goal with a bar you slide: drag (or tap) along it and it fills as you go, naming the
+ * step ("Halfway") with a light buzz at each one; letting go saves it, with Undo. Earlier weeks
+ * are read-only.
+ */
 @Composable
 private fun GoalRow(goal: com.houseaffairs.app.core.data.Goal, onEdit: () -> Unit, onProgress: ((Int) -> Unit)?) {
     val accent = LocalHouseColors.current.plans
-    var value by remember(goal.id, goal.progress) { mutableStateOf(goal.progress.toFloat()) }
-    Column(Modifier.fillMaxWidth().opensEdit(onEdit).padding(horizontal = 20.dp, vertical = 8.dp)) {
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    // Follows the finger while dragging; the saved value otherwise.
+    var live by remember(goal.id, goal.progress) { mutableStateOf(goal.progress.toFloat()) }
+    val shown by androidx.compose.animation.core.animateFloatAsState(live, label = "goal")
+    val step = com.houseaffairs.app.core.data.goalStep(live.toInt())
+    Column(Modifier.fillMaxWidth().opensEdit(onEdit).padding(horizontal = 16.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(if (goal.done) "✅" else "🎯", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
-                Text(goal.title, style = MaterialTheme.typography.titleSmall)
+                Text(goal.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 goal.kind?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
-            Text("${value.toInt()}%", style = MaterialTheme.typography.labelLarge, color = accent.color)
+            Text(if (live >= 100) "Done 🎉" else "${live.toInt()}%", style = MaterialTheme.typography.labelLarge, color = accent.color)
         }
-        if (onProgress != null) {
-            com.houseaffairs.app.core.ui.LevelPicker(
-                value.toInt(), com.houseaffairs.app.core.ui.PROGRESS_STEPS, accent.color,
-                onChange = { value = it.toFloat(); onProgress(it) },
-                modifier = Modifier.padding(top = 8.dp),
+        Spacer(Modifier.height(10.dp))
+        var width by remember { mutableStateOf(1) }
+        fun at(x: Float) = (x / width * 100).coerceIn(0f, 100f).let { kotlin.math.round(it / 5f) * 5f }
+        fun move(to: Float) {
+            // A buzz each time a named step is crossed.
+            if (com.houseaffairs.app.core.data.goalStep(to.toInt()) != com.houseaffairs.app.core.data.goalStep(live.toInt())) {
+                haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+            }
+            live = to
+        }
+        Box(
+            Modifier.fillMaxWidth().height(34.dp).clip(RoundedCornerShape(17.dp)).background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                .onSizeChanged { width = it.width.coerceAtLeast(1) }
+                .then(
+                    if (onProgress == null) Modifier else Modifier
+                        .pointerInput(goal.id) {
+                            detectHorizontalDragGestures(
+                                onDragEnd = { if (live.toInt() != goal.progress) onProgress(live.toInt()) },
+                                onDragCancel = { live = goal.progress.toFloat() },
+                            ) { change, _ -> change.consume(); move(at(change.position.x)) }
+                        }
+                        .pointerInput(goal.id) {
+                            detectTapGestures { pos -> val to = at(pos.x); move(to); if (to.toInt() != goal.progress) onProgress(to.toInt()) }
+                        },
+                ),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Box(Modifier.fillMaxWidth((shown / 100f).coerceIn(0.06f, 1f)).fillMaxHeight().clip(RoundedCornerShape(17.dp)).background(accent.color))
+            Text(
+                if (onProgress != null && live < 100) "$step  ·  slide →" else step,
+                style = MaterialTheme.typography.labelMedium,
+                color = if (shown > 45) androidx.compose.ui.graphics.Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 14.dp),
             )
         }
     }

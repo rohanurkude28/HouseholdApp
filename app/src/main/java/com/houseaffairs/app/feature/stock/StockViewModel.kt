@@ -215,7 +215,16 @@ class StockViewModel @Inject constructor(
     /** Part of it thrown away (or all, at 100): counted as waste, the rest stays. */
     fun wastePart(stock: PantryStock, share: Int, from: String = "stock") {
         if (share >= 100) return threwAway(stock, from)
-        withIds { hid, uid -> viewModelScope.launch { runCatching { pantryRepo.wastePart(hid, uid, stock, state.value.shopping.map { it.title }, share, from) } } }
+        withIds { hid, uid ->
+            viewModelScope.launch {
+                val onList = state.value.shopping.any { it.title.equals(stock.title, ignoreCase = true) }
+                runCatching { pantryRepo.wastePart(hid, uid, stock, state.value.shopping.map { it.title }, share, from) }.getOrNull()?.let { undo ->
+                    com.houseaffairs.app.core.ui.FollowUps.show(
+                        com.houseaffairs.app.core.data.wasteFollowUp(stock.title, share, onList, add = { pantryRepo.addToShopping(hid, uid, stock.title) }, putBack = undo),
+                    )
+                }
+            }
+        }
     }
 
     private fun withIds(block: (String, String) -> Unit) {

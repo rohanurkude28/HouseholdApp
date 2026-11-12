@@ -357,7 +357,8 @@ class HomeViewModel @Inject constructor(
             myUid = r.user.uid,
             members = members,
             isOwner = r.me.role == Role.OWNER,
-            canMoney = r.me.canAccess(AppModule.MONEY),
+            // Costs hidden from this person (Settings → Privacy) means no money on Home either.
+            canMoney = r.me.canAccess(AppModule.MONEY) && r.user.uid !in r.household.hideCostsFrom,
             canStock = r.me.canAccess(AppModule.STOCK),
             canPlans = r.me.canAccess(AppModule.PLANS),
             canMedicine = r.me.canAccess(AppModule.MEDICINE),
