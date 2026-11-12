@@ -56,14 +56,14 @@ private val session = observeSession()
 private val homeStore = HomeStore()
 
 @Composable
-fun App() {
+fun App(googleSignIn: GoogleSignInSheet? = null) {
     HouseAffairsTheme {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             val state by remember { session }.collectAsState(SessionState.Loading)
             Box(Modifier.windowInsetsPadding(WindowInsets.safeDrawing)) {
                 when (val s = state) {
                     SessionState.Loading -> Centered { CircularProgressIndicator() }
-                    SessionState.SignedOut -> SignIn()
+                    SessionState.SignedOut -> SignIn(googleSignIn)
                     is SessionState.NeedsHousehold -> NeedsHousehold()
                     is SessionState.Ready -> Home(s)
                 }
@@ -78,7 +78,7 @@ private fun Centered(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun SignIn() {
+private fun SignIn(googleSignIn: GoogleSignInSheet?) {
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -91,7 +91,20 @@ private fun SignIn() {
                 style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(12.dp))
-            Button(
+            // The same Google account as on Android opens the same home.
+            if (googleSignIn != null) Button(
+                enabled = !busy,
+                onClick = {
+                    busy = true
+                    error = null
+                    scope.launch {
+                        runCatching { googleSignIn()?.let { signInWithGoogle(it) } }
+                            .onFailure { error = it.message ?: "Couldn't sign in with Google. Try again." }
+                        busy = false
+                    }
+                },
+            ) { Text(if (busy) "Signing in…" else "Continue with Google") }
+            TextButton(
                 enabled = !busy,
                 onClick = {
                     busy = true
@@ -101,8 +114,7 @@ private fun SignIn() {
                         busy = false
                     }
                 },
-            ) { Text(if (busy) "Setting up your demo home…" else "Try the demo") }
-            Text("Google sign-in is coming to iPhone soon.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            ) { Text("Try the demo") }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center) }
         }
     }
@@ -115,7 +127,7 @@ private fun NeedsHousehold() {
     Centered {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("You're not in a home yet", style = MaterialTheme.typography.titleLarge)
-            Text("Creating or joining a family home isn't on iPhone yet. Start a demo home to look around.", textAlign = TextAlign.Center)
+            Text("Creating or joining a family home isn't on iPhone yet. Join from the Android app with this Google account, or start a demo home to look around.", textAlign = TextAlign.Center)
             Button(enabled = !busy, onClick = { busy = true; scope.launch { runCatching { DemoHome.start() }; busy = false } }) { Text("Start a demo home") }
             TextButton(onClick = { scope.launch { DemoHome.signOut() } }) { Text("Sign out") }
         }

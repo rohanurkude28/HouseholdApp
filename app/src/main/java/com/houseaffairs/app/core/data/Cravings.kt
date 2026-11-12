@@ -39,8 +39,7 @@ fun isCurry(recipe: Recipe): Boolean = CURRY_WORDS.any { recipe.title.lowercase(
 
 /** Dishes for each part of [text], at most [perPart] each, best fit with the pantry first. */
 fun cravingIdeas(text: String, pantry: List<PantryStock>, saved: List<Recipe>, today: LocalDate, perPart: Int = 3): List<Pair<String, List<DishIdea>>> {
-    val savedTitles = saved.map { it.title.lowercase() }.toSet()
-    val all = saved.map { it to true } + RECIPE_LIBRARY.filter { it.title.lowercase() !in savedTitles }.map { it to false }
+    val all = saved.map { it to true }
     return cravingParts(text).map { part ->
         val matches = all.filter { (recipe, _) ->
             val about = (recipe.title + " " + recipe.ingredients.joinToString(" ") { it.name }).lowercase()

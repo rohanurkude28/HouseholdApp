@@ -3,7 +3,13 @@ package com.houseaffairs.app.feature.settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material.icons.outlined.DeleteForever
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.PersonRemove
 import androidx.compose.material.icons.outlined.Explore
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Restore
+import androidx.compose.material.icons.outlined.Backup
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.material.icons.outlined.Event
@@ -37,6 +43,7 @@ import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Payments
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Alignment
+import androidx.compose.material3.Checkbox
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.houseaffairs.app.core.designsystem.Accent
@@ -104,6 +111,13 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
     var showInviteRolePicker by remember { mutableStateOf(false) }
     var showReset by remember { mutableStateOf(false) }
     var resetNote by remember { mutableStateOf<String?>(null) }
+    var exportNote by remember { mutableStateOf<String?>(null) }
+    var showDeleteAccount by remember { mutableStateOf(false) }
+    var deleteNote by remember { mutableStateOf<String?>(null) }
+    var showConnected by remember { mutableStateOf(false) }
+    var showPrivacy by remember { mutableStateOf(false) }
+    if (showConnected) ConnectedAppsSheet(state, viewModel) { showConnected = false }
+    if (showPrivacy) PrivacySheet(state, viewModel) { showPrivacy = false }
     val me = state.members.firstOrNull { it.uid == state.myUid }
     val colors = LocalHouseColors.current
 
@@ -153,42 +167,25 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
             }
         }
 
-        item { SectionHeader("Appearance") }
+        item { SectionHeader("Look & sound") }
         item {
             SettingsGroup {
                 Column(Modifier.padding(16.dp)) { ThemeSelector(state.themeMode, viewModel::setThemeMode) }
             }
         }
+        item { Spacer(Modifier.height(8.dp)) }
+        item { FeedbackGroup() }
 
-        // Connections: everything the family links to, in one place.
+        // Everything the app links to, behind one row, so Settings stays short.
         item { SectionHeader("Connections") }
-        item { ServiceKeysGroup(state, viewModel) }
-        item { SectionHeader("Connections · Gemini (each person)") }
         item {
             SettingsGroup {
-                ListItem(
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    leadingContent = { IconBlob(Icons.Outlined.AutoAwesome, LocalHouseColors.current.vault, size = 40.dp) },
-                    headlineContent = { Text("Smart understanding", style = MaterialTheme.typography.titleSmall) },
-                    supportingContent = {
-                        Text("When quick add isn't sure what you meant, it asks Google Gemini. Only that one line is sent, never your lists or amounts.")
-                    },
-                    trailingContent = { Switch(checked = state.smartAdd, onCheckedChange = viewModel::setSmartAdd) },
-                )
-                ListItem(
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    leadingContent = { IconBlob(Icons.Outlined.AutoAwesome, LocalHouseColors.current.stock, size = 40.dp) },
-                    headlineContent = { Text("Smart suggestions", style = MaterialTheme.typography.titleSmall) },
-                    supportingContent = {
-                        Text("Gemini picks what to cook and watch from your own lists, and writes the daily live-well tip. Sends dish and show names and habit scores, never amounts.")
-                    },
-                    trailingContent = { Switch(checked = state.smartSuggest, onCheckedChange = viewModel::setSmartSuggest) },
-                )
+                SettingsRow(
+                    Icons.Outlined.AutoAwesome, colors.vault, "Connected apps",
+                    connectedLine(state),
+                ) { showConnected = true }
             }
         }
-
-        item { SectionHeader("Connections · Google Calendar (each person)") }
-        item { CalendarGroup(state, viewModel) }
 
         item { SectionHeader("Notifications") }
         item { NotificationsGroup(state.notifications, viewModel::setNotifications) }
@@ -227,14 +224,31 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
         }
 
         if (state.isOwner) {
-            item { SectionHeader("Private topics") }
-            item { PrivateTopicsGroup(state, viewModel::setPrivateTopic) }
+            item { SectionHeader("Privacy") }
+            item {
+                SettingsGroup {
+                    SettingsRow(Icons.Outlined.PersonRemove, colors.coral.let { Accent(it, it.copy(alpha = 0.14f)) }, "Who sees what", privacyLine(state)) { showPrivacy = true }
+                }
+            }
         }
 
         item { SectionHeader("Account") }
         item {
             SettingsGroup {
                 SettingsRow(Icons.Outlined.Explore, colors.plans, "Show the app tour", "Every feature, one at a time", onClick = viewModel::showTour)
+                // The rotating widget: tasks, the next birthday, live-well, something to watch.
+                val widgetContext = androidx.compose.ui.platform.LocalContext.current
+                var widgetNote by remember { mutableStateOf<String?>(null) }
+                SettingsRow(Icons.Outlined.Explore, colors.money, "Add to home screen", widgetNote ?: "A widget that takes turns showing today's tasks, birthdays, live-well and what to watch") {
+                    widgetNote = if (com.houseaffairs.app.widget.HomeWidget.requestPin(widgetContext)) "Pick a spot on your home screen" else "Long-press your home screen, tap Widgets, then find HouseAffairs"
+                }
+                // Two taps, since it signs you out of your home (sign back in with Google anytime).
+                var demoAsk by remember { mutableStateOf(false) }
+                var demoNote by remember { mutableStateOf<String?>(null) }
+                SettingsRow(
+                    Icons.Outlined.Explore, colors.stock, if (demoAsk) "Tap again to open the demo" else "Try the demo home",
+                    demoNote ?: "Sample family data to practise on. Signs you out; your home stays as it is.",
+                ) { if (demoAsk) viewModel.tryDemo { demoNote = it } else demoAsk = true }
                 val danger = Accent(MaterialTheme.colorScheme.error, MaterialTheme.colorScheme.error.copy(alpha = 0.12f))
                 if (state.isOwner) {
                     SettingsRow(Icons.Outlined.DeleteForever, danger, "Reset everything", resetNote ?: "Start fresh: clears all lists and entries for the family") {
@@ -242,6 +256,27 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
                     }
                 }
                 SettingsRow(Icons.AutoMirrored.Outlined.Logout, danger, "Sign out", null, onClick = viewModel::signOut)
+            }
+        }
+
+        item { SectionHeader("Your data") }
+        item {
+            SettingsGroup {
+                val ctx = androidx.compose.ui.platform.LocalContext.current
+                SettingsRow(
+                    Icons.Outlined.Download, colors.money, "Download my data",
+                    exportNote ?: "Everything you can see as a JSON file, plus your expenses as a spreadsheet",
+                ) {
+                    exportNote = "Getting it ready…"
+                    viewModel.exportData { intent ->
+                        exportNote = null
+                        ctx.startActivity(android.content.Intent.createChooser(intent, "Save or send your data"))
+                    }
+                }
+                val danger = Accent(MaterialTheme.colorScheme.error, MaterialTheme.colorScheme.error.copy(alpha = 0.12f))
+                SettingsRow(Icons.Outlined.PersonRemove, danger, "Delete my account", deleteNote ?: "Removes you and what you added, then signs you out") {
+                    showDeleteAccount = true
+                }
             }
         }
     }
@@ -273,6 +308,19 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
                 viewModel.resetEverything { n -> resetNote = "Cleared $n entries" }
             },
             onDismiss = { showReset = false },
+        )
+    }
+    if (showDeleteAccount) {
+        val activity = androidx.compose.ui.platform.LocalContext.current
+        DeleteAccountDialog(
+            alone = state.members.size <= 1,
+            isOwner = state.isOwner,
+            onDelete = { keepShared ->
+                showDeleteAccount = false
+                deleteNote = "Deleting…"
+                viewModel.deleteAccount(activity, keepShared) { deleteNote = it }
+            },
+            onDismiss = { showDeleteAccount = false },
         )
     }
     state.inviteCode?.let { code -> InviteCodeDialog(code, onDismiss = viewModel::dismissInvite) }
@@ -359,6 +407,49 @@ private fun ResetDialog(onReset: () -> Unit, onDismiss: () -> Unit) {
     )
 }
 
+/** Like Reset, there's no undo, so it asks for DELETE to be typed. */
+@Composable
+private fun DeleteAccountDialog(alone: Boolean, isOwner: Boolean, onDelete: (keepShared: Boolean) -> Unit, onDismiss: () -> Unit) {
+    var typed by remember { mutableStateOf("") }
+    // Family entries such as expenses shape everyone's budget history, so they stay unless asked.
+    var keepShared by remember { mutableStateOf(true) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Delete your account?") },
+        text = {
+            Column {
+                Text(
+                    when {
+                        alone -> "You're the only member, so the whole home and everything in it is deleted with your account."
+                        isOwner -> "Your private entries and your account are deleted. The adult who joined first becomes the owner."
+                        else -> "Your private entries and your account are deleted, and you leave the home."
+                    } + " Download your data first if you want a copy. This can't be undone.",
+                )
+                if (!alone) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        Modifier.fillMaxWidth().selectable(selected = keepShared, onClick = { keepShared = !keepShared }),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(checked = keepShared, onCheckedChange = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Keep what I added for the whole family (expenses, groceries, tasks)", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(value = typed, onValueChange = { typed = it }, singleLine = true, label = { Text("Type DELETE to confirm") })
+            }
+        },
+        confirmButton = {
+            val ready = typed.trim().equals("DELETE", ignoreCase = true)
+            TextButton(onClick = { onDelete(alone.not() && keepShared) }, enabled = ready) {
+                Text("Delete", color = if (ready) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f))
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
 @Composable
 private fun InviteRoleDialog(onInvite: (Role) -> Unit, onDismiss: () -> Unit) {
     var role by remember { mutableStateOf(Role.ADULT) }
@@ -424,6 +515,88 @@ private fun InviteCodeDialog(code: String, onDismiss: () -> Unit) {
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Done") } },
     )
+}
+
+/** A soft ding on save, a little chime when something's done; quiet when the phone is on silent. */
+@Composable
+private fun FeedbackGroup(main: com.houseaffairs.app.ui.MainViewModel = androidx.hilt.navigation.compose.hiltViewModel()) {
+    val on by main.feedbackOn.collectAsState()
+    val view = androidx.compose.ui.platform.LocalView.current
+    SettingsGroup {
+        ListItem(
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            leadingContent = { IconBlob(Icons.Outlined.Notifications, LocalHouseColors.current.stock, size = 40.dp) },
+            headlineContent = { Text("Sounds & vibration", style = MaterialTheme.typography.titleSmall) },
+            supportingContent = { Text("A soft sound and tap when you save, finish or undo something. Quiet when your phone is on silent.") },
+            trailingContent = {
+                Switch(checked = on, onCheckedChange = { v ->
+                    main.setFeedback(v)
+                    // A sample, so you hear what you switched on.
+                    if (v) main.feedback.play(com.houseaffairs.app.core.ui.Cue.DONE, view)
+                })
+            },
+        )
+    }
+}
+
+/** Back up everything you can see to Drive › HouseAffairs › Backups; the owner can restore one. */
+@Composable
+private fun DriveBackupGroup(isOwner: Boolean, drive: com.houseaffairs.app.core.drive.DriveViewModel = androidx.hilt.navigation.compose.hiltViewModel()) {
+    val ds by drive.state.collectAsState()
+    val colors = LocalHouseColors.current
+    com.houseaffairs.app.core.drive.DriveConsent(ds.consent, drive::consentDone)
+    var restoring by remember { mutableStateOf<String?>(null) }
+    SettingsGroup {
+        val prefs by drive.backupPrefs.collectAsState(initial = com.houseaffairs.app.core.data.SettingsRepository.BackupPrefs())
+        SettingsRow(
+            Icons.Outlined.Backup, colors.plans, "Back up now",
+            ds.busy ?: ds.message ?: prefs.lastDay?.let { "Last backup: ${if (it == java.time.LocalDate.now().toString()) "today" else it}. Saved in Drive › HouseAffairs › Backups" }
+                ?: "Saves every entry to your Google Drive, in HouseAffairs › Backups",
+        ) {
+            if (ds.busy == null) drive.backup()
+        }
+        // How backups happen on this phone: a daily nudge to tap it, or on their own every day.
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Backups", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.horizontalScroll(androidx.compose.foundation.rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    com.houseaffairs.app.core.data.BackupMode.AUTO to "Every day, by itself",
+                    com.houseaffairs.app.core.data.BackupMode.REMIND to "Remind me daily",
+                    com.houseaffairs.app.core.data.BackupMode.OFF to "Only when I tap",
+                ).forEach { (mode, label) ->
+                    FilterChip(selected = prefs.mode == mode, onClick = { drive.setBackupMode(mode) }, label = { Text(label) }, shape = CircleShape)
+                }
+            }
+            Text(
+                when (prefs.mode) {
+                    com.houseaffairs.app.core.data.BackupMode.AUTO -> "Once a day in the background, when the battery isn't low."
+                    com.houseaffairs.app.core.data.BackupMode.REMIND -> "If you haven't backed up that day, the app asks once when you open it."
+                    com.houseaffairs.app.core.data.BackupMode.OFF -> "No reminders; tap Back up now whenever you like."
+                },
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (prefs.mode == com.houseaffairs.app.core.data.BackupMode.AUTO) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Wi-Fi only", style = MaterialTheme.typography.titleSmall)
+                        Text(if (prefs.wifiOnly) "Waits for Wi-Fi, so mobile data isn't used." else "Uses mobile data too when there's no Wi-Fi.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = prefs.wifiOnly, onCheckedChange = drive::setWifiOnly)
+                }
+            }
+        }
+        if (isOwner) {
+            SettingsRow(Icons.Outlined.Restore, colors.vault, "Restore from a backup", "Puts back entries from a backup; anything added since stays") {
+                if (ds.busy == null) drive.loadBackups()
+            }
+            ds.backups?.take(5)?.forEach { b ->
+                // Two taps, since it writes over the family's entries.
+                SettingsRow(Icons.Outlined.History, colors.vault, if (restoring == b.fileId) "Tap again to restore" else b.label, if (restoring == b.fileId) "Restores this backup for the whole family" else null) {
+                    if (restoring == b.fileId) { restoring = null; drive.restore(b) } else restoring = b.fileId
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -514,45 +687,6 @@ private fun NotificationsGroup(prefs: SettingsRepository.NotificationPrefs, onCh
                         DigestWorker.runNow(context)
                     }
                 }) { Text("Send a test now") }
-            }
-        }
-    }
-}
-
-/**
- * Topics only some people should see. New entries on them (pads, condoms, doctor bills…) are saved
- * visible only to the people ticked here, plus whoever adds them.
- */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun PrivateTopicsGroup(state: SettingsUiState, onChange: (String, List<String>?) -> Unit) {
-    SettingsGroup {
-        Text(
-            "New entries on these are only seen by the people you pick (and whoever adds them).",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp),
-        )
-        com.houseaffairs.app.core.data.PRIVATE_TOPICS.forEach { topic ->
-            val allowed = state.privateTopics[topic]
-            ListItem(
-                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                headlineContent = { Text(topic, style = MaterialTheme.typography.titleSmall) },
-                supportingContent = { Text(if (allowed == null) "Everyone" else "Private") },
-                trailingContent = { Switch(checked = allowed != null, onCheckedChange = { on -> onChange(topic, if (on) listOf(state.myUid) else null) }) },
-            )
-            if (allowed != null) {
-                FlowRow(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    state.members.forEach { m ->
-                        val on = m.uid in allowed
-                        FilterChip(
-                            selected = on,
-                            onClick = { onChange(topic, if (on) (allowed - m.uid).ifEmpty { listOf(state.myUid) } else allowed + m.uid) },
-                            label = { Text(m.displayName.substringBefore(' ')) },
-                            shape = CircleShape,
-                        )
-                    }
-                }
             }
         }
     }
@@ -650,6 +784,154 @@ private fun ServiceKeysGroup(state: SettingsUiState, viewModel: SettingsViewMode
                     color = if (it == "Connected" || it == "Checking…") MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
                 )
+            }
+        }
+    }
+}
+
+/** The Connected apps row: what's there, and what's on. */
+private fun connectedLine(state: SettingsUiState): String {
+    val on = listOfNotNull(
+        "Smart help".takeIf { state.smartAdd && state.smartSuggest },
+        "Calendar".takeIf { state.calendar.enabled },
+        "Movies".takeIf { state.integrations.isNotEmpty() },
+    )
+    val rest = listOf("Smart help", "Calendar", "Health", "Drive", "Movies").filter { it !in on }
+    return if (on.isEmpty()) "Smart help, Google Calendar, Health, Drive backups and movie lookups"
+    else "${on.joinToString(" and ")} on · also ${rest.joinToString(", ")}"
+}
+
+/** The Privacy row: who costs are hidden from, and how many categories are private. */
+private fun privacyLine(state: SettingsUiState): String {
+    val names = state.members.filter { it.uid in state.hideCostsFrom }.map { it.displayName.substringBefore(' ') }
+    val parts = listOfNotNull(
+        names.takeIf { it.isNotEmpty() }?.let { "Costs hidden from ${it.joinToString(", ")}" },
+        state.privateTopics.size.takeIf { it > 0 }?.let { "$it private ${if (it == 1) "category" else "categories"}" },
+    )
+    return parts.joinToString(" · ").ifEmpty { "Hide costs, or whole categories, from anyone in the family" }
+}
+
+/** Everything the app links to, each with its own switch: Gemini, Calendar, Health, Drive and movie services. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ConnectedAppsSheet(state: SettingsUiState, viewModel: SettingsViewModel, onDismiss: () -> Unit) {
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss, sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = MaterialTheme.colorScheme.background) {
+        LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 32.dp)) {
+            item {
+                Column(Modifier.padding(horizontal = 20.dp)) {
+                    Text("Connected apps", style = MaterialTheme.typography.headlineSmall)
+                    Text("Each one is optional. The app only sees what it made in your Google account.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            item { SectionHeader("Smart help · each person") }
+            item {
+                SettingsGroup {
+                    // One switch for both: on by default, since it's free and sends no amounts or lists.
+                    ListItem(
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        leadingContent = { IconBlob(Icons.Outlined.AutoAwesome, LocalHouseColors.current.vault, size = 40.dp) },
+                        headlineContent = { Text("Smart help", style = MaterialTheme.typography.titleSmall) },
+                        supportingContent = {
+                            Text("Google Gemini understands unclear lines, picks what to cook and watch, and writes the daily tip. Only that line or those names are sent, never amounts. Free.")
+                        },
+                        trailingContent = {
+                            Switch(checked = state.smartAdd && state.smartSuggest, onCheckedChange = { on -> viewModel.setSmartAdd(on); viewModel.setSmartSuggest(on) })
+                        },
+                    )
+                }
+            }
+            item { SectionHeader("Google Calendar · each person") }
+            item { CalendarGroup(state, viewModel) }
+            item { SectionHeader("Health · each person") }
+            item { SettingsGroup { com.houseaffairs.app.core.health.HealthConnectRow() } }
+            item { SectionHeader("Google Drive · backups") }
+            item { DriveBackupGroup(state.isOwner) }
+            item { SectionHeader("Movies & shows · the family") }
+            item { ServiceKeysGroup(state, viewModel) }
+        }
+    }
+}
+
+/**
+ * Who sees what, set by the owner: the family's costs hidden from some people (trips and dreams
+ * still show, their amounts don't), and categories whose new entries are hidden from some people.
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun PrivacySheet(state: SettingsUiState, viewModel: SettingsViewModel, onDismiss: () -> Unit) {
+    val others = state.members.filter { it.uid != state.myUid }
+    val everyone = state.members.map { it.uid }
+    @Composable
+    fun People(hidden: Collection<String>, onToggle: (String) -> Unit) {
+        if (others.isEmpty()) {
+            Text("Once others join, pick who it's hidden from.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            return
+        }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            others.forEach { m ->
+                FilterChip(
+                    selected = m.uid in hidden,
+                    onClick = { onToggle(m.uid) },
+                    label = { Text(m.displayName.substringBefore(' ')) },
+                    shape = CircleShape,
+                )
+            }
+        }
+    }
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss, sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = MaterialTheme.colorScheme.background) {
+        LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            item {
+                Text("Who sees what", style = MaterialTheme.typography.headlineSmall)
+                Text("Only you can change this.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            item {
+                Text("Hide costs from", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
+                Text(
+                    "They still see trips, dreams and lists, just not what they cost. Money shows only what they spent themselves.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp),
+                )
+                People(state.hideCostsFrom) { uid ->
+                    viewModel.setHideCosts(if (uid in state.hideCostsFrom) state.hideCostsFrom - uid else state.hideCostsFrom + uid)
+                }
+            }
+            item {
+                Text("Private categories", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp))
+                Text(
+                    "New things in these are hidden from the people you pick. Whoever adds one always sees it.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            val private = state.privateTopics.keys.sorted()
+            items(private.size) { i ->
+                val topic = private[i]
+                val allowed = state.privateTopics.getValue(topic)
+                val hidden = others.map { it.uid }.filter { it !in allowed }
+                Column(Modifier.fillMaxWidth().clip(androidx.compose.foundation.shape.RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceContainerLow).padding(start = 14.dp, end = 4.dp, top = 8.dp, bottom = 10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(topic, style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                if (hidden.isEmpty()) "Hidden from nobody yet" else "Hidden from " + state.members.filter { it.uid in hidden }.joinToString(", ") { it.displayName.substringBefore(' ') },
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(onClick = { viewModel.setPrivateTopic(topic, null) }) { Text("Make public") }
+                    }
+                    People(hidden) { uid ->
+                        val now = if (uid in hidden) hidden - uid else hidden + uid
+                        viewModel.setPrivateTopic(topic, if (now.isEmpty()) null else com.houseaffairs.app.core.data.seenByAllBut(everyone, now, state.myUid))
+                    }
+                }
+            }
+            item {
+                Text("Make one private", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
+                Text("Your kitchen and supply categories, the ones you use first.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    state.privateChoices.filter { c -> state.privateTopics.keys.none { it.equals(c, ignoreCase = true) } }.forEach { c ->
+                        // Starts hidden from everyone else; untick the people who may see it.
+                        androidx.compose.material3.SuggestionChip(onClick = { viewModel.setPrivateTopic(c, listOf(state.myUid)) }, label = { Text("+ $c") }, shape = CircleShape)
+                    }
+                }
             }
         }
     }

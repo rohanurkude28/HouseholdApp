@@ -18,10 +18,10 @@ fun parseMacros(text: String?): Macros? {
     return if (n.size >= 4) Macros(n[0], n[1], n[2], n[3]) else null
 }
 
-/** One serving of [title]: the family's recipe if it has macros, else the library's. */
+/** One serving of [title], from the family's own recipe. */
 fun macrosFor(title: String, saved: List<Recipe>): Macros? {
     val key = title.trim().lowercase()
-    return (saved.firstOrNull { it.title.lowercase() == key }?.macros ?: RECIPE_LIBRARY.firstOrNull { it.title.lowercase() == key }?.macros)
+    return (saved.firstOrNull { it.title.lowercase() == key }?.macros)
         .let(::parseMacros)
 }
 

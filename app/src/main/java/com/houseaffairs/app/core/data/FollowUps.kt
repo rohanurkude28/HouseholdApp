@@ -55,9 +55,36 @@ fun ratedFollowUp(title: String, rate: (liked: Boolean) -> Unit) = FollowUp(
     groups = listOf(FollowUpGroup("Your take", listOf(FollowUpChoice("👍 Liked it") { rate(true) }, FollowUpChoice("👎 Not great") { rate(false) }))),
 )
 
-/** After "finished": it went on the shopping list; one tap takes it off. */
+/** After "used up", for something always kept: it went back on the buy list; one tap takes it off. */
 fun finishedFollowUp(title: String, dontBuy: () -> Unit) = FollowUp(
-    title = "$title · finished",
-    note = "Added to the shopping list.",
+    title = "$title · used up",
+    note = "You keep this stocked, so it's on the buy list.",
+    groups = listOf(FollowUpGroup("Buy again?", listOf(FollowUpChoice("Yes, keep on the list") {}, FollowUpChoice("Don't buy again", dontBuy)))),
+)
+
+/** After "used up" (or thrown away), for a one-off: it's off the list, and buying it again is a choice. */
+fun buyAgainFollowUp(title: String, thrown: Boolean, add: () -> Unit) = FollowUp(
+    title = "$title · " + if (thrown) "thrown away" else "used up",
+    note = if (thrown) "Counted as waste this month." else null,
+    groups = listOf(FollowUpGroup("Add it to the buy list?", listOf(FollowUpChoice("Add to buy list", add), FollowUpChoice("No") {}))),
+)
+
+/**
+ * After throwing away part (or all) of something: counted as waste, then one tap to put it on
+ * the buy list (unless it's already there) and one to put it back if it was a mistake.
+ */
+fun wasteFollowUp(title: String, share: Int, onList: Boolean, add: () -> Unit, putBack: () -> Unit) = FollowUp(
+    title = "$title · " + if (share >= 100) "thrown away" else "$share% thrown away",
+    note = "Counted as waste this month." + if (onList) " It's already on the buy list." else "",
+    groups = listOfNotNull(
+        if (onList) null else FollowUpGroup("Add it to the buy list?", listOf(FollowUpChoice("Add to buy list", add), FollowUpChoice("No") {})),
+        FollowUpGroup("Changed your mind?", listOf(FollowUpChoice("Put it back", putBack))),
+    ),
+)
+
+/** After "threw it away": counted as waste and put on the shopping list; one tap takes it off. */
+fun thrownFollowUp(title: String, dontBuy: () -> Unit) = FollowUp(
+    title = "$title · thrown away",
+    note = "Counted as waste this month, and added to the shopping list.",
     groups = listOf(FollowUpGroup("Buy again?", listOf(FollowUpChoice("Yes, keep on the list") {}, FollowUpChoice("Don't buy again", dontBuy)))),
 )

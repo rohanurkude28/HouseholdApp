@@ -4,6 +4,9 @@ import com.houseaffairs.app.core.time.*
 
 /** What Home shows, read from Firestore by each platform's repository. */
 
+/** Stock statuses that take an item off its list: finished, or thrown away. */
+val GONE_STATUSES = setOf("USED_UP", "WASTED")
+
 enum class ActivityKind { EXPENSE, SHOPPING, TASK, LIST_ITEM, GROCERY, MEDICINE, SUBSCRIPTION, EVENT }
 
 data class ActivityItem(
@@ -38,6 +41,15 @@ data class TaskItem(
     val phone: String? = null,
     /** "5:30 pm" when the task has a time; it then reminds at that time on its due date. */
     val time: String? = null,
+    /** Who gave the task; with [ask], whether the person it's for has said yes yet. */
+    val assignedBy: String? = null,
+    /** "PENDING", "ACCEPTED" or "DECLINED" when it was given to someone else; null otherwise. */
+    val ask: String? = null,
+    /** Who said they can't do it, and why; it's back with [assignedBy] then. */
+    val declinedBy: String? = null,
+    val declineNote: String? = null,
+    /** One of the family's chores: nudged when due, and next due an interval after it's done. */
+    val chore: Boolean = false,
 )
 
 data class StockItem(val id: String, val title: String, val expiry: LocalDate?, val level: Int?)
@@ -83,5 +95,12 @@ data class HomeData(
     val renewals: List<Renewal> = emptyList(),
     val events: List<EventItem> = emptyList(),
     val recent: List<ActivityItem> = emptyList(),
+    /** Medicines taken on a schedule, for dose reminders and "runs out soon". */
+    val courses: List<MedicineCourse> = emptyList(),
+    /** Tasks ticked off, with when: the rhythm of chores nobody set to repeat. */
+    val done: List<DoneTask> = emptyList(),
 )
+
+/** A task ticked off on [date] at [minute] after midnight. */
+data class DoneTask(val title: String, val date: LocalDate, val minute: Int)
 

@@ -53,11 +53,13 @@ class HomeRepository @Inject constructor(
             },
             recentIf(canMoney, "recurring"),
             recentIf(canPlans, "events"),
+            // Every task, not just the newest 30: a chore's rhythm needs its history.
+            if (canPlans) visible(householdId, "tasks", me.uid).docs() else flowOf(emptyList()),
         )
 
         return combine(sources) { results ->
             val (monthDocs, expenseDocs, shoppingDocs, taskDocs, listDocs) = results.take(5)
-            val (stockDocs, medicineDocs, recurringDocs, eventDocs) = results.drop(5)
+            val (stockDocs, medicineDocs, recurringDocs, eventDocs, allTaskDocs) = results.drop(5)
             val today = LocalDate.now()
             // Planned spends haven't happened yet, so they're not "spent this month".
             val inBase = monthDocs.filter { it.getString("currency") == baseCurrency && it.getString("status") != "Planned" }
@@ -83,17 +85,29 @@ class HomeRepository @Inject constructor(
                             reach = it.getString("reach"),
                             phone = it.getString("phone")?.takeIf { p -> p.isNotBlank() },
                             time = it.getString("time")?.takeIf { t -> t.isNotBlank() },
+                            assignedBy = it.getString("assignedBy"),
+                            ask = it.getString("ask"),
+                            declinedBy = it.getString("declinedBy"),
+                            declineNote = it.getString("declineNote")?.takeIf { n -> n.isNotBlank() },
+                            chore = it.getString("source") == "chore",
                         )
                     }
                     // Soonest first; on the same day, High before Medium before Low.
                     .sortedWith(compareBy<TaskItem, LocalDate?>(nullsLast()) { it.dueDate }.thenBy { listOf("High", "Medium", "Low").indexOf(it.priority) }),
-                pantry = stockDocs.filter { it.getString("status") != "USED_UP" }.map(::stockItem),
-                medicines = medicineDocs.filter { it.getString("status") != "USED_UP" }.map(::stockItem),
+                done = allTaskDocs.filter { it.getBoolean("done") == true }.mapNotNull { d ->
+                    val at = d.getTimestamp("completedAt")?.toDate()?.toInstant()?.atZone(ZoneId.systemDefault()) ?: return@mapNotNull null
+                    DoneTask(d.titleOr("title"), at.toLocalDate(), at.hour * 60 + at.minute)
+                },
+                pantry = stockDocs.filter { it.getString("status") !in GONE_STATUSES }.map(::stockItem),
+                medicines = medicineDocs.filter { it.getString("status") !in GONE_STATUSES }.map(::stockItem),
+                courses = medicineDocs.filter { it.getString("status") !in GONE_STATUSES }.mapNotNull(::courseOf),
                 renewals = recurringDocs.mapNotNull { doc ->
                     val next = doc.localDate("nextDate") ?: return@mapNotNull null
-                    val amount = doc.getLong("amountMinor")?.let { minor -> doc.getString("currency")?.let { formatMinor(minor, it) } }
+                    val owed = nextRenewal(next, doc.getString("frequency"), doc.localDate("lastLogged"), today)
+                    // The price for that renewal, after any change of price from a date.
+                    val amount = doc.getLong("amountMinor")?.let { minor -> doc.getString("currency")?.let { formatMinor(priceOn(owed, minor, decodePrices(doc.get("priceHistory"))), it) } }
                     Renewal(
-                        doc.id, doc.titleOr("title"), nextRenewal(next, doc.getString("frequency"), doc.localDate("lastLogged"), today), amount,
+                        doc.id, doc.titleOr("title"), owed, amount,
                         remindDaysOf(doc.getString("remind")),
                         auto = doc.getString("onRenew") == "Log it automatically",
                         using = doc.getString("using")?.takeIf { it != "Yes" },
@@ -112,7 +126,7 @@ class HomeRepository @Inject constructor(
                         medicineDocs.map { it.toActivity(ActivityKind.MEDICINE, it.titleOr("title")) } +
                         recurringDocs.map { it.toActivity(ActivityKind.SUBSCRIPTION, it.titleOr("title")) } +
                         eventDocs.map { it.toActivity(ActivityKind.EVENT, it.titleOr("title")) }
-                    ).sortedByDescending { it.createdAtMillis }.take(8),
+                    ).sortedByDescending { it.createdAtMillis }.take(20),
             )
         }
     }
@@ -123,6 +137,63 @@ class HomeRepository @Inject constructor(
     private fun DocumentSnapshot.localDate(field: String): LocalDate? =
         getTimestamp(field)?.toDate()?.toInstant()?.atZone(ZoneId.systemDefault())?.toLocalDate()
 
+    /** A task for today, for whoever asked, from a chore Home noticed. Returns the undo. */
+    fun addTask(
+        householdId: String, uid: String, title: String, today: LocalDate = LocalDate.now(),
+        due: LocalDate? = today, time: String? = null, repeat: String? = null, source: String = "habit",
+        /** Whose it is; null for a chore anyone can do. */
+        assignee: String? = uid,
+    ): () -> Unit {
+        val ref = collection(householdId, "tasks").document()
+        ref.set(
+            mapOf(
+                "title" to title, "done" to false, "assignee" to assignee, "priority" to "Low",
+                "createdBy" to uid, "visibleTo" to Visibility.everyone,
+                "createdAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(), "source" to source,
+            ) + listOfNotNull(
+                due?.let { "due" to com.google.firebase.Timestamp(java.util.Date.from(it.atStartOfDay(ZoneId.systemDefault()).toInstant())) },
+                time?.let { "time" to it },
+                repeat?.let { "repeat" to it },
+            ),
+        )
+        return { ref.delete() }
+    }
+
+    /** Takes a task (a chore taken off the list) away; the undo writes it back as it was. */
+    fun removeTask(householdId: String, id: String): () -> Unit {
+        val ref = collection(householdId, "tasks").document(id)
+        var saved: Map<String, Any>? = null
+        ref.get().addOnSuccessListener { doc -> saved = doc.data; ref.delete() }
+        return { saved?.let { ref.set(it) } }
+    }
+
+    /** A chore's new rhythm ("Every 3 days"); undo puts the old one back. */
+    fun setRepeat(householdId: String, id: String, repeat: String, before: String?): () -> Unit {
+        val ref = collection(householdId, "tasks").document(id)
+        ref.update("repeat", repeat)
+        return { ref.update("repeat", before ?: com.google.firebase.firestore.FieldValue.delete()) }
+    }
+
+    /** Moved to another day (or to no date): only the due date changes; undo puts the old one back. */
+    fun moveTask(householdId: String, id: String, to: LocalDate?, from: LocalDate?): () -> Unit {
+        val ref = collection(householdId, "tasks").document(id)
+        fun stamp(d: LocalDate) = com.google.firebase.Timestamp(java.util.Date.from(d.atStartOfDay(ZoneId.systemDefault()).toInstant()))
+        ref.update("due", to?.let(::stamp) ?: com.google.firebase.firestore.FieldValue.delete())
+        return { ref.update("due", from?.let(::stamp) ?: com.google.firebase.firestore.FieldValue.delete()) }
+    }
+
+    /** "Done ✓" on a chore reminder: a ticked-off task, so the family's rhythm for it carries on. */
+    fun logDone(householdId: String, uid: String, title: String) {
+        collection(householdId, "tasks").document().set(
+            mapOf(
+                "title" to title, "done" to true, "assignee" to uid, "priority" to "Low",
+                "completedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+                "createdBy" to uid, "visibleTo" to Visibility.everyone,
+                "createdAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(), "source" to "habit",
+            ),
+        )
+    }
+
     /**
      * Ticks a task off. A repeating one comes back as a new task, due next time and with the
      * next person in its rota. The returned undo puts the task back and removes the next one.
@@ -131,12 +202,14 @@ class HomeRepository @Inject constructor(
         val tasks = collection(householdId, "tasks")
         val ref = tasks.document(task.id)
         ref.update(mapOf("done" to true, "completedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()))
-        val nextRef = nextDue(task.dueDate, task.repeat, today)?.let { due ->
+        // A chore is next due an interval after it was actually done; other repeats keep their rhythm.
+        val nextRef = nextDue(if (task.chore) today else task.dueDate, task.repeat, today)?.let { due ->
             tasks.document().also { next ->
                 ref.get().addOnSuccessListener { doc ->
                     val data = doc.data ?: return@addOnSuccessListener
                     next.set(
-                        data - "completedAt" + mapOf(
+                        // The next one is agreed already: no question carried over.
+                        data - "completedAt" - "ask" - "declinedBy" - "declineNote" + mapOf(
                             "done" to false,
                             "due" to com.google.firebase.Timestamp(java.util.Date.from(due.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant())),
                             "assignee" to nextInRotation(task.rotation, task.assignee),
@@ -152,6 +225,40 @@ class HomeRepository @Inject constructor(
             ref.update(mapOf("done" to false, "completedAt" to com.google.firebase.firestore.FieldValue.delete()))
             nextRef?.delete()
         }
+    }
+
+    /**
+     * The answer to a task given to me: yes, or "can't do it" ([note] says why), which hands it
+     * back to whoever gave it. Returns the undo.
+     */
+    fun answerTask(householdId: String, uid: String, task: TaskItem, accept: Boolean, note: String? = null): () -> Unit {
+        val ref = collection(householdId, "tasks").document(task.id)
+        ref.update(
+            if (accept) mapOf("ask" to "ACCEPTED", "answeredAt" to com.google.firebase.firestore.FieldValue.serverTimestamp())
+            else mapOf(
+                "ask" to "DECLINED", "declinedBy" to uid, "declineNote" to note?.trim()?.takeIf { it.isNotEmpty() },
+                "assignee" to task.assignedBy, "answeredAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+            ),
+        )
+        return {
+            ref.update(
+                mapOf(
+                    "ask" to "PENDING", "assignee" to task.assignee,
+                    "declinedBy" to com.google.firebase.firestore.FieldValue.delete(), "declineNote" to com.google.firebase.firestore.FieldValue.delete(),
+                ),
+            )
+        }
+    }
+
+    /** "I'll do it": a task that came back stays with me and stops asking. */
+    fun keepTask(householdId: String, task: TaskItem) {
+        collection(householdId, "tasks").document(task.id).update(
+            mapOf(
+                "ask" to com.google.firebase.firestore.FieldValue.delete(),
+                "declinedBy" to com.google.firebase.firestore.FieldValue.delete(),
+                "declineNote" to com.google.firebase.firestore.FieldValue.delete(),
+            ),
+        )
     }
 
     fun markBought(householdId: String, itemId: String) {
@@ -182,5 +289,31 @@ class HomeRepository @Inject constructor(
         createdBy = getString("createdBy").orEmpty(),
         // Just-saved items have no server time yet; use the local estimate so they show at the top.
         createdAtMillis = getTimestamp("createdAt", ServerTimestampBehavior.ESTIMATE)?.toDate()?.time,
+    )
+}
+
+/**
+ * A medicine with a schedule ("Twice a day"), or null when it's taken as needed. The count runs
+ * from when it was last counted (an edit to how much is left), else when it was bought.
+ */
+internal fun courseOf(doc: DocumentSnapshot): MedicineCourse? {
+    val frequency = doc.getString("frequency")
+    val times = doseTimes(frequency, (doc.get("doseTimes") as? List<*>).orEmpty().filterIsInstance<String>())
+    if (times.isEmpty()) return null
+    val quantity = doc.get("quantity") as? Map<*, *>
+    return MedicineCourse(
+        id = doc.id,
+        title = doc.getString("title").orEmpty(),
+        forWhom = (doc.get("forWhom") as? List<*>).orEmpty().filterIsInstance<String>(),
+        createdBy = doc.getString("createdBy"),
+        times = times,
+        perDose = doseAmount(doc.getString("perDose")),
+        unit = (quantity?.get("unit") as? String) ?: "tablets",
+        left = (quantity?.get("amount") as? Number)?.toDouble(),
+        since = doc.localDate("countedAt") ?: doc.localDate("boughtOn") ?: doc.localDate("createdAt"),
+        until = doc.localDate("until"),
+        remindDoses = doc.getString("remindDose") != "No",
+        restock = doc.getString("restock").let { it != null && it != "Off" },
+        skipped = (doc.get("skipped") as? List<*>).orEmpty().mapNotNull { (it as? Number)?.toLong() }.toSet(),
     )
 }

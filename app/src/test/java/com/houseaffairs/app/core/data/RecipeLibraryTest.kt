@@ -18,7 +18,7 @@ class RecipeLibraryTest {
 
     @Test
     fun `suggests dishes that use the expiring paneer, cookable first`() {
-        val ideas = useItUp(pantry, saved = emptyList(), today = today)
+        val ideas = useItUp(pantry, saved = SAMPLE_RECIPES, today = today)
         assertTrue(ideas.isNotEmpty())
         assertTrue(ideas.all { "Paneer" in it.rescues })
         assertEquals("Paneer bhurji", ideas.first().recipe.title) // everything in stock
@@ -39,13 +39,13 @@ class RecipeLibraryTest {
 
     @Test
     fun `cook ideas respect mood`() {
-        val sweet = cookIdeas(pantry, emptyList(), today, mood = "Sweet")
+        val sweet = cookIdeas(pantry, SAMPLE_RECIPES, today, mood = "Sweet")
         assertTrue(sweet.all { "Sweet" in it.recipe.mood })
     }
 
     @Test
     fun `recently cooked dishes drop, long-unmade ones rise`() {
-        val ideas = cookIdeas(pantry, emptyList(), today)
+        val ideas = cookIdeas(pantry, SAMPLE_RECIPES, today)
         val first = ideas.first().recipe.title
         val second = ideas[1].recipe.title
         val history = mapOf(first.lowercase() to today.minusDays(1), second.lowercase() to today.minusDays(30))

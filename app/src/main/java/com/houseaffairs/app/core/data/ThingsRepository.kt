@@ -5,10 +5,22 @@ import com.houseaffairs.app.core.model.Visibility
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.tasks.await
 import javax.inject.Inject
 import javax.inject.Singleton
 
-data class KeptItem(val id: String, val title: String, val location: String, val kind: String?, val room: String?, val note: String?)
+data class KeptItem(
+    val id: String,
+    val title: String,
+    val location: String,
+    val kind: String?,
+    val room: String?,
+    val note: String?,
+    /** For documents filed in Google Drive: the folder ("Insurance") and the link that opens the file. */
+    val docType: String? = null,
+    val link: String? = null,
+    val photos: List<String> = emptyList(),
+)
 
 data class PlaceItem(
     val id: String,
@@ -38,7 +50,11 @@ class ThingsRepository @Inject constructor(
         visible(householdId, "keptAt", uid).observeSnapshots()
             .map { snap ->
                 snap.documents.map { d ->
-                    KeptItem(d.id, d.getString("title").orEmpty(), d.getString("location").orEmpty(), d.getString("kind"), d.getString("room"), d.getString("note"))
+                    KeptItem(
+                        d.id, d.getString("title").orEmpty(), d.getString("location").orEmpty(), d.getString("kind"), d.getString("room"), d.getString("note"),
+                        docType = d.getString("docType"), link = d.getString("driveLink"),
+                        photos = (d.get("photos") as? List<*>).orEmpty().filterIsInstance<String>(),
+                    )
                 }.sortedBy { it.title.lowercase() }
             }
             .catch { emit(emptyList()) }
@@ -70,6 +86,8 @@ class ThingsRepository @Inject constructor(
                         status = d.getString("status") ?: "IDEA",
                         votes = (d.get("votes") as? List<*>).orEmpty().filterIsInstance<String>(),
                         event = d.getString("event"),
+                        link = d.getString("link")?.takeIf { it.isNotBlank() },
+                        photos = (d.get("photos") as? List<*>).orEmpty().filterIsInstance<String>(),
                     )
                 }
             }
@@ -83,14 +101,22 @@ class ThingsRepository @Inject constructor(
                     Goal(
                         d.id, d.getString("title").orEmpty(), d.getString("kind"),
                         (d.get("who") as? List<*>).orEmpty().filterIsInstance<String>(),
-                        (d.getLong("progress") ?: 0).toInt(), d.localDate("by"), d.localDate("createdAt"),
+                        (d.getLong("progress") ?: 0).toInt(), d.localDate("by"), d.localDate("createdAt"), d.localDate("doneAt"),
                     )
                 }.sortedByDescending { it.created }
             }
             .catch { emit(emptyList()) }
 
-    fun setGoalProgress(householdId: String, id: String, progress: Int) {
-        db.collection("households").document(householdId).collection("weeklyGoals").document(id).update("progress", progress.coerceIn(0, 100))
+    /** Returns an undo that puts the earlier progress back. */
+    fun setGoalProgress(householdId: String, id: String, progress: Int, before: Int? = null): () -> Unit {
+        val ref = db.collection("households").document(householdId).collection("weeklyGoals").document(id)
+        fun write(value: Int) {
+            val p = value.coerceIn(0, 100)
+            // When it was reached, so it stays for this year's story and is cleared after.
+            ref.update(mapOf("progress" to p, "doneAt" to if (p >= 100) com.google.firebase.firestore.FieldValue.serverTimestamp() else com.google.firebase.firestore.FieldValue.delete()))
+        }
+        write(progress)
+        return { before?.let(::write) }
     }
 
     /** ❤️ a list item, or take the ❤️ back. */
@@ -124,6 +150,24 @@ class ThingsRepository @Inject constructor(
                 }
             }.catch { emit(emptyList()) },
         ) { a, b -> (a + b).sortedByDescending { it.at } }
+
+    /**
+     * Clears finished tasks, list items and goals once [shouldClear] says their year is over.
+     * Only what this person can see; each member's phone clears what it can. Returns how many went.
+     */
+    suspend fun clearOldFinished(householdId: String, uid: String, today: java.time.LocalDate = java.time.LocalDate.now()): Int {
+        val stale = listOf(
+            "tasks" to { d: com.google.firebase.firestore.DocumentSnapshot -> if (d.getBoolean("done") == true) d.localDate("completedAt") else null },
+            "listItems" to { d: com.google.firebase.firestore.DocumentSnapshot -> if (d.getString("status") == "DONE") d.localDate("updatedAt") ?: d.localDate("createdAt") else null },
+            "weeklyGoals" to { d: com.google.firebase.firestore.DocumentSnapshot -> if ((d.getLong("progress") ?: 0) >= 100) d.localDate("doneAt") ?: d.localDate("createdAt") else null },
+        ).flatMap { (name, doneOn) ->
+            // No Plans access (a helper): nothing to read, nothing to clear.
+            runCatching { visible(householdId, name, uid).get().await().documents }.getOrDefault(emptyList())
+                .filter { d -> doneOn(d)?.let { shouldClear(it, today) } == true }
+        }
+        stale.chunked(450).forEach { chunk -> db.batch().apply { chunk.forEach { delete(it.reference) } }.commit().await() }
+        return stale.size
+    }
 
     /** Puts a finished task or list item back on its list. */
     fun reopen(householdId: String, item: FinishedItem) {

@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -42,6 +43,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.houseaffairs.app.core.data.Cycle
 import com.houseaffairs.app.core.data.MoneyState
 import com.houseaffairs.app.core.data.Transfer
 import com.houseaffairs.app.core.data.cyclesSince
@@ -155,22 +157,17 @@ internal fun MovesCard(m: MoneyState, money: (Long) -> String, onUndo: (Transfer
 }
 
 /**
- * Every expense, searchable: type a word ("swiggy", "cab"), pick a category, pick a month.
- * The total of what's shown is always at the top.
+ * The expenses of one [period] (the month or year the tab shows), searchable: type a word
+ * ("swiggy", "cab", "Goa"). The total of what's shown is always at the top. Picking the period
+ * and seeing categories happen above it, so neither is repeated here.
  */
 @Composable
-internal fun ExpensesSearch(m: MoneyState, money: (Long) -> String, onAdd: () -> Unit, onOpen: (String) -> Unit) {
+internal fun ExpensesSearch(m: MoneyState, money: (Long) -> String, period: Cycle, onAdd: () -> Unit, onOpen: (String) -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
-    var category by rememberSaveable { mutableStateOf<String?>(null) }
-    val months = remember(m.startedOn) { cyclesSince(m.startedOn, LocalDate.now(), m.budget.cycleStartDay) }
-    // 0 = this month, 1 = last month… -1 = every month.
-    var month by rememberSaveable { mutableIntStateOf(0) }
-    val cycle = months.getOrNull(month)
-    val found = findExpenses(m.txns, query, category, cycle)
-    val categories = m.txns.filter { !it.planned && (cycle == null || it.date in cycle) }.groupBy { it.category }
-        .map { (c, l) -> c to l.sumOf { it.amountMinor } }.sortedByDescending { it.second }
+    val category: String? = null
+    val month = period.start
+    val found = findExpenses(m.txns, query, category, period)
     val accent = LocalHouseColors.current.money
-    val fmt = DateTimeFormatter.ofPattern("MMM yyyy")
 
     Column {
         TextField(
@@ -188,29 +185,6 @@ internal fun ExpensesSearch(m: MoneyState, money: (Long) -> String, onAdd: () ->
             ),
             modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
         )
-        LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(months.size.coerceAtMost(6) + 1) { i ->
-                val idx = if (i == months.size.coerceAtMost(6)) -1 else i
-                FilterChip(
-                    selected = month == idx,
-                    onClick = { month = idx },
-                    label = { Text(when (idx) { -1 -> "All time"; 0 -> "This month"; 1 -> "Last month"; else -> months[idx].start.format(fmt) }) },
-                    shape = CircleShape,
-                )
-            }
-        }
-        LazyRow(contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(categories.size) { i ->
-                val (c, amt) = categories[i]
-                FilterChip(
-                    selected = category == c,
-                    onClick = { category = if (category == c) null else c },
-                    label = { Text("$c · ${money(amt)}") },
-                    leadingIcon = { Icon(categoryIcon(c), contentDescription = null, modifier = Modifier.size(16.dp)) },
-                    shape = CircleShape,
-                )
-            }
-        }
         HaCard(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -255,44 +229,29 @@ internal fun ExpensesSearch(m: MoneyState, money: (Long) -> String, onAdd: () ->
 }
 
 
-/** Spend per budget month, what's saved, where the year is heading, and big things coming up. */
+/** This year's totals: what's saved and where the year is heading. Month by month is the chart below it. */
 @Composable
-internal fun YearOutlookCard(o: com.houseaffairs.app.core.data.YearOutlook, money: (Long) -> String) {
+internal fun ColumnScope.YearOutlookSummary(o: com.houseaffairs.app.core.data.YearOutlook, money: (Long) -> String) {
     val accent = LocalHouseColors.current.money
-    Column(Modifier.padding(top = 8.dp)) {
-        HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
-            Text("Saved this year", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(money(o.savedSoFarMinor), style = MaterialTheme.typography.headlineMedium)
-            Text("On track for about ${money(o.projectedMinor)} by December", style = MaterialTheme.typography.bodyMedium, color = accent.color)
-            o.insight?.let {
-                Spacer(Modifier.height(8.dp))
-                Text("✨ $it", style = MaterialTheme.typography.bodyMedium)
-            }
-            // One bar per budget month, against the budget line.
-            val top = (o.months.maxOfOrNull { maxOf(it.spentMinor, it.budgetMinor) } ?: 1L).coerceAtLeast(1L)
-            Spacer(Modifier.height(16.dp))
-            Row(Modifier.fillMaxWidth().height(120.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
-                o.months.forEach { mth ->
-                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                        val over = mth.spentMinor > mth.budgetMinor
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .height((100 * mth.spentMinor / top).toInt().coerceAtLeast(2).dp)
-                                .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp))
-                                .background(if (over) MaterialTheme.colorScheme.error else if (mth.current) accent.color.copy(alpha = 0.5f) else accent.color),
-                        )
-                        Text(mth.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-        }
+    Text("Saved this year", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Text(money(o.savedSoFarMinor), style = MaterialTheme.typography.headlineMedium)
+    Text("On track for about ${money(o.projectedMinor)} by December", style = MaterialTheme.typography.bodyMedium, color = accent.color)
+    o.insight?.let {
+        Spacer(Modifier.height(8.dp))
+        Text("✨ $it", style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+/** Planned spends, trips and dreams coming up in the next year; each opens where it lives. */
+@Composable
+internal fun ComingUpCard(o: com.houseaffairs.app.core.data.YearOutlook, money: (Long) -> String, onOpen: (com.houseaffairs.app.core.data.BigItem) -> Unit) {
+    Column {
         if (o.upcoming.isNotEmpty()) {
             Text("Coming up in the next year", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 8.dp))
             HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
                 o.upcoming.forEachIndexed { i, item ->
                     if (i > 0) Spacer(Modifier.height(10.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).clickable { onOpen(item) }.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             when (item.kind) { "Trip" -> "🧳"; "Dream" -> "⭐"; else -> "📅" },
                             style = MaterialTheme.typography.titleMedium,
@@ -300,7 +259,8 @@ internal fun YearOutlookCard(o: com.houseaffairs.app.core.data.YearOutlook, mone
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
                             Text(item.title, style = MaterialTheme.typography.titleSmall)
-                            Text("${item.kind} · ${com.houseaffairs.app.feature.add.formatDate(item.date)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            // Say what it is and where it lives: a "Goa trip" planned spend isn't a trip.
+                            Text("${when (item.kind) { "Planned" -> "Planned spend"; "Dream" -> "Dream · vision board"; else -> item.kind }} · ${com.houseaffairs.app.feature.add.formatDate(item.date)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         item.amountMinor?.let { Text(money(it), style = MaterialTheme.typography.titleSmall) }
                     }

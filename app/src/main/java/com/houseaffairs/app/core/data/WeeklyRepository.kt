@@ -6,6 +6,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.houseaffairs.app.core.model.AppModule
 import com.houseaffairs.app.core.model.Member
 import com.houseaffairs.app.core.model.Visibility
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.tasks.await
 import java.time.LocalDate
 import java.time.ZoneId
@@ -57,6 +58,8 @@ data class WeekReview(
 @Singleton
 class WeeklyRepository @Inject constructor(
     private val db: FirebaseFirestore,
+    private val pantry: PantryRepository,
+    private val health: com.houseaffairs.app.core.health.HealthRepository,
 ) {
     private fun col(householdId: String, name: String) = db.collection("households").document(householdId).collection(name)
 
@@ -87,7 +90,7 @@ class WeeklyRepository @Inject constructor(
             (d.getString("title") ?: "").lowercase() to (d.get("ingredients") as? List<*>).orEmpty().mapNotNull { raw ->
                 (raw as? Map<*, *>)?.let { Ingredient((it["name"] as? String).orEmpty(), (it["amount"] as? Number)?.toDouble(), (it["unit"] as? String) ?: "g") }
             }
-        } + RECIPE_LIBRARY.map { it.title.lowercase() to it.ingredients }).toMap()
+        }).toMap()
         val mealDocs = if (me.canAccess(AppModule.STOCK)) visible(householdId, "cookLog", uid).filter { inWeek(it.created()) && it.involves("eaters") } else emptyList()
         // Today's plate: one serving of each dish this person ate today.
         val savedRecipes = visible(householdId, "recipes", uid).map { d -> Recipe(d.id, d.getString("title").orEmpty(), emptyList(), 2, emptyList(), null, macros = d.getString("macros")) }
@@ -158,7 +161,7 @@ class WeeklyRepository @Inject constructor(
         } else {
             emptyList()
         }
-        val wasted = if (me.canAccess(AppModule.STOCK)) visible(householdId, "stock", uid).count { d -> d.localDate("expiry")?.let { inWeek(it) && it.isBefore(today) } == true && d.getString("status") != "USED_UP" } else 0
+        val wasted = if (me.canAccess(AppModule.STOCK)) visible(householdId, "stock", uid).count { d -> d.localDate("expiry")?.let { inWeek(it) && it.isBefore(today) } == true && d.getString("status") !in GONE_STATUSES } else 0
 
         val week = isoWeek(from)
         val checkDoc = runCatching { col(householdId, "checkins").document("${uid}_$week").get().await() }.getOrNull()?.takeIf { it.exists() }
@@ -196,15 +199,95 @@ class WeeklyRepository @Inject constructor(
             togetherEvents = tripDocs.size + eventDocs.size,
             savedToDreamsMinor = saved, wasted = wasted, checkIn = check,
             days = dates.size, diaryDays = diary.count { it.note != null }, learned = learned,
-        )
+            dayChecks = notes.values.mapNotNull { d ->
+                val well = d?.get("well") as? Map<*, *> ?: return@mapNotNull null
+                fun of(p: Pillar) = (well[p.name] as? Number)?.toInt() ?: 0
+                DayCheck(of(Pillar.MOVE), of(Pillar.EAT), of(Pillar.CONNECT), of(Pillar.OUTLOOK))
+            },
+        ).let { d ->
+            // Steps, sleep and workouts from Health Connect, when this person connected it on this phone.
+            health.read(dates.first(), dates.last())?.let { h -> d.copy(steps = h.steps, sleepHours = h.sleepHoursPerNight, exerciseMinutes = h.exerciseMinutes) } ?: d
+        }
         val plan = loadPlan(householdId, uid)
         return WeekReview(liveWell(data, plan), data, spent, currency, activities.sumOf { it.minutes }, plan, counts, from, diary, me.canAccess(AppModule.STOCK), todayMacros)
     }
 
+    /**
+     * One person's month or year ([from]..[to]) for the story: the home's spending and kitchen,
+     * what was finished, and their own tasks, goals, walks, meals and diary.
+     */
+    suspend fun loadPeriod(householdId: String, me: Member, from: LocalDate, to: LocalDate, today: LocalDate = LocalDate.now()): PeriodReview {
+        val uid = me.uid
+        // Read from the period before too, so the story can compare.
+        val readFrom = if (from.dayOfYear == 1 && to == from.plusYears(1).minusDays(1)) from.minusYears(1) else from.minusMonths(1)
+        fun inside(d: LocalDate?) = d != null && !d.isBefore(readFrom) && !d.isAfter(to)
+        fun DocumentSnapshot.involves(field: String): Boolean {
+            val people = (get(field) as? List<*>)?.filterIsInstance<String>() ?: getString(field)?.let { listOf(it) }
+            return if (people.isNullOrEmpty()) getString("createdBy") == uid else uid in people
+        }
+        fun DocumentSnapshot.at(field: String) = getTimestamp(field)?.toDate()?.toInstant()?.atZone(ZoneId.systemDefault())?.toLocalDate()
+
+        var spends: List<Txn>? = null
+        var saved = emptyList<Pair<LocalDate, Long>>()
+        var groceryBudget: Long? = null
+        if (me.canAccess(AppModule.MONEY)) {
+            val budget = runCatching { col(householdId, "budgets").document("main").get().await() }.getOrNull()
+            val currency = budget?.getString("currency")
+            groceryBudget = ((budget?.get("categories") as? Map<*, *>)?.get("Groceries") as? Number)?.toLong()
+            spends = visible(householdId, "transactions", uid)
+                .filter { inside(it.localDate("date")) && (currency == null || it.getString("currency") == currency) }
+                .map { d -> Txn(d.id, d.getString("title").orEmpty(), d.getString("category") ?: "Other", d.getLong("amountMinor") ?: 0, d.localDate("date")!!, d.getString("status") == "Planned") }
+            saved = visible(householdId, "transfers", uid)
+                .filter { (it.getString("to") ?: "").startsWith("dream:") && inside(it.localDate("date")) }
+                .map { it.localDate("date")!! to (it.getLong("amountMinor") ?: 0) }
+        }
+        val kitchen = if (me.canAccess(AppModule.STOCK)) {
+            val h = pantry.observeHistory(householdId, uid, StockKind.FOOD).first()
+            // Enough months back to cover the whole period.
+            val months = ((today.year - readFrom.year) * 12 + today.monthValue - readFrom.monthValue + 1).coerceIn(1, 36)
+            kitchenMonths(h.bought, h.lives, h.wasted, spends?.filter { it.category == "Groceries" }, today, groceryBudget, months)
+        } else {
+            emptyList()
+        }
+        val plans = me.canAccess(AppModule.PLANS)
+        val finished = if (plans) {
+            visible(householdId, "listItems", uid).filter { it.getString("status") == "DONE" }.mapNotNull { d ->
+                (d.at("updatedAt") ?: d.created())?.takeIf(::inside)?.let { FinishedThing(d.getString("title").orEmpty(), d.getString("template"), it) }
+            }
+        } else {
+            emptyList()
+        }
+        val tasks = if (plans) visible(householdId, "tasks", uid).filter { it.getBoolean("done") == true && it.involves("assignee") }.mapNotNull { it.at("completedAt") } else emptyList()
+        val goals = if (plans) {
+            visible(householdId, "weeklyGoals", uid).filter { (it.getLong("progress") ?: 0) >= 100 && it.involves("who") }
+                .mapNotNull { d -> (d.at("doneAt") ?: d.created())?.let { d.getString("title").orEmpty() to it } }
+        } else {
+            emptyList()
+        }
+        val activities = visible(householdId, "activities", uid).filter { it.involves("who") }
+            .mapNotNull { d -> (d.localDate("date") ?: d.created())?.let { it to (d.getString("minutes")?.toIntOrNull() ?: 0) } }
+        val meals = if (me.canAccess(AppModule.STOCK)) visible(householdId, "cookLog", uid).filter { it.involves("eaters") }.mapNotNull { it.created() } else emptyList()
+        // The diary is private: only my own lines.
+        val diary = visible(householdId, "diary", uid).filter { it.getString("createdBy") == uid && !it.getString("note").isNullOrBlank() }
+            .mapNotNull { d -> d.getString("date")?.let { runCatching { LocalDate.parse(it) }.getOrNull() }?.let { it to d.getString("mood") } }
+        val inputs = PeriodInputs(spends, saved, kitchen, finished, tasks, goals, activities, meals, diary)
+        // The month or year before, the same length back, for "less than October".
+        val yearLong = from.dayOfYear == 1 && to == from.plusYears(1).minusDays(1)
+        val compared = comparedDays(from, to, today, yearLong)
+        val previous = periodReview(compared.start, compared.endInclusive, today, inputs)
+        return periodReview(from, to, today, inputs).copy(previous = previous)
+    }
+
     /** Writes (or clears) the day's diary line and mood; private to the person. */
-    fun saveDiary(householdId: String, uid: String, day: LocalDate, note: String, mood: String?) {
+    /** Which of [days] already have a diary line or mood from this person. */
+    suspend fun writtenDays(householdId: String, uid: String, days: List<LocalDate>): Set<LocalDate> =
+        days.filter { day ->
+            runCatching { col(householdId, "diary").document("${uid}_$day").get().await() }.getOrNull()?.exists() == true
+        }.toSet()
+
+    fun saveDiary(householdId: String, uid: String, day: LocalDate, note: String, mood: String?, check: DayCheck? = null) {
         val ref = col(householdId, "diary").document("${uid}_$day")
-        if (note.isBlank() && mood == null) {
+        if (note.isBlank() && mood == null && check == null) {
             ref.delete()
             return
         }
@@ -212,7 +295,9 @@ class WeeklyRepository @Inject constructor(
             mapOf(
                 "note" to note.trim(), "mood" to mood, "date" to day.toString(),
                 "createdBy" to uid, "visibleTo" to listOf(uid), "createdAt" to FieldValue.serverTimestamp(),
-            ),
+            ) + (check?.let { "well" to Pillar.entries.associate { p -> p.name to it.of(p) } }?.let { mapOf(it) } ?: emptyMap()),
+            // Merged, so answering the check-in later keeps a line written earlier.
+            com.google.firebase.firestore.SetOptions.merge(),
         )
     }
 

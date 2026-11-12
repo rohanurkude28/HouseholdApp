@@ -254,6 +254,8 @@ fun CompactRow(
     onClick: () -> Unit,
     actions: List<Pair<String, () -> Unit>> = emptyList(),
     leading: (@Composable () -> Unit)? = null,
+    /** One action worth a button on the row itself ("🗑️ Bin it" on something expired), instead of the detail. */
+    quick: Pair<String, () -> Unit>? = null,
 ) {
     Row(
         // Same height with or without a menu, so every list has the same rhythm.
@@ -268,7 +270,13 @@ fun CompactRow(
         Spacer(Modifier.width(12.dp))
         Text(title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         Spacer(Modifier.width(8.dp))
-        Text(
+        if (quick != null) {
+            androidx.compose.material3.FilledTonalButton(
+                onClick = quick.second,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                modifier = Modifier.heightIn(min = 32.dp),
+            ) { Text(quick.first, style = MaterialTheme.typography.labelLarge) }
+        } else Text(
             detail,
             style = MaterialTheme.typography.bodySmall,
             color = if (flag == null) MaterialTheme.colorScheme.onSurfaceVariant else flagColor(flag),
@@ -376,4 +384,26 @@ fun <T> LazyListScope.itemList(
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
         }
     }
+}
+
+/**
+ * How much of [title] was thrown away: all of it, or part. Part comes off what's left and counts
+ * as waste in the month; all of it takes it off the list.
+ */
+@Composable
+fun WasteDialog(title: String, onPick: (share: Int) -> Unit, onDismiss: () -> Unit) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("How much of $title went to waste?") },
+        text = {
+            androidx.compose.foundation.layout.Column(verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp)) {
+                listOf(100 to "All of it", 75 to "Three quarters", 50 to "Half", 25 to "A quarter").forEach { (share, label) ->
+                    androidx.compose.material3.OutlinedButton(onClick = { onPick(share) }, modifier = Modifier.fillMaxWidth()) { Text(label) }
+                }
+                Text("It's counted as waste this month, valued by what it cost.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = {},
+        dismissButton = { androidx.compose.material3.TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }

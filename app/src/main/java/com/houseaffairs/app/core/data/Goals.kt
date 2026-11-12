@@ -11,6 +11,8 @@ data class Goal(
     val progress: Int,
     val by: LocalDate?,
     val created: LocalDate?,
+    /** When it reached 100%, for the month and year views. */
+    val doneOn: LocalDate? = null,
 ) {
     val done: Boolean get() = progress >= 100
 }
@@ -29,3 +31,9 @@ fun goalsRecap(goals: List<Goal>, today: LocalDate): String? {
     val closest = week.filter { !it.done }.maxByOrNull { it.progress }
     return "$done of ${week.size} goal${if (week.size > 1) "s" else ""} done this week" + (closest?.let { " · ${it.title} at ${it.progress}%" } ?: "")
 }
+
+/** A goal's progress in words people use, instead of a percentage to drag or add to. */
+val GOAL_STEPS: List<Pair<Int, String>> = listOf(0 to "Not started", 25 to "Started", 50 to "Halfway", 75 to "Almost there", 100 to "Done")
+
+/** The step a saved progress is closest to ("Halfway" for 50, and for an old 60 too). */
+fun goalStep(progress: Int): String = GOAL_STEPS.minBy { kotlin.math.abs(it.first - progress) }.second

@@ -2,6 +2,11 @@ package com.houseaffairs.app.ui
 
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.material3.Text
+import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.Inventory2
@@ -57,6 +62,8 @@ internal enum class Tab(val route: String, val label: String, val icon: ImageVec
 
     fun visibleTo(member: Member): Boolean = when (module) {
         null -> true
+        // Everyone gets Money: without access it's just "My spends", with no family totals.
+        AppModule.MONEY -> true
         // Things holds medicines and supplies too, so it shows for anyone with one of them.
         AppModule.VAULT -> member.canAccess(AppModule.VAULT) || member.canAccess(AppModule.MEDICINE) || member.canAccess(AppModule.STOCK)
         else -> member.canAccess(module)
@@ -68,6 +75,8 @@ private const val REVIEW_ROUTE = "review"
 
 @Composable
 fun MainScaffold(session: SessionState.Ready) {
+    // Amounts outside Money follow the owner's "Hide costs from" (Settings → Privacy).
+    androidx.compose.runtime.SideEffect { com.houseaffairs.app.core.ui.CostPrivacy.hidden = session.user.uid in session.household.hideCostsFrom }
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
@@ -94,13 +103,22 @@ fun MainScaffold(session: SessionState.Ready) {
     }
     // Bumped on every save, so screens that read once (the weekly story) can read again.
     var savedCount by remember { mutableStateOf(0) }
-    val showUndo = { message: String, undo: suspend () -> Unit ->
+    val main: MainViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+    val view = androidx.compose.ui.platform.LocalView.current
+    // Finishing something (a task, a book) gets a little burst; saving just a ding.
+    var celebrations by remember { mutableStateOf(0) }
+    val showUndo = { message: String, celebrate: Boolean, undo: suspend () -> Unit ->
+        main.feedback.play(if (celebrate) com.houseaffairs.app.core.ui.Cue.DONE else com.houseaffairs.app.core.ui.Cue.SAVED, view)
+        if (celebrate) celebrations++
         savedCount++
         // A new tick replaces the last Undo instead of queueing behind it, so its Undo shows at once.
         snackbarHostState.currentSnackbarData?.dismiss()
         scope.launch {
             val result = snackbarHostState.showSnackbar(message = message, actionLabel = "Undo", duration = SnackbarDuration.Short)
-            if (result == SnackbarResult.ActionPerformed) undo()
+            if (result == SnackbarResult.ActionPerformed) {
+                main.feedback.play(com.houseaffairs.app.core.ui.Cue.UNDO, view)
+                undo()
+            }
         }
         Unit
     }
@@ -129,7 +147,8 @@ fun MainScaffold(session: SessionState.Ready) {
                     onAddRecipe = { openAdd(EntryType.RECIPE, it.asRecipePreset()) },
                     onEdit = openEdit,
                     onOpenReview = { navController.navigate(REVIEW_ROUTE) },
-                    onSaved = { saved -> showUndo(saved.message) { saved.undo() } },
+                    onSaved = { saved -> showUndo(saved.message, saved.celebrate) { saved.undo() } },
+                    onAddType = { openAdd(it, emptyMap()) },
                 )
             }
             composable(REVIEW_ROUTE) {
@@ -142,16 +161,23 @@ fun MainScaffold(session: SessionState.Ready) {
                 )
             }
             composable(Tab.MONEY.route) {
+                // Without Money access: just your own spends, no family totals.
+                // Without Money access, or with the family's costs hidden from them: just their own spends.
+                if (!session.me.canAccess(com.houseaffairs.app.core.model.AppModule.MONEY) || session.user.uid in session.household.hideCostsFrom) {
+                    com.houseaffairs.app.feature.money.MySpendsScreen(onAdd = { openAdd(EntryType.EXPENSE, emptyMap()) }, onOpen = { openEdit(EntryType.EXPENSE, it) })
+                    return@composable
+                }
                 MoneyScreen(
                     onAddExpense = { openAdd(EntryType.EXPENSE, emptyMap()) },
                     onPlanSpend = { openAdd(EntryType.EXPENSE, mapOf("status" to "Planned", "date" to LocalDate.now().plusWeeks(1))) },
                     onAddSubscription = { openAdd(EntryType.SUBSCRIPTION, emptyMap()) },
                     onAddCredit = { openAdd(EntryType.CREDIT, emptyMap()) },
                     onNewGullak = { openAdd(EntryType.DREAM, mapOf("kind" to "Savings")) },
-                    onSaved = { saved -> showUndo(saved.message) { saved.undo() } },
+                    onSaved = { saved -> showUndo(saved.message, saved.celebrate) { saved.undo() } },
                     onEdit = openEdit,
                     requestedTab = subTabs["money"],
                     onTabShown = { subTabs.remove("money") },
+                    onOpen = openTab,
                 )
             }
             composable(Tab.STOCK.route) {
@@ -159,9 +185,10 @@ fun MainScaffold(session: SessionState.Ready) {
                     onAddGrocery = { openAdd(EntryType.GROCERY, emptyMap()) },
                     onAddRecipe = { openAdd(EntryType.RECIPE, emptyMap()) },
                     onAddShopping = { openAdd(EntryType.SHOPPING, emptyMap()) },
-                    onCooked = { showUndo(it.message, it.undo) },
+                    onCooked = { showUndo(it.message, true, it.undo) },
                     onSaveIdea = { openAdd(EntryType.RECIPE, it.asRecipePreset()) },
                     onEdit = openEdit,
+                    onSaved = { saved -> showUndo(saved.message, saved.celebrate) { saved.undo() } },
                     requestedTab = subTabs["stock"],
                     onTabShown = { subTabs.remove("stock") },
                 )
@@ -174,14 +201,14 @@ fun MainScaffold(session: SessionState.Ready) {
                     onAddGoal = { openAdd(EntryType.GOAL, emptyMap()) },
                     onAddPlace = { openAdd(EntryType.PLACE, emptyMap()) },
                     // Dated inside the trip, so it counts even when added afterwards.
-                    onAddTripExpense = { trip ->
+                    onAddTripExpense = { trip, kind ->
                         val today = LocalDate.now()
                         val date = if (trip.end != null && today.isAfter(trip.end)) trip.end else if (today.isBefore(trip.start)) trip.start else today
-                        openAdd(EntryType.EXPENSE, mapOf("trip" to trip.title, "date" to date))
+                        openAdd(EntryType.EXPENSE, mapOf("trip" to trip.title, "date" to date) + (kind?.let { k -> mapOf("category" to k.category, "subcategory" to k.subcategory) } ?: emptyMap()))
                     },
                     onAddTrip = { dream -> openAdd(EntryType.TRIP, dream?.let { mapOf("forDream" to it, "title" to it) } ?: emptyMap()) },
                     onAddWish = { list -> openAdd(EntryType.WISH, list?.let { mapOf("template" to it.label) } ?: emptyMap()) },
-                    onSaved = { saved -> showUndo(saved.message) { saved.undo() } },
+                    onSaved = { saved -> showUndo(saved.message, saved.celebrate) { saved.undo() } },
                     onEdit = openEdit,
                     requestedTab = subTabs["plans"],
                     onTabShown = { subTabs.remove("plans") },
@@ -204,6 +231,38 @@ fun MainScaffold(session: SessionState.Ready) {
         }
     }
 
+    // "Back up today?": once a day, after opening the app, when reminders are chosen and today's isn't done.
+    val drive: com.houseaffairs.app.core.drive.DriveViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+    val driveState by drive.state.collectAsState()
+    com.houseaffairs.app.core.drive.DriveConsent(driveState.consent, drive::consentDone)
+    val backup by drive.backupPrefs.collectAsState(initial = null)
+    val tourOn = (main.tourStep.collectAsState().value ?: -1) >= 0
+    LaunchedEffect(backup?.mode, backup?.lastDay, backup?.remindedDay, tourOn) {
+        val b = backup ?: return@LaunchedEffect
+        val today = java.time.LocalDate.now().toString()
+        if (tourOn || session.user.isAnonymous || b.mode != com.houseaffairs.app.core.data.BackupMode.REMIND || b.lastDay == today || b.remindedDay == today) return@LaunchedEffect
+        kotlinx.coroutines.delay(2_500)
+        drive.reminded()
+        val r = snackbarHostState.showSnackbar("You haven't backed up today", actionLabel = "Back up", withDismissAction = true, duration = SnackbarDuration.Long)
+        if (r == SnackbarResult.ActionPerformed) drive.backup()
+    }
+    LaunchedEffect(driveState.message) {
+        driveState.message?.takeIf { it.startsWith("Backed up") }?.let {
+            main.feedback.play(com.houseaffairs.app.core.ui.Cue.SAVED, view)
+            snackbarHostState.showSnackbar(it)
+            drive.clearMessage()
+        }
+    }
+
+    // A tapped widget card opens what it was about.
+    val widgetRoute by com.houseaffairs.app.widget.WidgetInbox.route.collectAsState()
+    LaunchedEffect(widgetRoute) {
+        widgetRoute?.let { r ->
+            com.houseaffairs.app.widget.WidgetInbox.route.value = null
+            if (tabs.any { it.route == r.substringBefore('/') }) openTab(r)
+        }
+    }
+
     // A link or text shared in from another app opens the right form.
     val shared by com.houseaffairs.app.feature.add.SharedInbox.pending.collectAsState()
     LaunchedEffect(shared) {
@@ -217,12 +276,36 @@ fun MainScaffold(session: SessionState.Ready) {
         AddSheet(
             request = request,
             onDismiss = { addRequest = null },
-            onSaved = { saved -> showUndo(saved.message) { saved.undo() } },
+            onSaved = { saved -> showUndo(saved.message, saved.celebrate) { saved.undo() } },
         )
     }
 
+    com.houseaffairs.app.core.ui.CelebrationBurst(celebrations)
+
+    // In the demo, always say so, with a way out: nobody should wonder whose data this is.
+    val touring = (main.tourStep.collectAsState().value ?: -1) >= 0
+    // Setup never answered on this phone (tour skipped or left): ask before anything else.
+    val setupDone by main.setupDone.collectAsState()
+    if (!touring && setupDone == false && !session.user.isAnonymous) {
+        SetupGate(onDone = main::markSetupDone)
+    }
+    // Once a day on opening: a mood and a line for days that have none, after the tour and setup.
+    if (!touring && (setupDone == true || session.user.isAnonymous)) DiaryCatchUp()
+    if (session.user.isAnonymous && !touring) {
+        // Above the bottom bar, at the side: clear of each tab's title and of the centre + button.
+        androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize().navigationBarsPadding().padding(bottom = 104.dp, end = 12.dp), contentAlignment = androidx.compose.ui.Alignment.BottomEnd) {
+            androidx.compose.material3.Surface(
+                onClick = main::exitDemo,
+                shape = androidx.compose.foundation.shape.CircleShape,
+                color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.72f),
+                contentColor = androidx.compose.ui.graphics.Color.White,
+            ) {
+                Text("🧪 Demo · Exit ›", style = androidx.compose.material3.MaterialTheme.typography.labelMedium, modifier = androidx.compose.ui.Modifier.padding(horizontal = 14.dp, vertical = 6.dp))
+            }
+        }
+    }
+
     // First sign-in or a fresh start: the tour, one feature at a time, over everything else.
-    val main: MainViewModel = androidx.hilt.navigation.compose.hiltViewModel()
     val tourStep by main.tourStep.collectAsState()
     tourStep?.takeIf { it >= 0 }?.let { saved ->
         val steps = remember(session.me) { com.houseaffairs.app.core.data.tourSteps { session.me.canAccess(it) } }
@@ -231,6 +314,7 @@ fun MainScaffold(session: SessionState.Ready) {
             start = com.houseaffairs.app.core.data.tourResumeAt(saved, steps.size),
             onStep = main::setTourStep,
             onFinish = main::finishTour,
+            onSetupDone = main::markSetupDone,
             onOpen = { route -> if (tabs.any { it.route == route }) openTab(route) },
         )
     }

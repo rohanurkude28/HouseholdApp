@@ -10,7 +10,8 @@ import kotlin.math.abs
  */
 data class MonthSpend(val label: String, val spentMinor: Long, val budgetMinor: Long, val current: Boolean)
 
-data class BigItem(val title: String, val date: LocalDate, val amountMinor: Long?, val kind: String)
+/** [kind] is "Planned" (a planned spend), "Dream" or "Trip"; [id] opens it. */
+data class BigItem(val title: String, val date: LocalDate, val amountMinor: Long?, val kind: String, val id: String = "")
 
 data class YearOutlook(
     val months: List<MonthSpend>,
@@ -40,7 +41,7 @@ fun yearOutlook(
     val paid = txns.filter { !it.planned }
     val months = mutableListOf<MonthSpend>()
     while (!cycle.start.isAfter(current.start)) {
-        months += MonthSpend(cycle.start.format(MONTH), paid.filter { it.date in cycle }.sumOf { it.amountMinor }, budget.limitMinor, cycle == current)
+        months += MonthSpend(cycle.start.format(MONTH), paid.filter { it.date in cycle }.sumOf { it.amountMinor }, budget.limitFor(cycle.start), cycle == current)
         cycle = cycleFor(cycle.endExclusive, budget.cycleStartDay)
     }
     val finished = months.filter { !it.current }
@@ -58,14 +59,14 @@ fun yearOutlook(
         // No finished month yet: this month's leftover at today's pace.
         val spent = months.lastOrNull()?.spentMinor ?: 0
         val day = current.dayOf(today).coerceAtLeast(1)
-        budget.limitMinor - spent * current.days / day
+        budget.limitFor(current.start) - spent * current.days / day
     }
     val horizon = today.plusYears(1)
     val upcoming = (
-        txns.filter { it.planned && !it.date.isBefore(today) && it.date.isBefore(horizon) }.map { BigItem(it.title, it.date, it.amountMinor, "Planned") } +
+        txns.filter { it.planned && !it.date.isBefore(today) && it.date.isBefore(horizon) }.map { BigItem(it.title, it.date, it.amountMinor, "Planned", it.id) } +
             dreams.filter { !it.achieved && it.targetDate != null && !it.targetDate.isBefore(today) && it.targetDate.isBefore(horizon) }
-                .map { BigItem(it.title, it.targetDate!!, it.targetMinor, "Dream") } +
-            trips.filter { !it.start.isBefore(today) && it.start.isBefore(horizon) }.map { BigItem(it.title, it.start, it.budgetMinor, "Trip") }
+                .map { BigItem(it.title, it.targetDate!!, it.targetMinor, "Dream", it.id) } +
+            trips.filter { !it.start.isBefore(today) && it.start.isBefore(horizon) }.map { BigItem(it.title, it.start, it.budgetMinor, "Trip", it.id) }
         ).sortedBy { it.date }.take(6)
     val insight = when {
         finished.size >= 2 && months.last().current -> {

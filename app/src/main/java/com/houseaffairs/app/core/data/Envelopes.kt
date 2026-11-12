@@ -84,7 +84,9 @@ fun envelopes(
         val inMonth = moved.filter { it.date in cycle }
         val topUps = inMonth.filter { isCategory(it.to) && !isCategory(it.from) }.sumOf { it.amountMinor }
         val takenOut = inMonth.filter { isCategory(it.from) && !isCategory(it.to) }.sumOf { it.amountMinor }
-        val left = budget.limitMinor - spent + topUps - takenOut
+        // That month's own amount: a later raise or cut doesn't change what it had.
+        // Dream money set aside that month never reached the gullak.
+        val left = budget.limitFor(cycle.start) - spent + topUps - takenOut - budget.allocatedFor(cycle.start).values.sum()
         pot += left
         if (cycle.start.year == today.year) savedThisYear += left
         cycle = cycleFor(cycle.endExclusive, budget.cycleStartDay)
@@ -93,7 +95,8 @@ fun envelopes(
     fun into(key: String, within: Cycle? = null) = moved.filter { it.to == key && (within == null || it.date in within) }.sumOf { it.amountMinor }
     fun outOf(key: String, within: Cycle? = null) = moved.filter { it.from == key && (within == null || it.date in within) }.sumOf { it.amountMinor }
 
-    val thisCycle = txns.filter { it.date in current || (it.planned && !it.date.isBefore(today)) }
+    // Planned spends count in the month they're dated for, so next month's plans don't eat this one.
+    val thisCycle = txns.filter { it.date in current }
     val active = credits.filter { !it.used && (it.expiry == null || !it.expiry.isBefore(today)) }
     val list = budget.categories.map { (name, limit) ->
         val key = Pocket.Category(name).key
@@ -108,8 +111,15 @@ fun envelopes(
         )
     }.sortedByDescending { it.availableMinor }
 
-    val dreamFunding = moved.mapNotNull { (Pocket.parse(it.to) as? Pocket.Dream)?.id }.distinct()
-        .associateWith { id -> into(Pocket.Dream(id).key) - outOf(Pocket.Dream(id).key) }
+    // Monthly amounts set aside in the budget, every month since each started, this one included.
+    val allocated = mutableMapOf<String, Long>()
+    var c = cycleFor(startedOn, budget.cycleStartDay)
+    while (!c.start.isAfter(current.start)) {
+        budget.allocatedFor(c.start).forEach { (id, minor) -> allocated[id] = (allocated[id] ?: 0) + minor }
+        c = cycleFor(c.endExclusive, budget.cycleStartDay)
+    }
+    val dreamFunding = (moved.mapNotNull { (Pocket.parse(it.to) as? Pocket.Dream)?.id } + allocated.keys).distinct()
+        .associateWith { id -> into(Pocket.Dream(id).key) - outOf(Pocket.Dream(id).key) + (allocated[id] ?: 0) }
 
     return EnvelopeState(list, pot + into("pot") - outOf("pot"), savedThisYear, dreamFunding)
 }
@@ -138,6 +148,10 @@ data class Dream(
     val achieved: Boolean = false,
     /** What the family picked, if anything; otherwise it follows from [targetDate]. */
     val horizonChoice: String? = null,
+    /** Pictures for the vision board (PhotoStore ids); the first fills its card. */
+    val photos: List<String> = emptyList(),
+    /** Where it was dragged to on the board; null until moved. */
+    val boardOrder: Double? = null,
 ) {
     fun horizon(today: LocalDate = LocalDate.now()): Horizon = horizonOf(horizonChoice, targetDate, today)
 }
@@ -249,3 +263,29 @@ fun investmentValues(investments: List<Investment>, transfers: List<Transfer>, t
 
 /** The ledger entry that sets an investment's value to [newValueMinor] (a gain or loss). */
 fun revaluation(current: InvestmentValue, newValueMinor: Long): Long = newValueMinor - current.currentMinor
+
+/** Where an overspent envelope can be topped up from, best first, and how much each can give. */
+data class CoverOption(val from: Pocket, val label: String, val availableMinor: Long)
+
+/**
+ * After an expense takes [category] over by [overMinor]: envelopes with room to spare (not the
+ * fixed Rent and Bills), then the gullak. Ones that cover it all come first. Pure, so it's tested.
+ */
+fun coverOptions(state: EnvelopeState, category: String, overMinor: Long): List<CoverOption> {
+    if (overMinor <= 0) return emptyList()
+    val envelopes = state.envelopes
+        .filter { it.category != category && it.category !in FIXED_CATEGORIES && it.availableMinor > 0 }
+        .map { CoverOption(Pocket.Category(it.category), it.category, it.availableMinor) }
+    val pot = listOfNotNull(state.potMinor.takeIf { it > 0 }?.let { CoverOption(Pocket.Pot, "Gullak", it) })
+    return (envelopes + pot).sortedWith(compareByDescending<CoverOption> { it.availableMinor >= overMinor }.thenByDescending { it.availableMinor }).take(4)
+}
+
+/**
+ * Months until a dream's [remainingMinor] is saved at [perMonthMinor] a month (its own monthly
+ * amount, or the family's usual leftover); null when nothing is going toward it.
+ */
+fun monthsToDream(remainingMinor: Long, perMonthMinor: Long): Int? = when {
+    remainingMinor <= 0 -> 0
+    perMonthMinor <= 0 -> null
+    else -> ((remainingMinor + perMonthMinor - 1) / perMonthMinor).toInt()
+}

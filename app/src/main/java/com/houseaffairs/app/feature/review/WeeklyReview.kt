@@ -66,7 +66,7 @@ import com.houseaffairs.app.core.data.isoWeek
 import com.houseaffairs.app.core.ui.Avatar
 import com.houseaffairs.app.core.ui.HaCard
 import com.houseaffairs.app.core.ui.SectionTitle
-import com.houseaffairs.app.core.util.formatMinor
+import com.houseaffairs.app.core.ui.shownMinor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -94,7 +94,18 @@ val PILLAR_COLORS = mapOf(
 /** Clockwise from the top-left, like the classic wheel. */
 private val ORDER = listOf(Pillar.MOVE, Pillar.OUTLOOK, Pillar.EAT, Pillar.CONNECT)
 
-data class ReviewUi(val loading: Boolean = true, val name: String = "", val review: WeekReview? = null)
+enum class StoryMode(val label: String) { WEEK("Week"), MONTH("Month"), YEAR("Year") }
+
+data class ReviewUi(
+    val loading: Boolean = true,
+    val name: String = "",
+    val review: WeekReview? = null,
+    val mode: StoryMode = StoryMode.WEEK,
+    /** The month or year on screen, from its first day. */
+    val periodStart: LocalDate = LocalDate.now().withDayOfMonth(1),
+    val period: com.houseaffairs.app.core.data.PeriodReview? = null,
+    val periodLoading: Boolean = false,
+)
 
 @HiltViewModel
 class WeeklyReviewViewModel @Inject constructor(
@@ -120,7 +131,40 @@ class WeeklyReviewViewModel @Inject constructor(
             val review = runCatching { weekly.load(r.household.id, r.me, week) }
                 .onFailure { android.util.Log.e("WeeklyReview", "Couldn't read the week", it) }
                 .getOrNull()
-            if (week == weekStart) _state.value = ReviewUi(false, r.me.displayName.substringBefore(' '), review)
+            if (week == weekStart) _state.value = _state.value.copy(loading = false, name = r.me.displayName.substringBefore(' '), review = review)
+        }
+    }
+
+    val currency: String get() = (session.state.value as? SessionState.Ready)?.household?.baseCurrency ?: "INR"
+
+    /** Week, month or year: the month and the year start on the one you're in. */
+    fun setMode(mode: StoryMode) {
+        val today = LocalDate.now()
+        val start = if (mode == StoryMode.YEAR) today.withDayOfYear(1) else today.withDayOfMonth(1)
+        _state.value = _state.value.copy(mode = mode, periodStart = start, period = null)
+        if (mode != StoryMode.WEEK) loadPeriod()
+    }
+
+    /** Arrows: the month or year before or after, never past the one you're in. */
+    fun showPeriod(offset: Long) {
+        val s = _state.value
+        val next = if (s.mode == StoryMode.YEAR) s.periodStart.plusYears(offset) else s.periodStart.plusMonths(offset)
+        if (next.isAfter(LocalDate.now())) return
+        _state.value = s.copy(periodStart = next, period = null)
+        loadPeriod()
+    }
+
+    private fun loadPeriod() {
+        val r = session.state.value as? SessionState.Ready ?: return
+        val s = _state.value
+        val from = s.periodStart
+        val to = if (s.mode == StoryMode.YEAR) from.plusYears(1).minusDays(1) else from.plusMonths(1).minusDays(1)
+        _state.value = s.copy(periodLoading = true)
+        viewModelScope.launch {
+            val period = runCatching { weekly.loadPeriod(r.household.id, r.me, from, to) }
+                .onFailure { android.util.Log.e("WeeklyReview", "Couldn't read the period", it) }
+                .getOrNull()
+            if (_state.value.periodStart == from) _state.value = _state.value.copy(period = period, periodLoading = false)
         }
     }
 
@@ -198,7 +242,7 @@ fun LiveWellWheel(wheel: Wheel, caption: String = "this week", modifier: Modifie
 private val MOODS = listOf("😄", "🙂", "😐", "😔", "😣")
 
 /**
- * "My week": a private diary. Each day shows what you did (walks, meals, tasks, outings, picked
+ * "My story": the week (below), month or year (`periodStory`). The week is a private diary. Each day shows what you did (walks, meals, tasks, outings, picked
  * up from what's logged) and a line you write yourself. Above it, the live-well wheel for the
  * week; below, how each part went and the week in numbers. Arrows go back to earlier weeks.
  */
@@ -219,6 +263,8 @@ fun WeeklyReviewScreen(
     val today = LocalDate.now()
     var planning by remember { mutableStateOf(false) }
     var openPillar by remember { mutableStateOf<Pillar?>(null) }
+    // Folded again whenever another week is shown.
+    var showEarlierDays by remember(review?.weekStart) { mutableStateOf(false) }
     if (planning) WellPlanSheet(onDismiss = { planning = false }, onSaved = viewModel::refresh)
 
     LazyColumn(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).statusBarsPadding(), contentPadding = PaddingValues(bottom = 32.dp)) {
@@ -226,11 +272,27 @@ fun WeeklyReviewScreen(
             Row(Modifier.padding(start = 4.dp, end = 8.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
                 Column(Modifier.weight(1f)) {
-                    Text("My week", style = MaterialTheme.typography.headlineMedium)
-                    Text("Your diary and how the week went · only you see this", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("My story", style = MaterialTheme.typography.headlineMedium)
+                    Text("Your week, month and year · only you see this", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 IconButton(onClick = onOpenSettings) { Icon(Icons.Outlined.Settings, contentDescription = "Settings") }
             }
+        }
+        item {
+            Row(Modifier.padding(horizontal = 20.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StoryMode.entries.forEach { m ->
+                    FilterChip(
+                        selected = state.mode == m, onClick = { viewModel.setMode(m) }, label = { Text(m.label) }, shape = CircleShape,
+                        colors = androidx.compose.material3.FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primary, selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                        ),
+                    )
+                }
+            }
+        }
+        if (state.mode != StoryMode.WEEK) {
+            periodStory(state, viewModel.currency, onPrev = { viewModel.showPeriod(-1) }, onNext = { viewModel.showPeriod(1) }, onRetry = { viewModel.setMode(state.mode) })
+            return@LazyColumn
         }
         item {
             val start = review?.weekStart ?: com.houseaffairs.app.core.data.mondayOf(today)
@@ -286,16 +348,47 @@ fun WeeklyReviewScreen(
         }
 
         item { SectionTitle("My diary") }
-        items(review.diary.size, key = { "day-" + review.diary[it].date }) { i ->
-            DiaryDayCard(review.diary[i], today, onSave = viewModel::saveDiary, onOpen = { e ->
-                when (e.kind) {
-                    com.houseaffairs.app.core.data.DiaryKind.ACTIVITY -> onEditEntry(EntryType.ACTIVITY, e.id)
-                    com.houseaffairs.app.core.data.DiaryKind.TASK -> onEditEntry(EntryType.TASK, e.id)
-                    com.houseaffairs.app.core.data.DiaryKind.EVENT -> onEditEntry(EntryType.EVENT, e.id)
-                    com.houseaffairs.app.core.data.DiaryKind.TRIP -> onEditEntry(EntryType.TRIP, e.id)
-                    com.houseaffairs.app.core.data.DiaryKind.MEAL -> Unit
+        val openEntry = { e: com.houseaffairs.app.core.data.DiaryEntry ->
+            when (e.kind) {
+                com.houseaffairs.app.core.data.DiaryKind.ACTIVITY -> onEditEntry(EntryType.ACTIVITY, e.id)
+                com.houseaffairs.app.core.data.DiaryKind.TASK -> onEditEntry(EntryType.TASK, e.id)
+                com.houseaffairs.app.core.data.DiaryKind.EVENT -> onEditEntry(EntryType.EVENT, e.id)
+                com.houseaffairs.app.core.data.DiaryKind.TRIP -> onEditEntry(EntryType.TRIP, e.id)
+                com.houseaffairs.app.core.data.DiaryKind.MEAL -> Unit
+            }
+        }
+        // The latest day stays open; the days before it fold into one row, so the week isn't a long scroll.
+        review.diary.firstOrNull()?.let { latest ->
+            item(key = "day-" + latest.date) { DiaryDayCard(latest, today, onSave = viewModel::saveDiary, onOpen = openEntry) }
+        }
+        val earlier = review.diary.drop(1)
+        if (earlier.isNotEmpty()) {
+            item(key = "earlier-days") {
+                val written = earlier.count { it.note != null }
+                Row(
+                    Modifier.fillMaxWidth().clickable { showEarlierDays = !showEarlierDays }.padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(if (review.isThisWeek) "Earlier this week" else "Earlier that week", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            listOfNotNull(
+                                "${earlier.size} ${if (earlier.size == 1) "day" else "days"}",
+                                "$written written",
+                                earlier.mapNotNull { it.mood }.takeIf { it.isNotEmpty() }?.joinToString(""),
+                            ).joinToString(" · "),
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Icon(
+                        if (showEarlierDays) androidx.compose.material.icons.Icons.Outlined.KeyboardArrowUp else androidx.compose.material.icons.Icons.Outlined.KeyboardArrowDown,
+                        contentDescription = if (showEarlierDays) "Hide earlier days" else "Show earlier days",
+                    )
                 }
-            })
+            }
+            if (showEarlierDays) {
+                items(earlier.size, key = { "day-" + earlier[it].date }) { i -> DiaryDayCard(earlier[i], today, onSave = viewModel::saveDiary, onOpen = openEntry) }
+            }
         }
         if (review.isThisWeek) {
             item {
@@ -471,8 +564,8 @@ private fun WeekNumbers(review: WeekReview) {
         })
         if (w.togetherEvents > 0) add("🎉" to if (w.togetherEvents == 1) "1 outing or family event" else "${w.togetherEvents} outings and family events")
         add("📔" to "Diary written on ${w.diaryDays} of ${w.days} days")
-        review.spentMinor?.let { m -> review.currency?.let { add("💰" to "Home spent ${formatMinor(m, it)} this week") } }
-        w.savedToDreamsMinor.takeIf { it > 0 }?.let { m -> review.currency?.let { add("🐷" to "${formatMinor(m, it)} put into goal gullaks") } }
+        review.spentMinor?.let { m -> review.currency?.let { add("💰" to "Home spent ${shownMinor(m, it)} this week") } }
+        w.savedToDreamsMinor.takeIf { it > 0 }?.let { m -> review.currency?.let { add("🐷" to "${shownMinor(m, it)} put into goal gullaks") } }
         if (review.tracksPantry) add("🥬" to if (w.wasted > 0) "${w.wasted} items expired before use" else "Nothing in the pantry went to waste")
     }
     HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {

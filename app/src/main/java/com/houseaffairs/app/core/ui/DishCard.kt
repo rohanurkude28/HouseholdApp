@@ -8,6 +8,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.RestaurantMenu
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -65,12 +68,25 @@ fun DishSheet(
     onSave: (() -> Unit)?,
     onAddMissing: (List<String>) -> Unit,
     onDismiss: () -> Unit,
+    /** A saved recipe: change its ingredients, photo or link. */
+    onEdit: (() -> Unit)? = null,
+    /** A saved recipe: delete it (the snackbar offers Undo). */
+    onDelete: (() -> Unit)? = null,
 ) {
     val stock = LocalHouseColors.current.stock
     val checks = androidx.compose.runtime.remember(idea, pantry) { com.houseaffairs.app.core.data.checkIngredients(idea.recipe.ingredients, pantry) }
     androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
-        androidx.compose.foundation.layout.Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 24.dp)) {
-            Text(idea.recipe.title, style = MaterialTheme.typography.headlineSmall)
+        // Scrolls, so a long ingredient list never pushes the buttons out of reach.
+        androidx.compose.foundation.layout.Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 24.dp)) {
+            androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Text(idea.recipe.title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+                onEdit?.let { edit -> androidx.compose.material3.IconButton(onClick = { onDismiss(); edit() }) { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Outlined.Edit, contentDescription = "Edit recipe") } }
+                onDelete?.let { del ->
+                    androidx.compose.material3.IconButton(onClick = { onDismiss(); del() }) {
+                        androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Outlined.DeleteOutline, contentDescription = "Delete recipe", tint = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
             Text(
                 idea.fit.summary + " · for ${idea.recipe.servings} " + if (idea.recipe.servings == 1) "person" else "people",
                 style = MaterialTheme.typography.bodyMedium,
@@ -107,13 +123,15 @@ fun DishSheet(
                 Spacer(Modifier.height(8.dp))
             }
             when {
-                onCook != null -> androidx.compose.material3.Button(onClick = { onDismiss(); onCook() }, shape = androidx.compose.foundation.shape.CircleShape, modifier = Modifier.fillMaxWidth()) {
-                    Text(if (missing.isEmpty()) "Cook it" else "Cook it anyway")
+                // Only with everything at home: short of something, the button above adds it to shopping.
+                onCook != null && missing.isEmpty() -> androidx.compose.material3.Button(onClick = { onDismiss(); onCook() }, shape = androidx.compose.foundation.shape.CircleShape, modifier = Modifier.fillMaxWidth()) {
+                    Text("Cook it")
                 }
                 onSave != null -> androidx.compose.material3.Button(onClick = { onDismiss(); onSave() }, shape = androidx.compose.foundation.shape.CircleShape, modifier = Modifier.fillMaxWidth()) {
                     Text("Save to my recipes")
                 }
             }
+
         }
     }
 }

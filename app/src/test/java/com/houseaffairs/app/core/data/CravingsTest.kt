@@ -26,7 +26,7 @@ class CravingsTest {
             PantryStock("o", "Onion", 4.0, "pcs", 4.0),
             PantryStock("t", "Tomato", 4.0, "pcs", 4.0),
         )
-        val ideas = cravingIdeas("crispy with a savoury curry", pantry, emptyList(), today).toMap()
+        val ideas = cravingIdeas("crispy with a savoury curry", pantry, SAMPLE_RECIPES, today).toMap()
         assertEquals("Aloo tikki", ideas.getValue("Crispy").first().recipe.title)
         val curries = ideas.getValue("Savoury curry").map { it.recipe.title }
         assertTrue(curries.first() in setOf("Dal tadka", "Aloo matar"))
@@ -35,7 +35,7 @@ class CravingsTest {
 
     @Test
     fun `a named ingredient narrows the dishes`() {
-        val ideas = cravingIdeas("something with paneer", emptyList(), emptyList(), today)
+        val ideas = cravingIdeas("something with paneer", emptyList(), SAMPLE_RECIPES, today)
         assertTrue(ideas.single().second.all { it.recipe.ingredients.any { i -> i.name == "Paneer" } })
     }
 }

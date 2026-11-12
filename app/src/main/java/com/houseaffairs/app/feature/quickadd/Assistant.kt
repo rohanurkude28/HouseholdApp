@@ -22,6 +22,9 @@ interface Assistant {
     suspend fun understand(text: String, context: AssistContext): QuickAddDraft?
     suspend fun pick(goal: String, about: String, options: List<String>, count: Int): List<Pick>
     suspend fun coach(about: String): String?
+
+    /** Reads a bill the on-phone rules couldn't; null when it can't (or isn't connected). */
+    suspend fun readBill(text: String): com.houseaffairs.app.core.data.BillScan? = null
 }
 
 /** The instructions sent with each line. Few-shot, JSON out, so [draftFromAi] can check every field. */
@@ -140,3 +143,37 @@ fun coachPrompt(about: String): String = """
 fun coachFromAi(json: String): String? =
     runCatching { JSONObject(json.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()).optString("tip").trim() }
         .getOrNull()?.takeIf { it.isNotEmpty() && it.length <= 200 }
+
+/** Text off a bill, for Gemini to read into JSON that [billFromAi] checks. Only the bill's own text is sent. */
+fun billPrompt(text: String): String = """
+    This is text read from a photo of a shop bill or receipt, possibly with errors. Reply with one JSON object and nothing else:
+    {"total": number or null, "shop": short shop name or null, "date": "YYYY-MM-DD" or null, "pharmacy": true or false,
+     "items": [{"name": short item name, "qty": whole number, "price": number or null}]}
+    Leave out taxes, discounts, totals and payment lines from items. Use null when you can't tell. If it isn't a bill, reply {"total": null, "items": []}.
+
+    Text:
+    ${text.take(4000)}
+""".trimIndent()
+
+/**
+ * Gemini's reading of a bill, every field checked: a positive total, sane quantities, names
+ * with letters, a real date not in the future. Null when nothing useful came back.
+ */
+fun billFromAi(json: String, today: LocalDate): com.houseaffairs.app.core.data.BillScan? = runCatching {
+    val o = JSONObject(json.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim())
+    val total = o.optDouble("total").takeIf { !it.isNaN() && it > 0 && it < 10_000_000 }?.let { BigDecimal.valueOf(it).setScale(2, java.math.RoundingMode.HALF_UP).stripTrailingZeros() }
+    val date = o.optString("date").takeIf { it.length == 10 }?.let { runCatching { LocalDate.parse(it) }.getOrNull() }?.takeIf { !it.isAfter(today.plusDays(1)) }
+    val arr = o.optJSONArray("items")
+    val items = (0 until (arr?.length() ?: 0)).mapNotNull { i ->
+        val it = arr!!.optJSONObject(i) ?: return@mapNotNull null
+        val name = it.optString("name").trim().take(40).takeIf { n -> n.count(Char::isLetter) >= 2 } ?: return@mapNotNull null
+        val qty = it.optInt("qty", 1).coerceIn(1, 50)
+        val price = it.optDouble("price").takeIf { p -> !p.isNaN() && p > 0 }?.let { p -> Math.round(p * 100) }
+        com.houseaffairs.app.core.data.BillItem(name.replaceFirstChar { c -> c.uppercaseChar() }, qty, price)
+    }
+    if (total == null && items.isEmpty()) return@runCatching null
+    com.houseaffairs.app.core.data.BillScan(
+        com.houseaffairs.app.core.data.ReceiptScan(total, o.optString("shop").trim().take(40).ifEmpty { null }?.takeIf { it != "null" }, date),
+        items, o.optBoolean("pharmacy", false),
+    )
+}.getOrNull()

@@ -58,6 +58,12 @@ val CREDIT_KINDS = listOf("Gift card", "Card points", "Coupon", "Cashback", "Vou
 private fun template(values: FormValues) = ListTemplate.of(values["template"] as? String)
 
 /** Everything that can be added. Each kind is a collection plus the fields its form shows. */
+/** Set while editing a subscription whose amount differs from what was saved; never stored. */
+const val PRICE_CHANGED = "_priceChanged"
+
+/** Form-only keys that steer saving and are never written to the entry. */
+val FORM_ONLY_KEYS = setOf(PRICE_CHANGED, "priceFrom", "priceFromDate")
+
 enum class EntryType(
     val label: String,
     val formTitle: String,
@@ -67,7 +73,7 @@ enum class EntryType(
     val collection: String,
     /** The field saved as the entry's `title`; Home lists show it. */
     val titleKey: String?,
-    val fields: List<FieldSpec>,
+    baseFields: List<FieldSpec>,
     val available: Boolean = true,
     /** Shown in the add menu. Investments stay hidden: this is a household app, not a portfolio. */
     val listed: Boolean = true,
@@ -102,6 +108,9 @@ enum class EntryType(
         listOf(
             TextSpec("title", "Name", "Netflix, rent, gym…", required = true),
             MoneySpec(),
+            // Asked only when an existing subscription's amount is changed: which payments it's for.
+            ChoiceSpec("priceFrom", "New price applies", com.houseaffairs.app.core.data.PriceFrom.entries.map { it.label }, visibleWhen = { it[PRICE_CHANGED] == true }),
+            DateSpec("priceFromDate", "Starting", visibleWhen = { it[PRICE_CHANGED] == true && it["priceFrom"] == com.houseaffairs.app.core.data.PriceFrom.DATE.label }),
             ChoiceSpec("frequency", "How often", FREQUENCIES, required = true),
             DateSpec("nextDate", "Next payment", required = true),
             ChoiceSpec("paymentMethod", "Paid with", PAYMENT_METHODS, dynamicOptions = "cards", replacedByDynamic = "Card", required = true),
@@ -118,6 +127,7 @@ enum class EntryType(
         "Grocery", "Add to pantry", Icons.Outlined.Kitchen, { it.stock }, AppModule.STOCK, "stock", "title",
         listOf(
             TextSpec("title", "Item", "Paneer, rice, olive oil…", required = true),
+            PhotosSpec(essential = false),
             QuantitySpec(units = listOf("pcs", "g", "kg", "ml", "L", "pack")),
             DateSpec("expiry", "Best before"),
             // Guessed from the name when left empty, so only needed to correct a guess.
@@ -138,9 +148,17 @@ enum class EntryType(
         "Medicine", "Add medicine", Icons.Outlined.LocalHospital, { it.vault }, AppModule.MEDICINE, "medicines", "title",
         listOf(
             TextSpec("title", "Medicine", "Crocin, cough syrup…", required = true),
+            // The strip or box, so the right one is easy to find.
+            PhotosSpec(),
             // Expiry and who it's for come first: an expired or wrong-person medicine is the risk.
             DateSpec("expiry", "Expires"),
             MembersSpec("forWhom", "For"),
+            // Taken on a schedule: doses ring at their times, and Home warns before it runs out.
+            ChoiceSpec("frequency", "How often", com.houseaffairs.app.core.data.DOSE_FREQUENCIES),
+            ChoiceSpec("doseTimes", "At", com.houseaffairs.app.core.data.TIME_CHOICES, multi = true, allowCustom = true, visibleWhen = { it.takesDoses() }),
+            ChoiceSpec("perDose", "Each dose", com.houseaffairs.app.core.data.DOSE_AMOUNTS, allowCustom = true, visibleWhen = { it.takesDoses() }),
+            DateSpec("until", "Until (course ends)", essential = false, visibleWhen = { it.takesDoses() }),
+            ChoiceSpec("remindDose", "Remind to take it", listOf("Yes", "No"), essential = false, visibleWhen = { it.takesDoses() }),
             // Tags match the assistant's "I'm feeling…" care list, so it can suggest what's at home.
             ChoiceSpec(
                 "usedFor", "Used for",
@@ -180,7 +198,7 @@ enum class EntryType(
             // "Call mom" / "message Ravi": the task row opens the dialer, WhatsApp or SMS with this number.
             ChoiceSpec("reach", "Reach them by", listOf("Call", "WhatsApp", "SMS"), visibleWhen = { it["reach"] != null || com.houseaffairs.app.feature.quickadd.reachOf(it["title"] as? String ?: "") != null }),
             TextSpec("phone", "Their number", "Pick a contact or type it", isPhone = true, visibleWhen = { it["reach"] != null }),
-            ChoiceSpec("repeat", "Repeat", listOf("Never", "Daily", "Weekly", "Monthly"), essential = false),
+            ChoiceSpec("repeat", "Repeat", com.houseaffairs.app.core.data.REPEAT_CHOICES, essential = false),
             // A chore rota: each time it's done, the next one goes to the next person.
             MembersSpec("rotation", "Take turns", essential = false, visibleWhen = { (it["repeat"] as? String).let { r -> r != null && r != "Never" } }),
             ChoiceSpec("remind", "Remind", REMINDERS, essential = false, visibleWhen = { it["due"] != null }),
@@ -204,6 +222,8 @@ enum class EntryType(
         listOf(
             ChoiceSpec("template", "List", ListTemplate.entries.map { it.label }, required = true),
             TextSpec("title", "What", "Dune 2, Bali, a new sofa…", required = true),
+            // The sofa in the shop, the place, the gift: a picture says which one.
+            PhotosSpec(),
             // Set by hand, it wins over anything looked up online, so no TMDB key is needed.
             ChoiceSpec(
                 "platform", "Where to watch", listOf("Netflix", "Prime Video", "Hotstar", "SonyLIV", "Zee5", "YouTube", "Theatre"),
@@ -235,14 +255,16 @@ enum class EntryType(
         "Recipe", "Save a recipe", Icons.Outlined.RestaurantMenu, { it.stock }, AppModule.STOCK, "recipes", "title",
         listOf(
             TextSpec("title", "Dish", "Paneer tikka…", required = true),
+            PhotosSpec(),
             IngredientsSpec(),
             // Quantities are written for this many people; cooking scales them to who's eating.
             ChoiceSpec("servings", "Quantities above are for (people)", listOf("1", "2", "4"), required = true),
             ChoiceSpec("mood", "Mood", FLAVOURS, multi = true, allowCustom = true),
             TextSpec("link", "Reel or recipe link", isLink = true),
-            ChoiceSpec("mealType", "Meal", listOf("Breakfast", "Lunch", "Dinner", "Snack", "Dessert"), essential = false),
+            ChoiceSpec("mealType", "Meal", listOf("Breakfast", "Lunch", "Dinner", "Snack", "Dessert", "Drink"), essential = false),
             TextSpec("prepTime", "Prep time", "20 min", essential = false),
-            TextSpec("macros", "Protein · carbs · fat · fibre", "e.g. 25g · 30g · 12g · 4g", essential = false),
+            // Per serving, i.e. one person's plate; the live-well wheel adds up servings eaten.
+            TextSpec("macros", "Nutrition per serving (one person)", isMacros = true, essential = false),
             ChoiceSpec("rating", "How was it?", RATING, essential = false),
         ),
     ),
@@ -251,7 +273,8 @@ enum class EntryType(
         listOf(
             TextSpec("title", "Name", "Toit, Spar, Dr. Mehta's clinic…", required = true),
             ChoiceSpec("kind", "Kind", PLACE_KINDS, required = true),
-            TextSpec("area", "Area or address", "Indiranagar"),
+            // Picked from suggestions, it's a full address the map can find, so "near me" works.
+            TextSpec("area", "Area or address", "Indiranagar, Bengaluru", isAddress = true),
             ChoiceSpec("rating", "How is it?", listOf("❤️ Love it", "👍 Good", "👎 Not great", "Want to try"), essential = false),
             TextSpec("goodFor", "Things to try or buy there", "Butter chicken, fresh paneer…", multiline = true, essential = false),
             TextSpec("phone", "Phone", essential = false),
@@ -264,7 +287,11 @@ enum class EntryType(
         listOf(
             TextSpec("title", "What", "Gold necklace, spare car keys, passports…", required = true),
             TextSpec("location", "Where", "Bank locker, blue drawer in the bedroom…", required = true),
+            // A photo of the thing, or of where it is, says more than words.
+            PhotosSpec(),
             ChoiceSpec("kind", "Kind", KEPT_KINDS),
+            // Documents are grouped by this, the same folders as in Google Drive.
+            ChoiceSpec("docType", "Type of document", com.houseaffairs.app.core.data.DOC_TYPES, allowCustom = true, visibleWhen = { it["kind"] == "Documents" }),
             ChoiceSpec("room", "Room or place", listOf("Bedroom", "Wardrobe", "Locker", "Bank locker", "Kitchen", "Storeroom", "Car", "Office"), allowCustom = true, essential = false),
             MembersSpec("knows", "Who else should know", essential = false),
             TextSpec("note", "Note", essential = false),
@@ -274,6 +301,7 @@ enum class EntryType(
         "Supplies", "Add household supplies", Icons.Outlined.Handyman, { it.stock }, AppModule.STOCK, "stock", "title",
         listOf(
             TextSpec("title", "Item", "AAA batteries, sunscreen, detergent…", required = true),
+            PhotosSpec(essential = false),
             QuantitySpec(units = listOf("units", "pcs", "packs", "boxes", "rolls", "L", "kg")),
             ChoiceSpec("supplyType", "Type", SUPPLY_TYPES, allowCustom = true),
             DateSpec("expiry", "Expires"),
@@ -313,10 +341,14 @@ enum class EntryType(
             TextSpec("title", "Name", "Sunday outing, Goa trip…", required = true),
             DateSpec("start", "Starts", required = true),
             DateSpec("end", "Ends"),
+            // The plan for the day: "Cubbon Park, Lalbagh, MTR"; reorder and add days on the trip card.
+            TextSpec("places", "Places, in order", "Cubbon Park, Lalbagh, MTR…"),
             MoneySpec("budget", "Budget for it", required = false),
             // Trips sit on the vision board under the dream they make come true.
             ChoiceSpec("forDream", "Part of a dream", listOf("Not linked"), dynamicOptions = "dreams", hideWithoutDynamic = true),
             MembersSpec("who", "Who's going", essential = false),
+            // A surprise trip: they don't see it (or its plan) until this is cleared.
+            MembersSpec("surpriseFor", "Keep it a surprise from", essential = false),
             TextSpec("note", "Note", essential = false),
         ),
     ),
@@ -335,6 +367,8 @@ enum class EntryType(
         "Dream or gullak", "New dream or gullak", Icons.Outlined.AutoAwesome, { it.vault }, AppModule.PLANS, "dreams", "title",
         listOf(
             TextSpec("title", "Name", "Bali trip, emergency fund, Diwali…", required = true),
+            // The first picture fills the dream's card on the vision board.
+            PhotosSpec(label = "Pictures for the vision board"),
             ChoiceSpec("kind", "Kind", DREAM_KINDS.keys.toList(), required = true),
             MoneySpec(label = "Target (optional)", required = false),
             DateSpec("targetDate", "By when"),
@@ -364,6 +398,9 @@ enum class EntryType(
         available = false,
     ),
     ;
+
+    /** Every kind's own fields, plus the family's tags ("goa kids") at the end of More details. */
+    val fields: List<FieldSpec> = baseFields + if (baseFields.any { it.key == "tags" }) emptyList() else listOf(TextSpec("tags", "Tags", "goa, kids, office", essential = false))
 
     /** Pre-filled values for a fresh form. */
     fun defaults(myUid: String, currency: String, today: LocalDate = LocalDate.now()): FormValues = buildMap {
@@ -425,3 +462,12 @@ enum class EntryType(
         }
     }
 }
+
+/**
+ * What [member] may add: everything their modules allow, plus an expense for anyone. Kids and
+ * teens log what they spend; the family's budget, totals and breakdown stay with Money.
+ */
+fun com.houseaffairs.app.core.model.Member.canAdd(type: EntryType): Boolean = type == EntryType.EXPENSE || canAccess(type.module)
+
+/** A schedule was picked, so the dose fields matter. */
+private fun FormValues.takesDoses(): Boolean = (this["frequency"] as? String)?.let { it != "As needed" } == true

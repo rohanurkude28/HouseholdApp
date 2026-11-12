@@ -7,6 +7,7 @@ import kotlin.test.Test
 import com.houseaffairs.app.core.util.Decimal
 import com.houseaffairs.app.core.util.compareValue
 import com.houseaffairs.app.core.util.decimalOf
+import com.houseaffairs.app.core.util.plainString
 import com.houseaffairs.app.core.time.*
 
 class QuickAddParserTest {
@@ -310,6 +311,8 @@ class QuickAddParserTest {
         assertEquals(QuickAddDraft.Ask(q, "Fever"), parser.parse("I'm feeling feverish"))
         assertEquals(QuickAddDraft.Ask(q, "Loose motions", "Riya"), parser.parse("Riya has loose motions"))
         assertEquals(QuickAddDraft.Ask(q, "Burns"), parser.parse("burnt my hand"))
+        // Several at once: each gets its own care, and "and" doesn't split it into two entries.
+        assertEquals(QuickAddDraft.Ask(q, "Fever|Cold & cough"), parser.parse("I have fever and cold"))
         // A medicine entry is still a medicine entry.
         assertEquals(QuickAddDraft.Medicine("Crocin", "Riya", localDate(2027, 3, 31)), parser.parse("bought crocin for riya expires march 2027"))
     }
@@ -508,5 +511,206 @@ class QuickAddParserTest {
         val late = QuickAddParser(today = { localDate(2026, 11, 2) }, nowMinute = { 11 * 60 })
         assertEquals(localDate(2026, 11, 3), (late.parse("call mom at 9 am") as QuickAddDraft.Task).due)
         assertNull((parser.parse("call 2 plumbers") as QuickAddDraft.Task).time)
+    }
+
+    @Test
+    fun `can I cook a dish for some people`() {
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.CAN_COOK, "Paneer tikka", count = 3), parser.parse("can I cook paneer tikka for 3 people?"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.CAN_COOK, "Dal", count = null), parser.parse("can we make dal"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.CAN_COOK, "Biryani", count = 6), parser.parse("is there enough to cook biryani for 6"))
+        // "What can I cook" is still the open question.
+        assertEquals(QuickAddDraft.Question.COOK, (parser.parse("what can I cook") as QuickAddDraft.Ask).question)
+    }
+
+    @Test
+    fun `when can we reach a dream - and how long things last`() {
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.WHEN_DREAM, "Bali"), parser.parse("by when can we go to Bali?"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.WHEN_DREAM, "New car"), parser.parse("when can I buy a new car"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.WHEN_DREAM, "Bali trip"), parser.parse("how long until the Bali trip"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.LASTED, "Detergent"), parser.parse("how long did the detergent last"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.LASTED, "Rice"), parser.parse("when will the rice run out?"))
+    }
+
+    // The household assistant's everyday requests, said the way people say them.
+
+    @Test
+    fun `talking to someone gives them the task`() {
+        val t = parser.parse("Rohan, please pay the electricity bill tomorrow.") as QuickAddDraft.Task
+        assertEquals("Pay the electricity bill", t.title)
+        assertEquals("Rohan", t.forName)
+        assertEquals(localDate(2026, 11, 3), t.due)
+        // Voice drops the comma.
+        assertEquals("Rohan", (parser.parse("rohan please take out the trash") as QuickAddDraft.Task).forName)
+        // An amount said to someone is still spending.
+        assertTrue(parser.parse("Ravi, 500 for groceries") !is QuickAddDraft.Task)
+    }
+
+    @Test
+    fun `remind someone at a time`() {
+        val t = parser.parse("Remind Mom to take her medicine at 9 PM.") as QuickAddDraft.Task
+        assertEquals("Take her medicine", t.title)
+        assertEquals("Mom", t.forName)
+        assertEquals("9:00 pm", t.time)
+        // "Remind me" is still my own task.
+        assertNull((parser.parse("remind me to call the plumber") as QuickAddDraft.Task).forName)
+    }
+
+    @Test
+    fun `a list ending in a full stop still splits`() {
+        val batch = parser.parse("Add tomatoes, milk and paneer to groceries.") as QuickAddDraft.Batch
+        assertEquals(listOf("Tomatoes", "Milk", "Paneer"), batch.drafts.map { (it as QuickAddDraft.Shopping).item })
+    }
+
+    @Test
+    fun `running low goes on the shopping list`() {
+        assertEquals("Detergent", (parser.parse("We're running low on detergent. Add it to the shopping list.") as QuickAddDraft.Shopping).item)
+        assertEquals("Rice", (parser.parse("low on rice") as QuickAddDraft.Shopping).item)
+    }
+
+    @Test
+    fun `how much was spent`() {
+        val a = parser.parse("How much did we spend on groceries this month?") as QuickAddDraft.Ask
+        assertEquals(QuickAddDraft.Question.SPENT, a.question)
+        assertEquals("Groceries", a.subject)
+        assertEquals("this month", a.period)
+        val all = parser.parse("how much have we spent last month") as QuickAddDraft.Ask
+        assertNull(all.subject)
+        assertEquals("last month", all.period)
+    }
+
+    @Test
+    fun `share live location with someone`() {
+        val a = parser.parse("Share my live location with Ravi") as QuickAddDraft.Ask
+        assertEquals(QuickAddDraft.Question.SHARE_LOCATION, a.question)
+        assertEquals("Ravi", a.subject)
+    }
+
+    @Test
+    fun `a medicine with a schedule and a course`() {
+        val m = parser.parse("crocin twice a day for Riya for 5 days") as QuickAddDraft.Medicine
+        assertEquals("Twice a day", m.frequency)
+        assertEquals(localDate(2026, 11, 6), m.until)
+        assertEquals("Riya", m.forName)
+        assertEquals("Crocin", m.title)
+    }
+
+    @Test
+    fun `an outing with its places in order`() {
+        val t = parser.parse("Sunday outing to Cubbon Park, Lalbagh and MTR") as QuickAddDraft.Trip
+        assertEquals("Sunday outing", t.title)
+        assertEquals(localDate(2026, 11, 8), t.start)
+        assertEquals("Cubbon Park, Lalbagh and MTR", t.places)
+        // One place is still a plain trip ("trip to Goa").
+        assertEquals(null, (parser.parse("start trip to Goa") as QuickAddDraft.Trip).places)
+    }
+
+    @Test
+    fun `a time with a zone - and remind every day`() {
+        val t = parser.parse("Do this deployment around 6 PM IST") as QuickAddDraft.Task
+        assertEquals("Do this deployment", t.title)
+        assertEquals("6:00 pm", t.time)
+        assertEquals(localDate(2026, 11, 2), t.due)
+        val daily = parser.parse("Do this deployment around 6 PM IST and remind everyday") as QuickAddDraft.Task
+        assertEquals("Do this deployment", daily.title)
+        assertEquals("Daily", daily.repeat)
+        val water = parser.parse("remind everyday to drink water at 8 am") as QuickAddDraft.Task
+        assertEquals("Drink water", water.title)
+        assertEquals("Daily", water.repeat)
+        assertNull(water.forName)
+        // A reminder that mentions vitamins is still a reminder, not a medicine.
+        val vit = parser.parse("remind me every day at 9 pm to take vitamins") as QuickAddDraft.Task
+        assertEquals("Take vitamins", vit.title)
+        assertEquals("9:00 pm", vit.time)
+    }
+
+    @Test
+    fun `skipping a medicine for a day`() {
+        val s = parser.parse("won't take crocin today") as QuickAddDraft.SkipDose
+        assertEquals("Crocin", s.medicine)
+        assertEquals(localDate(2026, 11, 2), s.day)
+        assertEquals(localDate(2026, 11, 3), (parser.parse("skip my vitamins tomorrow") as QuickAddDraft.SkipDose).day)
+        // "Skip" alone with no day isn't enough.
+        assertTrue(parser.parse("skip rope") !is QuickAddDraft.SkipDose)
+    }
+
+    private val at10 = QuickAddParser(today = { localDate(2026, 11, 11) }, nowMinute = { 10 * 60 })
+    private fun reminder(text: String) = at10.parse(text) as QuickAddDraft.Task
+    private fun shop(vararg items: String) = QuickAddDraft.Batch(items.map { QuickAddDraft.Shopping(it) })
+
+    @Test
+    fun `alarms ring at their time - with a plain title`() {
+        assertEquals(QuickAddDraft.Task("Alarm", localDate(2026, 11, 12), time = "6:00 am"), reminder("set alarm for 6 am"))
+        assertEquals("7:30 am", reminder("set an alarm at 7:30").time)
+        assertEquals(QuickAddDraft.Task("Wake up", localDate(2026, 11, 12), time = "6:00 am"), reminder("wake me up at 6"))
+        assertEquals(QuickAddDraft.Task("Alarm", localDate(2026, 11, 12), time = "5:30 am"), reminder("alarm tomorrow 5:30 am"))
+    }
+
+    @Test
+    fun `reminders in any order of words`() {
+        assertEquals("Take medicine", reminder("set a reminder for 5 pm to take medicine").title)
+        val ravi = reminder("remind me at 6 to call Ravi")
+        assertEquals("Call Ravi", ravi.title)
+        // "At 6" said at 10 am is this evening.
+        assertEquals("6:00 pm", ravi.time)
+        assertEquals("Call Ravi", reminder("reminder call Ravi at 6").title)
+        assertEquals(QuickAddDraft.Task("Check oven", localDate(2026, 11, 11), time = "10:30 am"), reminder("remind me in 30 minutes to check oven"))
+        assertEquals(QuickAddDraft.Task("Dentist", localDate(2026, 11, 13), time = "4:00 pm"), reminder("reminder: dentist friday 4pm"))
+        val bank = reminder("remind me tomorrow morning to call bank")
+        assertEquals(localDate(2026, 11, 12), bank.due)
+        assertEquals("9:00 am", bank.time)
+        assertEquals(localDate(2026, 11, 15), reminder("remind me on 15th to pay credit card").due)
+    }
+
+    @Test
+    fun `several things in one line are saved one by one`() {
+        assertEquals(shop("Milk", "Eggs", "Bread"), at10.parse("milk, eggs and bread"))
+        assertEquals(shop("Milk", "Eggs", "Bread"), at10.parse("add milk eggs bread to shopping"))
+        assertEquals(shop("Milk", "Eggs", "Curd"), at10.parse("need milk eggs and curd"))
+        assertEquals(
+            QuickAddDraft.Batch(listOf(QuickAddDraft.Shopping("Milk", "2 pcs"), QuickAddDraft.Shopping("Bread", "1 pcs"), QuickAddDraft.Shopping("Eggs", "6 pcs"))),
+            at10.parse("2 milk 1 bread 6 eggs"),
+        )
+        val bought = at10.parse("bought milk 60, eggs 90 and bread 45") as QuickAddDraft.Batch
+        assertEquals(listOf("60", "90", "45"), bought.drafts.map { (it as QuickAddDraft.Expense).amount.plainString() })
+        assertTrue(bought.drafts.all { (it as QuickAddDraft.Expense).category == "Groceries" })
+        val mixed = at10.parse("call mom, pay rent and buy milk") as QuickAddDraft.Batch
+        assertEquals(listOf("Call mom", "Pay rent"), mixed.drafts.filterIsInstance<QuickAddDraft.Task>().map { it.title })
+        // Not a list of things to do: one task.
+        assertTrue(at10.parse("call Riya and Aman") is QuickAddDraft.Task)
+        // A reminder's own "and" stays one reminder.
+        assertTrue(at10.parse("remind me to call mom and pay rent") is QuickAddDraft.Task)
+    }
+
+    @Test
+    fun everydayLinesFromTheReview() {
+        // Money: the day said, a clean shop name, a pharmacy bill, money in and lent.
+        assertEquals(localDate(2026, 11, 1), (parser.parse("zomato 640 last night") as QuickAddDraft.Expense).date)
+        assertEquals("zomato", (parser.parse("zomato 640 last night") as QuickAddDraft.Expense).merchant)
+        assertEquals("amazon", (parser.parse("amazon order 1299 headphones") as QuickAddDraft.Expense).merchant)
+        assertEquals("Health", (parser.parse("medicine 340 apollo") as QuickAddDraft.Expense).category)
+        assertEquals(QuickAddDraft.Question.INCOME, (parser.parse("got salary 85000") as QuickAddDraft.Ask).question)
+        assertEquals("Get 5000 back from Ravi", (parser.parse("lent 5000 to ravi") as QuickAddDraft.Task).title)
+        // Times and days.
+        assertEquals("4:30 pm", (parser.parse("pick up kids at 4:30") as QuickAddDraft.Task).time)
+        assertEquals(localDate(2026, 11, 7), (parser.parse("clean fridge this weekend") as QuickAddDraft.Task).due)
+        // Trips and goals aren't money.
+        assertEquals(QuickAddDraft.Trip("Goa", localDate(2026, 12, 20)), parser.parse("trip to goa from 20 dec"))
+        assertEquals(QuickAddDraft.Goal("Run 5k"), parser.parse("goal: run 5k this week"))
+        // Questions answered, not saved.
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.HAVE, "Eggs"), parser.parse("do we have eggs?"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.WHEN, "Riya's birthday"), parser.parse("when is riya's birthday"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.AGENDA, "this week"), parser.parse("what's due this week"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.TO_BUY, null), parser.parse("anything to buy?"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.COOK, null), parser.parse("what's for dinner"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.SPENT, "Groceries", period = "last month"), parser.parse("how much for groceries last month"))
+        // Places, lists and where things are.
+        assertEquals(QuickAddDraft.Kept("Spare keys", "Drawer"), parser.parse("spare keys in drawer"))
+        assertEquals(QuickAddDraft.Place("Vidyarthi Bhavan", "Restaurant", "Dosa"), parser.parse("good dosa at vidyarthi bhavan"))
+        assertEquals(QuickAddDraft.ListItem(ListTemplate.WATCH, "Dune 2"), parser.parse("watch dune 2"))
+        assertEquals(QuickAddDraft.ListItem(ListTemplate.GIFTS, "Smart watch", "Riya"), parser.parse("gift idea for riya: smart watch"))
+        // Symptoms said plainly, but a gas cylinder is not acidity.
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.SYMPTOM, "Headache"), parser.parse("headache since morning"))
+        assertEquals(QuickAddDraft.Ask(QuickAddDraft.Question.SYMPTOM, "Cuts & wounds"), parser.parse("kid fell and cut knee"))
+        assertEquals(false, parser.parse("gas cylinder booking") is QuickAddDraft.Ask)
     }
 }

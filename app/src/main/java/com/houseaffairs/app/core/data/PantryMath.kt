@@ -18,7 +18,15 @@ data class PantryStock(
     val category: String? = null,
     /** Where it's kept in the house ("spice box", "medicine drawer"), if said. */
     val keptAt: String? = null,
-)
+    /** Photo ids (PhotoStore), newest last. */
+    val photos: List<String> = emptyList(),
+    /** "Remind to restock" as chosen; anything but Off means it's always kept, so it goes back on the list. */
+    val restock: String? = null,
+    /** For a medicine taken on a schedule: "2 a day · ~8 left · until 10 Nov". */
+    val schedule: String? = null,
+) {
+    val keptStocked: Boolean get() = restock != null && restock != "Off"
+}
 
 private enum class Dimension { MASS, VOLUME, COUNT }
 
@@ -120,6 +128,12 @@ data class Deduction(
 }
 
 data class CookPlan(val deductions: List<Deduction>, val missing: List<Ingredient>) {
+    /** Ingredients the pantry has, but not as much as this needs: "paneer". */
+    val short: List<String> get() = deductions.filter { d -> d.need != null && d.stock.amount != null && d.need > d.stock.amount + 1e-6 }.map { it.stock.title }
+
+    /** Everything is there, in the amounts needed: only then can it be cooked from the pantry. */
+    val enough: Boolean get() = missing.isEmpty() && short.isEmpty()
+
     /** Items that should go on the shopping list after cooking. */
     val toBuy: List<String> get() = missing.map { it.name } + deductions.filter { it.usedUp || it.runsLow }.map { it.stock.title }
 }
@@ -143,6 +157,21 @@ fun planCooking(ingredients: List<Ingredient>, scale: Double, pantry: List<Pantr
         deductions += Deduction(stock, need, after)
     }
     return CookPlan(deductions, missing)
+}
+
+/**
+ * How many people the pantry can cook [recipe] for, from ingredients with quantities: the one in
+ * shortest supply decides. Null when none has a quantity to go by (so no limit is known).
+ */
+fun servingsPossible(recipe: Recipe, pantry: List<PantryStock>): Int? {
+    val perPerson = recipe.ingredients.filter { it.name.isNotBlank() && (it.amount ?: 0.0) > 0 }
+    if (perPerson.isEmpty()) return null
+    return perPerson.mapNotNull { ing ->
+        val stock = pantry.filter { sameIngredient(it.title, ing.name) && (it.amount ?: 0.0) > 0 }
+        if (stock.isEmpty()) return@mapNotNull 0
+        val have = stock.sumOf { s -> s.amount?.let { convertFor(ing.name, it, s.unit, ing.unit) } ?: return@mapNotNull null }
+        (have / (ing.amount!! / recipe.servings.coerceAtLeast(1))).toInt()
+    }.minOrNull()
 }
 
 data class RecipeFit(

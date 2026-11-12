@@ -49,6 +49,21 @@ class AuthRepository @Inject constructor(
     }
 
     /**
+     * Deletes the sign-in itself. Firebase asks for a fresh sign-in when the last one is old, so
+     * that case picks the Google account again (through [signInWithGoogle]) and retries.
+     */
+    suspend fun deleteAccount(activityContext: Context) {
+        val user = checkNotNull(auth.currentUser) { "Not signed in" }
+        try {
+            user.delete().await()
+        } catch (e: com.google.firebase.auth.FirebaseAuthRecentLoginRequiredException) {
+            signInWithGoogle(activityContext).getOrThrow()
+            checkNotNull(auth.currentUser).delete().await()
+        }
+        runCatching { CredentialManager.create(appContext).clearCredentialState(ClearCredentialStateRequest()) }
+    }
+
+    /**
      * Local build only: the Auth emulator accepts an unsigned JSON "Google ID token",
      * so we can sign in as several family members without real accounts.
      */

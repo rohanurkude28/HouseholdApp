@@ -1,5 +1,9 @@
 package com.houseaffairs.app.feature.money
 
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowLeft
+import com.houseaffairs.app.core.data.limitFor
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.verticalScroll
@@ -101,7 +105,8 @@ import java.time.format.DateTimeFormatter
 
 /** The Money tab: what's left this budget month, where it went, and what's coming. */
 /** Money's three views: the month, where savings are, and every expense. */
-enum class MoneyTab(val label: String) { MONTH("This month"), YEAR("This year"), SAVINGS("Savings"), EXPENSES("Expenses") }
+// Expenses live inside Month and Year (searchable, for that period), not in a tab of their own.
+enum class MoneyTab(val label: String) { MONTH("Month"), YEAR("Year"), SAVINGS("Savings") }
 
 @Composable
 fun MoneyScreen(
@@ -114,14 +119,33 @@ fun MoneyScreen(
     onEdit: (EntryType, String) -> Unit,
     requestedTab: String? = null,
     onTabShown: () -> Unit = {},
+    /** Another tab, e.g. "plans/DREAM:<id>" to open a dream on the vision board. */
+    onOpen: (String) -> Unit = {},
     viewModel: MoneyViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var editing by remember { mutableStateOf(false) }
     var moving by remember { mutableStateOf<Pair<Pocket, String>?>(null) }
+    // A category opened for its whole history: "where did the grocery money go?".
+    var category by remember { mutableStateOf<String?>(null) }
+    category?.let { c ->
+        state.money?.let { m ->
+            CategorySheet(
+                com.houseaffairs.app.core.data.categoryReport(m.txns, c, java.time.LocalDate.now()),
+                { com.houseaffairs.app.core.util.formatMinor(it, state.currency) },
+                onOpen = { id -> category = null; onEdit(EntryType.EXPENSE, id) },
+                onDismiss = { category = null },
+            )
+        }
+    }
     // A goal gullak's "Add money" opens the move sheet with that goal already picked.
     var moveTarget by remember { mutableStateOf<Pocket?>(null) }
     var tab by rememberSaveable { mutableStateOf(MoneyTab.MONTH) }
+    var pickedYear by rememberSaveable { mutableStateOf<Int?>(null) }
+    // Which budget month Month shows: 0 = this one, 1 = last month…
+    var monthIdx by rememberSaveable { mutableStateOf(0) }
+    // The category the year's line is drawn for; null is all spending.
+    var yearCategory by rememberSaveable { mutableStateOf<String?>(null) }
     var allEnvelopes by remember { mutableStateOf(false) }
     LaunchedEffect(requestedTab) {
         MoneyTab.entries.firstOrNull { it.name == requestedTab }?.let { tab = it; onTabShown() }
@@ -129,7 +153,12 @@ fun MoneyScreen(
     val summary = state.summary
     val money: (Long) -> String = { if (state.hideAmounts) HIDDEN_AMOUNT else formatMinor(it, state.currency) }
 
-    LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(bottom = 24.dp)) {
+    val listState = com.houseaffairs.app.core.ui.rememberTopListState(tab)
+    // "Planned spend" in Coming up goes to Month's "Planned & upcoming": the header, the tab
+    // chips, the month switcher, the budget and the add chips come before it.
+    var showPlanned by remember { mutableStateOf(0) }
+    LaunchedEffect(showPlanned) { if (showPlanned > 0) listState.animateScrollToItem(5) }
+    LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), state = listState, contentPadding = PaddingValues(bottom = 24.dp)) {
         item {
             Row(Modifier.padding(start = 20.dp, end = 8.dp, top = 16.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -176,27 +205,43 @@ fun MoneyScreen(
                 val m = state.money
                 when (tab) {
                     MoneyTab.MONTH -> {
-                        item { BudgetHero(summary, money) }
-                        item {
-                            Row(
-                                Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                ActionChip("Expense", Icons.Outlined.Add, onAddExpense)
-                                ActionChip("Plan a spend", Icons.Outlined.EventNote, onPlanSpend)
-                                ActionChip("Subscription", Icons.Outlined.Autorenew, onAddSubscription)
-                                ActionChip("Gift card / coupon", Icons.Outlined.Redeem, onAddCredit)
+                        val today = java.time.LocalDate.now()
+                        val months = m?.let { com.houseaffairs.app.core.data.cyclesSince(it.startedOn, today, it.budget.cycleStartDay) }.orEmpty()
+                        val cycle = months.getOrNull(monthIdx) ?: summary.cycle
+                        val current = monthIdx == 0
+                        // Earlier months: a small "‹ October ›" switcher, only once there is an earlier month.
+                        if (months.size > 1) item {
+                            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = { monthIdx++ }, enabled = monthIdx < months.size - 1) { Icon(Icons.AutoMirrored.Outlined.KeyboardArrowLeft, contentDescription = "Earlier month") }
+                                Text(monthLabel(cycle), style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+                                IconButton(onClick = { monthIdx-- }, enabled = monthIdx > 0) { Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = "Later month") }
                             }
-                        }
-                        item { SectionTitle("Planned & upcoming", action = "Plan", onAction = onPlanSpend) }
-                        item {
-                            UpcomingCard(summary, m?.envelopes?.envelopes.orEmpty(), money, viewModel::markPaid) { u ->
-                                onEdit(if (u.planned) EntryType.EXPENSE else EntryType.SUBSCRIPTION, u.id)
+                        } else item { Spacer(Modifier.height(0.dp)) }
+                        if (current) {
+                            item { BudgetHero(summary, money) }
+                            item {
+                                Row(
+                                    Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    ActionChip("Expense", Icons.Outlined.Add, onAddExpense)
+                                    ActionChip("Plan a spend", Icons.Outlined.EventNote, onPlanSpend)
+                                    ActionChip("Subscription", Icons.Outlined.Autorenew, onAddSubscription)
+                                    ActionChip("Gift card / coupon", Icons.Outlined.Redeem, onAddCredit)
+                                }
+                            }
+                            item { SectionTitle("Planned & upcoming", action = "Plan", onAction = onPlanSpend) }
+                            item {
+                                UpcomingCard(summary, m?.envelopes?.envelopes.orEmpty(), money, viewModel::markPaid) { u ->
+                                    onEdit(if (u.planned) EntryType.EXPENSE else EntryType.SUBSCRIPTION, u.id)
+                                }
                             }
                         }
                         if (m != null) {
-                            item { SectionTitle("Where the money went", action = "All expenses", onAction = { tab = MoneyTab.EXPENSES }) }
-                            item { MonthOverviewCard(m, money) { onEdit(EntryType.EXPENSE, it) } }
+                            item { SectionTitle("Where the money went") }
+                            item { MonthOverviewCard(m, money, cycle, onOpen = { onEdit(EntryType.EXPENSE, it) }, onYear = { tab = MoneyTab.YEAR }) }
+                            item { SectionTitle("Expenses") }
+                            item { ExpensesSearch(m, money, cycle, onAdd = onAddExpense) { onEdit(EntryType.EXPENSE, it) } }
                         }
                     }
                     MoneyTab.SAVINGS -> if (m != null) {
@@ -218,7 +263,7 @@ fun MoneyScreen(
                                 modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 8.dp),
                             )
                         }
-                        item { EnvelopesCard(m, summary.categories, money, showAll = allEnvelopes) { pocket, label -> moving = pocket to label } }
+                        item { EnvelopesCard(m, summary.categories, money, showAll = allEnvelopes, onCategory = { category = it }) { pocket, label -> moving = pocket to label } }
                         item { SectionTitle("Gift cards & coupons", action = "Add", onAction = onAddCredit) }
                         item { CreditsCard(m, money, viewModel::creditUsed) { onEdit(EntryType.CREDIT, it) } }
                         if (m.moves.isNotEmpty()) {
@@ -226,14 +271,72 @@ fun MoneyScreen(
                             item { MovesCard(m, money) { viewModel.undoMove(it)?.let(onSaved) } }
                         }
                     }
-                    MoneyTab.EXPENSES -> if (m != null) {
-                        item { ExpensesSearch(m, money, onAdd = onAddExpense) { onEdit(EntryType.EXPENSE, it) } }
-                    }
                     MoneyTab.YEAR -> if (m != null) {
                         val outlook = com.houseaffairs.app.core.data.yearOutlook(
                             m.budget, m.startedOn, m.txns, m.dreams.map { it.dream }, m.trips.map { it.trip }, java.time.LocalDate.now(), money,
                         )
-                        item { YearOutlookCard(outlook, money) }
+                        val years = com.houseaffairs.app.core.data.moneyYears(m.txns, m.budget, m.startedOn, java.time.LocalDate.now())
+                        val year = years.firstOrNull { it.year == pickedYear } ?: years.firstOrNull()
+                        item { val accent = com.houseaffairs.app.core.designsystem.LocalHouseColors.current.money; com.houseaffairs.app.core.ui.YearChips(years.map { it.year }, year?.year, { pickedYear = it }, accent, Modifier.padding(top = 8.dp)) }
+                        // The same shape as every year view: the year's totals, then month by month.
+                        item {
+                            val accent = com.houseaffairs.app.core.designsystem.LocalHouseColors.current.money
+                            com.houseaffairs.app.core.ui.YearSummaryCard(accent, Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+                                if (year == null || year.year == java.time.LocalDate.now().year) YearOutlookSummary(outlook, money)
+                                else {
+                                    Text("${year.year}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("${money(year.spentMinor)} spent", style = MaterialTheme.typography.headlineMedium)
+                                    Text(
+                                        (year.budgetMinor - year.spentMinor).let { if (it >= 0) "${money(it)} under the budget" else "${money(-it)} over the budget" } + " · ${year.count} expenses",
+                                        style = MaterialTheme.typography.bodyMedium, color = accent.color,
+                                    )
+                                    Text("Most on " + year.topCategories().joinToString(" · ") { (c, n) -> "$c ${money(n)}" }, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
+                                }
+                            }
+                        }
+                        if (year != null) {
+                            val months = year.months.reversed()
+                            // Where the year's money is going: the year as a line against its target, for
+                            // all spending or one category picked from the chips.
+                            item(key = "money-line-${year.year}") {
+                                val names = remember(m.txns, year.year, m.budget) {
+                                    (m.txns.filter { !it.planned && it.date.year == year.year }.groupBy { it.category }.entries.sortedByDescending { e -> e.value.sumOf { it.amountMinor } }.map { it.key } +
+                                        m.budget.categories.filterValues { it > 0 }.keys).distinct()
+                                }
+                                HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+                                    Text("Where the money is going", style = MaterialTheme.typography.titleSmall)
+                                    Spacer(Modifier.height(8.dp))
+                                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        (listOf<String?>(null) + names).forEach { c ->
+                                            FilterChip(selected = yearCategory == c, onClick = { yearCategory = c }, label = { Text(c ?: "All") }, shape = CircleShape)
+                                        }
+                                    }
+                                    Spacer(Modifier.height(12.dp))
+                                    val today = java.time.LocalDate.now()
+                                    val pace = com.houseaffairs.app.core.data.yearPace(m.txns, year.year, today, m.budget, m.startedOn, yearCategory)
+                                    val monthName = { n: Int -> java.time.Month.of(n).getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.getDefault()) }
+                                    PaceChart(pace, money, line = com.houseaffairs.app.core.data.yearLine(pace, money, monthName), startLabel = "Jan", endLabel = "Dec")
+                                }
+                            }
+                            val period = com.houseaffairs.app.core.data.yearPeriod(year.year)
+                            val bars = com.houseaffairs.app.core.data.categoryBars(m.txns, period, m.budget.categories, months = year.months.size)
+                            if (bars.isNotEmpty()) {
+                                item { SectionTitle("By category") }
+                                item { HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) { CategoryBars(bars, money) { category = it } } }
+                            }
+                            item { SectionTitle("Expenses") }
+                            item(key = "money-expenses-${year.year}") { ExpensesSearch(m, money, period, onAdd = onAddExpense) { onEdit(EntryType.EXPENSE, it) } }
+                        }
+                        if (year == null || year.year == java.time.LocalDate.now().year) item {
+                            // Each goes to where it lives: planned spends to This month, dreams and trips to the vision board.
+                            ComingUpCard(outlook, money) { b ->
+                                when (b.kind) {
+                                    "Dream" -> onOpen("plans/DREAM:${b.id}")
+                                    "Trip" -> onOpen("plans/DREAMS")
+                                    else -> { tab = MoneyTab.MONTH; monthIdx = 0; showPlanned++ }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -253,9 +356,13 @@ fun MoneyScreen(
     if (editing) {
         BudgetSetupSheet(
             existing = state.budget,
+            dreams = state.money?.dreams?.map { it.dream }.orEmpty(),
             currency = state.currency,
-            onSave = { viewModel.saveBudget(it) { editing = false } },
+            onSave = { budget, from -> viewModel.saveBudget(budget, from) { editing = false } },
             onDismiss = { editing = false },
+            onCategoryUse = viewModel::categoryUse,
+            onMoveCategory = viewModel::moveCategory,
+            onDeleteWithHistory = { name, done -> viewModel.deleteCategoryWithHistory(name, onSaved, done) },
         )
     }
     state.error?.let {
@@ -363,6 +470,7 @@ private fun Legend(label: String, value: String, dot: Color) {
         }
     }
 }
+
 
 /** Planned spends and bills in date order, each marked by whether the month can still carry it. */
 @Composable
@@ -482,7 +590,7 @@ private fun PotCard(m: MoneyState, money: (Long) -> String, onMove: () -> Unit) 
 }
 
 @Composable
-private fun EnvelopesCard(m: MoneyState, categories: List<CategoryStatus>, money: (Long) -> String, showAll: Boolean = true, onMove: (Pocket, String) -> Unit) {
+private fun EnvelopesCard(m: MoneyState, categories: List<CategoryStatus>, money: (Long) -> String, showAll: Boolean = true, onCategory: (String) -> Unit = {}, onMove: (Pocket, String) -> Unit) {
     val accent = LocalHouseColors.current.money
     HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
         // Tightest first, so the ones that need attention are in the first few.
@@ -495,7 +603,8 @@ private fun EnvelopesCard(m: MoneyState, categories: List<CategoryStatus>, money
             // Over only because of planned spends: a heads-up, not overspending.
             val overWithPlans = negative && e.availableMinor + e.plannedMinor >= 0
             val warn = if (overWithPlans) LocalHouseColors.current.coral else MaterialTheme.colorScheme.error
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // Tap for the category's whole history.
+            Row(Modifier.clickable { onCategory(e.category) }, verticalAlignment = Alignment.CenterVertically) {
                 IconBlob(categoryIcon(e.category), accent, size = 40.dp)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
@@ -537,7 +646,7 @@ private fun EnvelopesCard(m: MoneyState, categories: List<CategoryStatus>, money
         }
         if (showAll) categories.filter { it.limitMinor == null && it.spentMinor > 0 }.forEach { c ->
             Spacer(Modifier.height(14.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.clickable { onCategory(c.name) }, verticalAlignment = Alignment.CenterVertically) {
                 IconBlob(categoryIcon(c.name), accent, size = 40.dp)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {

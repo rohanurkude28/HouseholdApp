@@ -28,4 +28,13 @@ class RepeatsTest {
         assertEquals("rohan", nextInRotation(rota, "someone-else"))
         assertEquals("asha", nextInRotation(emptyList(), "asha"))
     }
+
+    @Test
+    fun everyFewDaysOrWeeks() {
+        val today = localDate(2026, 11, 4)
+        assertEquals(localDate(2026, 11, 7), nextDue(today, "Every 3 days", today))
+        assertEquals(localDate(2026, 11, 18), nextDue(today, "Every 2 weeks", today))
+        assertEquals(3, repeatDays("Every 3 days"))
+        assertEquals(null, repeatDays("Monthly"))
+    }
 }

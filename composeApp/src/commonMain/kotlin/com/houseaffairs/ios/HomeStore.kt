@@ -3,6 +3,7 @@ package com.houseaffairs.ios
 import com.houseaffairs.app.core.data.ActivityItem
 import com.houseaffairs.app.core.data.ActivityKind
 import com.houseaffairs.app.core.data.EventItem
+import com.houseaffairs.app.core.data.GONE_STATUSES
 import com.houseaffairs.app.core.data.HomeData
 import com.houseaffairs.app.core.data.Renewal
 import com.houseaffairs.app.core.data.ShoppingItem
@@ -91,8 +92,8 @@ class HomeStore {
                         priority = when (it.str("priority")) { "High" -> "High"; "Medium", "Normal" -> "Medium"; else -> "Low" },
                     )
                 }.sortedWith(compareBy<TaskItem, Long?>(nullsLast()) { it.dueDate?.toEpochDay() }.thenBy { listOf("High", "Medium", "Low").indexOf(it.priority) }),
-                pantry = stockDocs.filter { it.str("status") != "USED_UP" }.map(::stockItem),
-                medicines = medicineDocs.filter { it.str("status") != "USED_UP" }.map(::stockItem),
+                pantry = stockDocs.filter { it.str("status") !in GONE_STATUSES }.map(::stockItem),
+                medicines = medicineDocs.filter { it.str("status") !in GONE_STATUSES }.map(::stockItem),
                 renewals = recurringDocs.mapNotNull { doc ->
                     val next = doc.date("nextDate") ?: return@mapNotNull null
                     val amount = doc.long("amountMinor")?.let { minor -> doc.str("currency")?.let { formatMinor(minor, it) } }

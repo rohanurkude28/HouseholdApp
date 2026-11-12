@@ -17,7 +17,15 @@ import javax.inject.Inject
 class MainViewModel @Inject constructor(
     sessionManager: SessionManager,
     private val settings: SettingsRepository,
+    /** Sounds and haptics for save, done and undo. */
+    val feedback: com.houseaffairs.app.core.ui.Feedback,
+    private val auth: com.houseaffairs.app.core.data.AuthRepository,
 ) : ViewModel() {
+
+    /** Leaves the demo home for the sign-in screen. */
+    fun exitDemo() {
+        viewModelScope.launch { auth.signOut() }
+    }
     val session: StateFlow<SessionState> = sessionManager.state
     val themeMode: StateFlow<ThemeMode> =
         settings.themeMode.stateIn(viewModelScope, SharingStarted.Eagerly, ThemeMode.SYSTEM)
@@ -27,6 +35,19 @@ class MainViewModel @Inject constructor(
 
     fun setTourStep(step: Int) {
         viewModelScope.launch { settings.setTourStep(step) }
+    }
+
+    val feedbackOn: StateFlow<Boolean> = settings.feedbackOn.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    fun setFeedback(on: Boolean) {
+        viewModelScope.launch { settings.setFeedback(on) }
+    }
+
+    /** Null until read, so the setup screen never flashes for someone who's done it. */
+    val setupDone: StateFlow<Boolean?> = settings.setupDone.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    fun markSetupDone() {
+        viewModelScope.launch { settings.markSetupDone() }
     }
 
     fun finishTour() {

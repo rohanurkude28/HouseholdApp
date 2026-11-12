@@ -73,3 +73,25 @@ fun monthOverview(txns: List<Txn>, cycle: Cycle, startDay: Int): MonthOverview {
             .sortedWith(compareBy<Pair<String, Long>> { it.first == NOT_SET }.thenByDescending { it.second }),
     )
 }
+
+/** One budget month in the year view: where it went, against what the budget allowed that month. */
+data class MoneyMonth(val overview: MonthOverview, val budgetMinor: Long)
+
+/** Budget months grouped by the year they start in, for the year view's totals. */
+data class MoneyYear(val year: Int, val months: List<MoneyMonth>) {
+    val spentMinor: Long get() = months.sumOf { it.overview.totalMinor }
+    val budgetMinor: Long get() = months.sumOf { it.budgetMinor }
+    val count: Int get() = months.sumOf { it.overview.count }
+
+    /** Biggest categories over the year, top [n]. */
+    fun topCategories(n: Int = 4): List<Pair<String, Long>> =
+        months.flatMap { it.overview.categories }.groupBy { it.name }.map { (c, l) -> c to l.sumOf { it.totalMinor } }.sortedByDescending { it.second }.take(n)
+}
+
+/** Every budget month since the budget started, grouped by year, newest first. Pure, so it's tested. */
+fun moneyYears(txns: List<Txn>, budget: Budget, startedOn: LocalDate, today: LocalDate): List<MoneyYear> =
+    cyclesSince(startedOn, today, budget.cycleStartDay)
+        .map { MoneyMonth(monthOverview(txns, it, budget.cycleStartDay), budget.limitFor(it.start)) }
+        .groupBy { it.overview.cycle.start.year }
+        .map { (y, ms) -> MoneyYear(y, ms) }
+        .sortedByDescending { it.year }

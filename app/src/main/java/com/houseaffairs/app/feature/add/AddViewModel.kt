@@ -1,6 +1,8 @@
 package com.houseaffairs.app.feature.add
 
 import androidx.lifecycle.ViewModel
+import com.houseaffairs.app.core.data.spentOn
+import com.houseaffairs.app.core.data.periodDays
 import com.houseaffairs.app.core.data.PhraseRepository
 import com.houseaffairs.app.feature.quickadd.Assistant
 import com.houseaffairs.app.feature.quickadd.AssistContext
@@ -12,6 +14,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import androidx.lifecycle.viewModelScope
 import com.houseaffairs.app.core.data.CookPlan
+import com.houseaffairs.app.core.data.allocatedFor
 import com.houseaffairs.app.core.data.DishIdea
 import com.houseaffairs.app.core.data.MoneyRepository
 import com.houseaffairs.app.core.data.MoneyState
@@ -118,8 +121,18 @@ data class FormState(
     val editId: String? = null,
     val original: FormValues? = null,
     val originalVisibleTo: List<String>? = null,
+    /** Something was typed or picked in the form: worth keeping if the sheet closes. */
+    val edited: Boolean = false,
+    /** What the last scan filled in ("Filled amount, shop and date"), or that it found nothing. */
+    val scanNote: String? = null,
+    /** Fields the opener already decided (the list a wish goes on); hidden from the form. */
+    val locked: Set<String> = emptySet(),
     /** A saved recipe this one repeats (id, title): saving is held back and opening it is offered. */
     val duplicateOf: Pair<String, String>? = null,
+    /** The category the form picked from what was typed; it keeps following until the person picks one. */
+    val autoCategory: String? = null,
+    /** An edited subscription's logged payments, each opening its own expense to fix just that one. */
+    val pastPayments: List<com.houseaffairs.app.core.data.PastPayment> = emptyList(),
 ) {
     val missing: List<FieldSpec> get() = type.fields.filter { it.required && it.visibleWhen(values) && !it.isFilled(values[it.key]) }
 }
@@ -151,6 +164,11 @@ data class Answer(
     val groups: List<Pair<String, List<DishIdea>>> = emptyList(),
     /** Gemini's reason for a dish, by title, when smart suggestions are on. */
     val why: Map<String, String> = emptyMap(),
+    /** "Won't take crocin today": which medicine and day, for the "Skip" button. */
+    val skip: Pair<String, LocalDate>? = null,
+    /** "Share my live location with Ravi": who, and their number once known on this phone. */
+    val shareWith: String? = null,
+    val sharePhone: String? = null,
 )
 
 /** "Made paneer sabzi": the matching recipe (if any) and what it takes from the pantry. */
@@ -199,9 +217,16 @@ private data class LocalState(
     /** Movies, books or songs matching a list item being added ("Did you mean…?"). */
     val mediaHits: List<com.houseaffairs.app.core.data.MediaHit> = emptyList(),
     val chosenHit: com.houseaffairs.app.core.data.MediaHit? = null,
+    /** Brought back from a sheet closed half-filled. */
+    val restored: Boolean = false,
 )
 
+/** Addresses matching the typed area; [checked] is false while still looking. */
+data class AddressHints(val query: String = "", val lines: List<String> = emptyList(), val checked: Boolean = false)
+
 data class AddUiState(
+    /** Showing a draft kept from a sheet closed half-filled. */
+    val restored: Boolean = false,
     val text: String = "",
     val suggestion: Suggestion? = null,
     val batch: List<Suggestion>? = null,
@@ -226,7 +251,8 @@ data class AddUiState(
     val examples: List<String> = emptyList(),
 )
 
-data class SavedEntry(val message: String, val undo: () -> Unit)
+/** [celebrate]: something got finished (a task ticked, a book read), worth a little moment. */
+data class SavedEntry(val message: String, val celebrate: Boolean = false, val undo: () -> Unit)
 
 /** How the Add sheet opens: blank, or straight into a form with some values set ("Plan a spend"). */
 data class AddRequest(val type: EntryType? = null, val preset: FormValues = emptyMap(), val editId: String? = null)
@@ -249,7 +275,32 @@ class AddViewModel @Inject constructor(
     private val phraseRepo: PhraseRepository,
     private val assistant: Assistant,
     private val watchRepo: com.houseaffairs.app.core.data.WatchRepository,
+    private val search: com.houseaffairs.app.core.data.SearchRepository,
+    private val homeRepo: com.houseaffairs.app.core.data.HomeRepository,
 ) : ViewModel() {
+    /** Tasks, events, renewals and the buy list, for "what's due this week?" and "when is…?". */
+    private val homeData: StateFlow<com.houseaffairs.app.core.data.HomeData> = session.state
+        .filterIsInstance<SessionState.Ready>()
+        .map { Triple(it.household.id, it.me, it.household.baseCurrency) }
+        .distinctUntilChanged { a, b -> a.first == b.first && a.second.uid == b.second.uid }
+        .flatMapLatest { (hid, me, base) -> homeRepo.observe(hid, me, base) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, com.houseaffairs.app.core.data.HomeData())
+
+    /** Everything this person can see, read when the sheet opens, so typing also finds things. */
+    private val _finds = MutableStateFlow<List<com.houseaffairs.app.core.data.Findable>>(emptyList())
+    val finds: StateFlow<List<com.houseaffairs.app.core.data.Findable>> = _finds
+
+    /** The parser's word for a spending category ("petrol" → Transport), so typing also finds that spending. */
+    fun categoryOfWord(word: String): String? = parser.categoryOfWord(word)
+
+    fun loadFinds() {
+        val r = session.state.value as? SessionState.Ready ?: return
+        viewModelScope.launch {
+            val collections = EntryType.entries.filter { it.collection in com.houseaffairs.app.core.data.SEARCH_GROUPS && r.me.canAccess(it.module) }.map { it.collection }
+            _finds.value = runCatching { search.load(r.household.id, r.user.uid, collections, com.houseaffairs.app.core.model.RolePolicy.ownMedicinesOnly(r.me.role)) }.getOrDefault(emptyList())
+        }
+    }
+
     private val parser = QuickAddParser(nowMinute = { java.time.LocalTime.now().let { it.hour * 60 + it.minute } })
     private val local = MutableStateFlow(LocalState())
     private val ready = session.state.filterIsInstance<SessionState.Ready>()
@@ -285,6 +336,12 @@ class AddViewModel @Inject constructor(
 
     // Recipes, pantry and shopping list, kept warm so "made X" can be matched while typing.
     private data class Kitchen(val recipes: List<Recipe> = emptyList(), val stock: List<PantryStock> = emptyList(), val shopping: List<String> = emptyList())
+
+    // Every pack bought and finished, for "how long did it last?".
+    private val lives: StateFlow<List<com.houseaffairs.app.core.data.StockLife>> = ready
+        .map { it.household.id to it.user.uid }.distinctUntilChanged()
+        .flatMapLatest { (hid, uid) -> pantry.observeLives(hid, uid) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val kitchen: StateFlow<Kitchen> = ready
         .map { Triple(it.household.id, it.user.uid, it.me.canAccess(AppModule.STOCK)) }
@@ -374,13 +431,14 @@ class AddViewModel @Inject constructor(
             ),
             form = l.form,
             voiceUnavailable = l.voiceUnavailable,
+            restored = l.restored,
             thinking = l.thinking,
             mediaHits = l.mediaHits,
             chosenHit = l.chosenHit,
             canAskAi = l.suggestion?.unsure == true && l.suggestion.source !in setOf(SuggestionSource.AI, SuggestionSource.LEARNED) && !l.asked && !l.thinking,
             members = m,
             myUid = r.user.uid,
-            allowedTypes = EntryType.entries.filter { r.me.canAccess(it.module) },
+            allowedTypes = EntryType.entries.filter { r.me.canAdd(it) },
             examples = EXAMPLES.filter { example ->
                 when (val d = parser.parse(example)) {
                     null -> false
@@ -391,9 +449,11 @@ class AddViewModel @Inject constructor(
                         QuickAddDraft.Question.WHERE -> true
                         QuickAddDraft.Question.NEARBY -> r.me.canAccess(AppModule.PLANS)
                         QuickAddDraft.Question.SYMPTOM -> true
+                        QuickAddDraft.Question.HAVE, QuickAddDraft.Question.TO_BUY -> r.me.canAccess(AppModule.STOCK)
+                        QuickAddDraft.Question.WHEN, QuickAddDraft.Question.AGENDA -> r.me.canAccess(AppModule.PLANS)
                         else -> r.me.canAccess(AppModule.MONEY)
                     }
-                    else -> r.me.canAccess(prefill(d).first.module)
+                    else -> r.me.canAdd(prefill(d).first)
                 }
             },
         )
@@ -401,16 +461,46 @@ class AddViewModel @Inject constructor(
 
     private val ctx get() = session.state.value as? SessionState.Ready
 
+    /** The big tiles at the top of the add sheet: what this person adds most on this phone. */
+    /** The big tiles at the top of the add sheet: pinned first, then what this person adds most on this phone. */
+    val usual: StateFlow<List<AddOption>> = combine(ready, settings.addedKinds, settings.pinnedKinds) { r, counts, pins ->
+        val allowed = ADD_OPTIONS.values.filter { it.allowedFor(r.me) }.map { it.key }
+        com.houseaffairs.app.core.data.usualKinds(counts, allowed, USUAL_DEFAULTS, pinned = pins).mapNotNull { ADD_OPTIONS[it] }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** Every option this person can use, by area. */
+    val options: StateFlow<List<Pair<String, List<AddOption>>>> = ready.map { r ->
+        ADD_GROUPS.map { (name, all) -> name to all.filter { it.allowedFor(r.me) } }.filter { it.second.isNotEmpty() }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val pinned: StateFlow<Set<String>> = settings.pinnedKinds.map { it.toSet() }.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    /** Hold an option in the add sheet: pinned to the big tiles, or unpinned. */
+    fun togglePin(option: AddOption) {
+        viewModelScope.launch { settings.togglePin(option.key) }
+    }
+
+    /** Tapping an option: its form, or its words in the box to finish. */
+    fun pick(option: AddOption) {
+        option.type?.let { openForm(it, option.preset) } ?: option.text?.let(::onTextChange)
+    }
+
 
 
     // ---------------------------------------------------------------------------------------
     // Picker
 
+    /** "#goa" said in the line: saved as tags on whatever it becomes. */
+    private var typedTags: List<String> = emptyList()
+
     fun onTextChange(text: String) {
         assistJob?.cancel()
-        val draft = parser.parse(text)
+        // Tags come out first, so "dinner 1200 #goa" is still read as dinner for 1200.
+        val (clean, tags) = com.houseaffairs.app.core.data.splitTags(text)
+        typedTags = tags
+        val draft = parser.parse(clean)
         local.update { applyDraft(it, text, draft) }
-        if (draft is QuickAddDraft.Task && parser.isUnsure(text)) secondOpinion(text)
+        if (draft is QuickAddDraft.Task && parser.isUnsure(clean)) secondOpinion(clean)
         if (draft is QuickAddDraft.ListItem && draft.template.isMedia) searchMedia(text, draft.template, draft.title)
         if (draft is QuickAddDraft.Kept) placeExisting(draft)?.let { s -> local.update { if (it.text == text) it.copy(suggestion = s) else it } }
         if (draft is QuickAddDraft.Change) {
@@ -442,7 +532,15 @@ class AddViewModel @Inject constructor(
             is QuickAddDraft.Fund -> cleared.copy(move = moveFor(draft.amount, "Gullak", draft.target))
             is QuickAddDraft.Growth -> cleared.copy(move = growthFor(draft.target, toMinorUnits(draft.amount, currency()), revalue = false))
             is QuickAddDraft.Revalue -> cleared.copy(move = growthFor(draft.target, toMinorUnits(draft.amount, currency()), revalue = true))
-            is QuickAddDraft.Ask -> cleared.copy(answer = answerFor(draft))
+            is QuickAddDraft.SkipDose -> cleared.copy(answer = skipAnswer(draft))
+            is QuickAddDraft.Ask -> cleared.copy(answer = answerFor(draft)).also {
+                // The number for this person, if one was picked here before.
+                draft.subject?.takeIf { draft.question == QuickAddDraft.Question.SHARE_LOCATION }?.let { name ->
+                    viewModelScope.launch {
+                        settings.numberFor(name)?.let { n -> local.update { s -> s.copy(answer = s.answer?.takeIf { a -> a.shareWith == name }?.copy(sharePhone = n) ?: s.answer) } }
+                    }
+                }
+            }
             null -> cleared
             else -> cleared.copy(suggestion = suggestionFor(draft))
         }
@@ -502,6 +600,103 @@ class AddViewModel @Inject constructor(
     }
 
     /** "Want to watch a movie": the best few from that list. Planned first, then ❤️'d, then best rated. */
+    /** "Can I cook paneer tikka for 3?": what the pantry has against the dish, scaled to the people. */
+    private fun canCookAnswer(dish: String, people: Int?): Answer {
+        val k = kitchen.value
+        val recipe = k.recipes.firstOrNull { sameIngredient(it.title, dish) }
+            ?: return Answer("I don't know “$dish” yet", listOf("Save it as a recipe with its ingredients, and I'll check the pantry for it."))
+        val max = com.houseaffairs.app.core.data.servingsPossible(recipe, k.stock)
+        val n = people ?: 1
+        val plan = planCooking(recipe.ingredients, n.toDouble() / recipe.servings.coerceAtLeast(1), k.stock)
+        val short = plan.deductions.filter { d -> d.need != null && d.stock.amount != null && d.need > d.stock.amount }.map { it.stock.title.lowercase() }
+        val missing = plan.missing.map { it.name.lowercase() }
+        val forWhom = people?.let { " for $it" } ?: ""
+        val lines = buildList {
+            if (missing.isNotEmpty()) add("Missing: " + missing.joinToString())
+            if (short.isNotEmpty()) add("Not enough " + short.joinToString())
+            max?.let { add(if (it == 0) "The pantry can't make it yet" else "The pantry has enough for $it ${if (it == 1) "person" else "people"}") }
+        }
+        return when {
+            missing.isEmpty() && short.isEmpty() -> Answer("Yes, you can cook ${recipe.title}$forWhom", lines.ifEmpty { listOf("Everything's in the pantry.") })
+            else -> Answer("Not quite: ${recipe.title}$forWhom", lines)
+        }
+    }
+
+    /** "By when can we go to Bali?": what's left to save, at its monthly amount or the usual leftover. */
+    private fun whenDreamAnswer(name: String): Answer {
+        val m = money.value ?: return Answer("No budget yet", listOf("Set a budget, and I'll work out when each dream is in reach."))
+        val p = m.dreams.firstOrNull { sameIngredient(it.dream.title, name) }
+            ?: return Answer("“$name” isn't on the vision board", listOf("Add it: “dream $name 150000 by March”."))
+        val today = LocalDate.now()
+        val allocated: Long = m.budget.allocatedFor(com.houseaffairs.app.core.data.cycleFor(today, m.budget.cycleStartDay).start)[p.dream.id] ?: 0L
+        // Without its own monthly amount: what a month usually leaves over this year.
+        val monthsSoFar = (today.monthValue - 1).coerceAtLeast(1)
+        val usual = (m.envelopes.savedThisYearMinor / monthsSoFar).coerceAtLeast(0)
+        val perMonth = if (allocated > 0) allocated else usual
+        val months = com.houseaffairs.app.core.data.monthsToDream(p.remainingMinor, perMonth)
+        val lines = buildList {
+            add("${fmt(p.totalMinor)} of ${fmt(p.dream.targetMinor)} saved · ${fmt(p.remainingMinor)} to go")
+            add(if (allocated > 0) "${fmt(allocated)} a month is set aside for it" else "Your months leave about ${fmt(usual)} over")
+            if (m.envelopes.potMinor >= p.remainingMinor && p.remainingMinor > 0) add("The gullak already has enough: ${fmt(m.envelopes.potMinor)}")
+            p.dream.targetDate?.let { add("You're aiming for ${formatDate(it)}") }
+        }
+        return when {
+            months == 0 -> Answer("${p.dream.title} is fully funded 🎉", lines)
+            months == null -> Answer("Not on track yet for ${p.dream.title}", lines + "Set aside a monthly amount for it in the budget to get a date.")
+            else -> {
+                val by = today.plusMonths(months.toLong())
+                Answer("${p.dream.title}: about ${by.format(java.time.format.DateTimeFormatter.ofPattern("MMMM yyyy"))}", listOf("$months month${if (months == 1) "" else "s"} at ${fmt(perMonth)} a month") + lines)
+            }
+        }
+    }
+
+    /** "How long did the detergent last?": from when each pack came home to when it was finished. */
+    private fun lastedAnswer(item: String): Answer {
+        val today = LocalDate.now()
+        val u = com.houseaffairs.app.core.data.usageOf(lives.value).firstOrNull { sameIngredient(it.title, item) }
+            ?: return Answer("No record of “$item” yet", listOf("Add it to the pantry or supplies, and tap Finished when it runs out. Then I can tell how long it lasts."))
+        return Answer("${u.title}", com.houseaffairs.app.core.data.usageLines(u, today))
+    }
+
+    /**
+     * A paid expense that takes its envelope over: by how much, and where it could come from.
+     * Worked out before saving, from the envelope as it was.
+     */
+    private fun overspendOf(form: FormState): Triple<String, Long, List<com.houseaffairs.app.core.data.CoverOption>>? {
+        if (form.type != EntryType.EXPENSE || form.editId != null || form.values["status"] == "Planned") return null
+        val m = money.value ?: return null
+        val category = form.values["category"] as? String ?: return null
+        val money = form.values["amount"] as? MoneyValue ?: return null
+        if (money.currency != m.budget.currency) return null
+        val amount = com.houseaffairs.app.core.util.toMinorUnits(money.parsed ?: return null, money.currency)
+        val envelope = m.envelopes.envelopes.firstOrNull { it.category == category } ?: return null
+        val over = amount - envelope.availableMinor.coerceAtLeast(0)
+        if (over <= 0) return null
+        return Triple(category, over, com.houseaffairs.app.core.data.coverOptions(m.envelopes, category, over))
+    }
+
+    /** "Dining is ₹800 over: take it from Shopping, the gullak, or leave it." One tap moves the money. */
+    private fun askToCover(hid: String, uid: String, category: String, over: Long, options: List<com.houseaffairs.app.core.data.CoverOption>) {
+        if (options.isEmpty()) return
+        com.houseaffairs.app.core.ui.FollowUps.show(
+            com.houseaffairs.app.core.data.FollowUp(
+                title = "$category is ${fmt(over)} over",
+                note = "Cover it from another envelope or the gullak, or leave it over.",
+                groups = listOf(
+                    com.houseaffairs.app.core.data.FollowUpGroup(
+                        "Take it from",
+                        options.map { o ->
+                            val take = minOf(over, o.availableMinor)
+                            com.houseaffairs.app.core.data.FollowUpChoice("${o.label} · ${fmt(take)}") {
+                                moneyRepo.transfer(hid, uid, o.from, Pocket.Category(category), take, "Covered $category")
+                            }
+                        } + com.houseaffairs.app.core.data.FollowUpChoice("Leave it over") {},
+                    ),
+                ),
+            ),
+        )
+    }
+
     private fun pickAnswer(template: ListTemplate): Answer {
         val (media, wishes) = lists.value
         val lines = if (template.isMedia) {
@@ -553,7 +748,7 @@ class AddViewModel @Inject constructor(
     private fun searchMedia(text: String, template: ListTemplate, title: String) {
         mediaJob?.cancel()
         mediaJob = viewModelScope.launch {
-            delay(500)
+            delay(300)
             val hits = runCatching { watchRepo.search(template, title) }.getOrDefault(emptyList())
             local.update { if (it.text == text) it.copy(mediaHits = hits) else it }
         }
@@ -659,7 +854,14 @@ class AddViewModel @Inject constructor(
         val today = LocalDate.now()
         val k = kitchen.value
         val m = money.value
+        fun from(q: com.houseaffairs.app.core.data.QuickAnswer) = Answer(q.title, q.lines)
+        val h = homeData.value
         return when (ask.question) {
+            QuickAddDraft.Question.HAVE -> from(com.houseaffairs.app.core.data.haveAnswer(ask.subject.orEmpty(), k.stock + homeStock.value.map { it.second }.filter { s -> k.stock.none { it.id == s.id } }, k.shopping, today))
+            QuickAddDraft.Question.WHEN -> from(com.houseaffairs.app.core.data.whenAnswer(ask.subject.orEmpty(), h.events, h.renewals, h.tasks, today))
+            QuickAddDraft.Question.AGENDA -> from(com.houseaffairs.app.core.data.agendaAnswer(ask.subject ?: "today", h.tasks, h.events, h.renewals, today))
+            QuickAddDraft.Question.TO_BUY -> from(com.houseaffairs.app.core.data.toBuyAnswer(h.shopping.map { it.name }.ifEmpty { k.shopping }))
+            QuickAddDraft.Question.INCOME -> from(com.houseaffairs.app.core.data.incomeAnswer())
             QuickAddDraft.Question.COOK -> {
                 val ideas = (useItUp(k.stock, k.recipes, today) + cookIdeas(k.stock, k.recipes, today)).distinctBy { it.recipe.title }.take(4)
                 Answer(
@@ -669,6 +871,9 @@ class AddViewModel @Inject constructor(
                 )
             }
             QuickAddDraft.Question.PICK -> pickAnswer(ListTemplate.valueOf(ask.subject ?: "WATCH"))
+            QuickAddDraft.Question.CAN_COOK -> canCookAnswer(ask.subject.orEmpty(), ask.count)
+            QuickAddDraft.Question.WHEN_DREAM -> whenDreamAnswer(ask.subject.orEmpty())
+            QuickAddDraft.Question.LASTED -> lastedAnswer(ask.subject.orEmpty())
             QuickAddDraft.Question.CRAVING -> {
                 val groups = cravingIdeas(ask.subject.orEmpty(), k.stock, k.recipes, today)
                 Answer(
@@ -736,6 +941,37 @@ class AddViewModel @Inject constructor(
                     )
                 }
             }
+            QuickAddDraft.Question.SPENT -> {
+                if (m == null) return Answer("No budget yet", listOf("Set up a budget in Money and I'll keep track of what's spent."))
+                val period = ask.period ?: "this month"
+                val spent = spentOn(m.txns, ask.subject, periodDays(period, today, m.budget.cycleStartDay))
+                val what = spent.matched?.lowercase() ?: ask.subject?.lowercase()
+                when {
+                    spent.count == 0 -> Answer(
+                        "Nothing spent${what?.let { " on $it" } ?: ""} $period",
+                        listOf(if (ask.subject != null) "No expenses matched “${ask.subject}”. Try a category like groceries or dining, or a shop's name." else "No expenses logged yet."),
+                    )
+                    else -> Answer(
+                        "${fmt(spent.totalMinor)}${what?.let { " on $it" } ?: ""} $period",
+                        listOfNotNull(
+                            "${spent.count} ${if (spent.count == 1) "expense" else "expenses"}",
+                            spent.top.takeIf { it.size > 1 }?.let { top -> "Most " + (if (ask.subject == null) "on " else "at ") + top.joinToString(" · ") { (k, v) -> "$k ${fmt(v)}" } },
+                            // This month against all of last month, to see the pace.
+                            if (period == "this month") spentOn(m.txns, ask.subject, periodDays("last month", today, m.budget.cycleStartDay)).totalMinor.takeIf { it > 0 }?.let { "All of last month: ${fmt(it)}" } else null,
+                        ),
+                    )
+                }
+            }
+            QuickAddDraft.Question.SHARE_LOCATION -> {
+                val name = ask.subject.orEmpty()
+                Answer(
+                    "Share your live location with $name",
+                    listOf(
+                        "I'll open $name's WhatsApp chat. Apps can't start live sharing for you, so there tap 📎 → Location → Share live location.",
+                    ),
+                    shareWith = name,
+                )
+            }
             QuickAddDraft.Question.AFFORD -> {
                 val dream = m?.dreams?.firstOrNull { sameIngredient(it.dream.title, ask.subject.orEmpty()) }
                 when {
@@ -768,24 +1004,34 @@ class AddViewModel @Inject constructor(
         )
     }
 
-    private fun symptomAnswer(tag: String, person: String?): Answer {
-        val care = CARE.firstOrNull { it.tag == tag } ?: return Answer("Take care", emptyList())
+    /**
+     * "I have fever and cold": medicines at home for any of them (by "Used for" tag or a known name
+     * like Crocin), then home care and when to see a doctor for each, in the order they were said.
+     */
+    private fun symptomAnswer(subject: String, person: String?): Answer {
+        val cares = subject.split(com.houseaffairs.app.feature.quickadd.SYMPTOM_JOIN).mapNotNull { tag -> CARE.firstOrNull { it.tag == tag } }
+        if (cares.isEmpty()) return Answer("Take care", emptyList())
         val who = person?.let(::memberNamed)
         val canSeeMeds = ctx?.me?.canAccess(AppModule.MEDICINE) == true
-        val meds = if (canSeeMeds) medicinesFor(tag, cabinet.value, who?.uid ?: ctx?.user?.uid, LocalDate.now()) else emptyList()
+        val forUid = who?.uid ?: ctx?.user?.uid
+        // Each medicine once, with the conditions it's for.
+        val meds = if (canSeeMeds) cares.flatMap { c -> medicinesFor(c.tag, cabinet.value, forUid, LocalDate.now()).map { it to c.tag } }
+            .groupBy({ it.first.id }) { it }.values.map { pairs -> pairs.first().first to pairs.map { it.second } } else emptyList()
         val members = state.value.members
+        val several = cares.size > 1
         val lines = buildList {
             when {
                 !canSeeMeds -> add("Tell an adult at home. They can see the medicine cabinet.")
-                meds.isEmpty() -> add("Nothing tagged “${care.tag}” in the cabinet. Add one with its “Used for” tag.")
+                meds.isEmpty() -> add("Nothing for ${cares.joinToString(" or ") { it.tag.lowercase() }} in the cabinet yet. Add one, with what it's used for.")
                 else -> {
                     add("At home:")
-                    meds.take(3).forEach { m ->
+                    meds.take(4).forEach { (m, tags) ->
                         val forNames = m.forWhom.mapNotNull { uid -> members.firstOrNull { it.uid == uid }?.displayName?.substringBefore(' ') }
                         add(
                             "💊 " + listOfNotNull(
                                 m.title,
-                                forNames.takeIf { it.isNotEmpty() }?.let { "for ${it.joinToString()}" },
+                                tags.takeIf { several }?.joinToString(" & ") { it.lowercase() }?.let { "for $it" },
+                                forNames.takeIf { it.isNotEmpty() }?.let { "meant for ${it.joinToString()}" },
                                 m.dosage?.takeIf { it.isNotBlank() }?.let { "your note: $it" },
                                 m.expiry?.let { "use by ${formatDate(it)}" },
                             ).joinToString(" · "),
@@ -793,13 +1039,16 @@ class AddViewModel @Inject constructor(
                     }
                 }
             }
-            add("Home care:")
-            care.homeCare.forEach { add("• $it") }
-            add("See a doctor if: ${care.seeDoctor}.")
+            cares.forEach { care ->
+                add(if (several) "${care.tag}:" else "Home care:")
+                care.homeCare.forEach { add("• $it") }
+                add("See a doctor if: ${care.seeDoctor}.")
+            }
             add("This is general first aid, not medical advice. Check the label and ask a doctor or pharmacist if unsure.")
         }
         val name = who?.displayName?.substringBefore(' ') ?: person
-        return Answer(if (name != null) "For $name's ${care.tag.lowercase()}" else "For ${care.tag.lowercase()}", lines)
+        val what = cares.joinToString(" and ") { it.tag.lowercase() }
+        return Answer(if (name != null) "For $name's $what" else "For $what", lines)
     }
 
     /** Re-runs the current question, e.g. after location permission is granted. */
@@ -905,6 +1154,8 @@ class AddViewModel @Inject constructor(
         val c = local.value.cook ?: return null
         val r = ctx ?: return null
         val plan = c.plan ?: return null
+        // The pantry can't give what it hasn't got.
+        if (!plan.enough) return null
         if (c.people == 0) {
             local.update { it.copy(cook = c.copy(showError = true)) }
             return null
@@ -951,7 +1202,7 @@ class AddViewModel @Inject constructor(
 
     private suspend fun lookUp(change: QuickAddDraft.Change, text: String): ChangeProposal {
         val r = ctx ?: return ChangeProposal(change, problem = "Sign in first.")
-        val types = typesFor(change).filter { r.me.canAccess(it.module) }
+        val types = typesFor(change).filter { r.me.canAdd(it) }
         val what = listOf(change.target.ifEmpty { "the latest" }, change.kind ?: "").joinToString(" ").trim()
         if (types.isEmpty()) return ChangeProposal(change, problem = "Your role can't change ${change.kind ?: "that"}s.")
         val matches = runCatching { entries.find(r.household.id, r.user.uid, types, change.target) }.getOrDefault(emptyList()).take(4)
@@ -977,7 +1228,7 @@ class AddViewModel @Inject constructor(
     private fun doneChanges(entry: FoundEntry): Map<String, Any?>? = when (entry.type) {
         EntryType.TASK -> mapOf("done" to true, "completedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp())
         EntryType.SHOPPING -> mapOf("done" to true)
-        EntryType.WISH -> mapOf("status" to "DONE")
+        EntryType.WISH -> mapOf("status" to "DONE", "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp())
         EntryType.DREAM -> mapOf("achieved" to true)
         // Ends today unless it already ended, so later expenses don't join it.
         EntryType.TRIP -> mapOf("done" to true) + if ((entry.data["end"] as? com.google.firebase.Timestamp)?.toDate()?.after(java.util.Date()) != false) {
@@ -1005,7 +1256,7 @@ class AddViewModel @Inject constructor(
         val entry = proposal.entry ?: return null
         val hid = r.household.id
         val saved = when (proposal.draft.action) {
-            QuickAddDraft.ChangeAction.DELETE -> SavedEntry("${entry.title} · deleted", entries.remove(hid, entry))
+            QuickAddDraft.ChangeAction.DELETE -> SavedEntry("${entry.title} · deleted", undo = entries.remove(hid, entry))
             QuickAddDraft.ChangeAction.DONE -> {
                 val changes = doneChanges(entry) ?: return null
                 if (entry.type == EntryType.SHOPPING) {
@@ -1014,12 +1265,12 @@ class AddViewModel @Inject constructor(
                     viewModelScope.launch { undoBought = runCatching { pantry.markBought(hid, r.user.uid, entry.id) }.getOrNull()?.undo }
                     SavedEntry("${entry.title} · bought, now in the pantry") { undoBought?.invoke() ?: entries.patch(hid, entry, mapOf("done" to false)) }
                 } else {
-                    SavedEntry("${entry.title} · done", entries.patch(hid, entry, changes))
+                    SavedEntry("${entry.title} · done", celebrate = true, undo = entries.patch(hid, entry, changes))
                 }
             }
             QuickAddDraft.ChangeAction.LINK -> {
                 val trip = proposal.linkTo ?: return null
-                SavedEntry("${entry.title} · added to $trip", entries.patch(hid, entry, mapOf("trip" to trip)))
+                SavedEntry("${entry.title} · added to $trip", undo = entries.patch(hid, entry, mapOf("trip" to trip)))
             }
             QuickAddDraft.ChangeAction.EDIT -> return null
         }
@@ -1051,7 +1302,7 @@ class AddViewModel @Inject constructor(
     fun saveBatch(): SavedEntry? {
         val r = ctx ?: return null
         val forms = local.value.batch.orEmpty().map { newForm(it.type, it.values, "voice") }
-            .filter { it.missing.isEmpty() && r.me.canAccess(it.type.module) }
+            .filter { it.missing.isEmpty() && r.me.canAdd(it.type) }
         if (forms.isEmpty()) return null
         val refs = forms.map { entries.save(r.household.id, r.user.uid, it.type, it.values, Visibility.everyone, it.source) }
         viewModelScope.launch { settings.markQuickAddTried() }
@@ -1077,7 +1328,8 @@ class AddViewModel @Inject constructor(
     }
 
     fun openForm(type: EntryType, preset: FormValues = emptyMap()) =
-        local.update { it.copy(form = newForm(type, preset, "form")) }
+        // Opened from a list ("+ Add gift idea"): that list is settled, so its chooser isn't shown.
+        local.update { it.copy(form = newForm(type, preset, "form").copy(locked = preset.keys.filter { k -> k == "template" }.toSet())) }
 
     fun editSuggestion() {
         val placed = local.value.suggestion?.takeIf { it.placeOf != null }
@@ -1113,6 +1365,31 @@ class AddViewModel @Inject constructor(
 
     fun backToPicker() = local.update { it.copy(form = null) }
 
+    // A sheet closed half-filled (dragged down, Back, a tap outside) keeps what was typed.
+    private var draft: LocalState? = null
+
+    fun keepDraft() {
+        val l = local.value
+        draft = l.takeIf { it.form?.edited == true || it.text.isNotBlank() }?.copy(restored = true, thinking = false)
+        local.value = LocalState()
+    }
+
+    /** Opens the kept draft instead when it fits what's being opened; true if it did. */
+    fun restoreDraft(request: AddRequest): Boolean {
+        val d = draft ?: return false
+        if (request.preset.containsKey(QUICK_TEXT)) return false
+        val fits = request.type == null || (d.form?.type == request.type && d.form.editId == request.editId)
+        if (!fits) return false
+        draft = null
+        local.value = d
+        return true
+    }
+
+    fun startOver() {
+        draft = null
+        local.value = LocalState()
+    }
+
     /** The unit chip a shopping or grocery form starts on: g, ml or pcs (forms say "L" for litres). */
     private fun formUnit(title: String) = com.houseaffairs.app.core.data.naturalUnit(title)
 
@@ -1130,9 +1407,12 @@ class AddViewModel @Inject constructor(
                 visibleTo == listOf(r.user.uid) -> WhoCanSee.ONLY_ME
                 else -> WhoCanSee.CHOSEN
             }
+            // A subscription's past payments, so one of them can be fixed on its own.
+            val past = if (type == EntryType.SUBSCRIPTION) runCatching { moneyRepo.pastRenewals(r.household.id, r.user.uid, id) }.getOrDefault(emptyList()) else emptyList()
             local.update {
                 it.copy(
                     form = FormState(
+                        pastPayments = past,
                         type = type,
                         values = adjust(type.defaults(r.user.uid, r.household.baseCurrency) + values + listLabel(values)),
                         showMore = true,
@@ -1150,9 +1430,142 @@ class AddViewModel @Inject constructor(
     // ---------------------------------------------------------------------------------------
     // Form
 
-    fun update(key: String, value: Any?) = updateForm { it.copy(values = it.values + (key to value), duplicateOf = null) }
+    fun update(key: String, value: Any?) {
+        updateForm { f ->
+            var values = f.values + (key to value)
+            // A saved subscription's price changed: ask which payments it's for (from the next one by default).
+            if (f.type == EntryType.SUBSCRIPTION && f.editId != null && key == "amount") {
+                val changed = minorOf(value) != minorOf(f.original?.get("amount"))
+                values = values + (PRICE_CHANGED to changed) +
+                    if (changed && values["priceFrom"] == null) mapOf("priceFrom" to com.houseaffairs.app.core.data.PriceFrom.NEXT.label) else emptyMap()
+            }
+            // "Twice a day" shows its times (9 am, 9 pm) straight away, ready to change, not a hidden default.
+            if (f.type == EntryType.MEDICINE && key == "frequency" && (values["doseTimes"] as? List<*>).isNullOrEmpty()) {
+                val times = com.houseaffairs.app.core.data.doseTimes(value as? String, emptyList()).map { com.houseaffairs.app.core.data.formatClock(it) }
+                if (times.isNotEmpty()) values = values + ("doseTimes" to times)
+            }
+            // Like the icon that changes as you type: the shop or note picks the category, until the person does.
+            var auto = if (key == "category") null else f.autoCategory
+            if (f.type == EntryType.EXPENSE && f.editId == null && (key == "merchant" || key == "note")) {
+                val current = values["category"] as? String
+                if (current.isNullOrBlank() || current == "Other" || current == f.autoCategory) {
+                    val learned = com.houseaffairs.app.core.data.learnedCategories(money.value?.txns.orEmpty())
+                    val guess = listOf("merchant", "note").firstNotNullOfOrNull { k -> (values[k] as? String)?.let { com.houseaffairs.app.core.data.guessCategory(it, learned, parser::categoryOfWord) } }
+                    if (guess != null && guess != current) {
+                        values = values + ("category" to guess)
+                        auto = guess
+                    }
+                }
+            }
+            f.copy(values = values, duplicateOf = null, edited = true, autoCategory = auto)
+        }
+        val spec = local.value.form?.type?.fields?.firstOrNull { it.key == key } as? TextSpec
+        if (spec?.isAddress == true) lookUpAddress(value as? String ?: "")
+    }
+
+    private val addressHints = MutableStateFlow(AddressHints())
+    val addresses: StateFlow<AddressHints> = addressHints
+    private var addressJob: Job? = null
+
+    /** A suggested address picked: it's the area now, and known to the map. */
+    fun pickAddress(key: String, line: String) {
+        addressJob?.cancel()
+        updateForm { it.copy(values = it.values + (key to line)) }
+        addressHints.value = AddressHints(line, listOf(line), checked = true)
+    }
+
+    /** After a pause in typing, finds full addresses for the area, nearest first. */
+    private fun lookUpAddress(text: String) {
+        addressJob?.cancel()
+        addressHints.value = AddressHints(text)
+        if (text.trim().length < 3) return
+        addressJob = viewModelScope.launch {
+            delay(400)
+            val lines = runCatching { geo.suggest(text) }.getOrDefault(emptyList())
+            addressHints.value = AddressHints(text, lines, checked = true)
+        }
+    }
 
     fun toggleMore() = updateForm { it.copy(showMore = !it.showMore) }
+
+    /**
+     * A whole bill, scanned: the expense (total, shop, date) and each item on it, as cards to
+     * check and save together. A pharmacy bill's items go to medicines; others to the pantry.
+     * Items carry no cost, since the expense already counts it.
+     */
+    fun fromBill(text: String) {
+        val kind = com.houseaffairs.app.core.data.scanKind(text)
+        // A label or pack scanned here would make a nonsense expense, so say what it looks like instead.
+        if (kind == com.houseaffairs.app.core.data.ScanKind.NUTRITION || kind == com.houseaffairs.app.core.data.ScanKind.PACK) {
+            val what = if (kind == com.houseaffairs.app.core.data.ScanKind.NUTRITION) "a nutrition label" else "a pack label"
+            local.value = LocalState(answer = Answer("That looks like $what, not a bill", listOf(
+                if (kind == com.houseaffairs.app.core.data.ScanKind.NUTRITION) "Open a recipe and use 📷 there to fill its macros." else "Open the item and use 📷 there to fill its expiry.",
+            )))
+            return
+        }
+        val bill = com.houseaffairs.app.core.data.scanBill(text, LocalDate.now())
+        if (bill.receipt.total != null && bill.items.isNotEmpty()) return showBill(bill)
+        // The rules got only part of it: let Gemini have a go when Smart understanding is on.
+        if (smartAdd.value && text.isNotBlank()) {
+            local.value = LocalState(answer = Answer("Reading the bill…", listOf("Asking Gemini to make sense of it.")))
+            viewModelScope.launch {
+                val ai = runCatching { assistant.readBill(text) }.getOrNull()
+                showBill(if (ai != null && (ai.items.size > bill.items.size || bill.receipt.total == null)) ai else bill)
+            }
+        } else {
+            showBill(bill)
+        }
+    }
+
+    private fun showBill(bill: com.houseaffairs.app.core.data.BillScan) {
+        val expense = bill.receipt.total?.let { total ->
+            suggestionFor(QuickAddDraft.Expense(total, null, if (bill.pharmacy) "Health" else "Groceries", bill.receipt.merchant, "Scanned bill", if (bill.pharmacy) "Medicines" else null))
+                .let { s -> bill.receipt.date?.let { d -> s.copy(values = s.values + ("date" to d)) } ?: s }
+        }
+        val items = bill.items.map { i ->
+            suggestionFor(if (bill.pharmacy) QuickAddDraft.Medicine(i.name, null, null) else QuickAddDraft.Grocery(i.name, "${i.quantity} pcs", null))
+        }
+        val cards = listOfNotNull(expense) + items
+        local.value = if (cards.isEmpty()) {
+            LocalState(answer = Answer("Couldn't read that bill", listOfNotNull(
+                "Try again with the whole bill in the frame, flat and in good light.",
+                if (!smartAdd.value) "Turning on Settings → Smart understanding lets Gemini read harder bills." else null,
+            )))
+        } else {
+            LocalState(batch = cards)
+        }
+    }
+
+    /** Text read off a receipt, pack or label: fills the fields this kind of entry has. */
+    fun applyScan(text: String) = updateForm { f ->
+        val today = LocalDate.now()
+        val filled = mutableListOf<String>()
+        var values = f.values
+        val kind = com.houseaffairs.app.core.data.scanKind(text)
+        // Said plainly when the picture doesn't belong in this form, rather than filling it with junk.
+        val wrong = when {
+            f.type == EntryType.EXPENSE && kind == com.houseaffairs.app.core.data.ScanKind.NUTRITION -> "That looks like a nutrition label, not a bill. Nothing filled."
+            f.type == EntryType.RECIPE && kind == com.houseaffairs.app.core.data.ScanKind.RECEIPT -> "That looks like a bill. Use \"Scan a bill\" in the + sheet to add its items."
+            f.type != EntryType.EXPENSE && f.type != EntryType.RECIPE && kind == com.houseaffairs.app.core.data.ScanKind.RECEIPT ->
+                "That looks like a bill. Use \"Scan a bill\" in the + sheet to add every item and the expense at once."
+            else -> null
+        }
+        if (wrong != null) return@updateForm f.copy(scanNote = wrong)
+        when (f.type) {
+            EntryType.EXPENSE -> {
+                val r = com.houseaffairs.app.core.data.scanReceipt(text, today)
+                r.total?.let { t -> values = values + ("amount" to MoneyValue(t.toPlainString(), (values["amount"] as? MoneyValue)?.currency ?: currency())); filled += "amount" }
+                r.merchant?.takeIf { (values["merchant"] as? String).isNullOrBlank() }?.let { values = values + ("merchant" to it); filled += "shop" }
+                r.date?.let { values = values + ("date" to it); filled += "date" }
+            }
+            EntryType.RECIPE -> com.houseaffairs.app.core.data.scanNutrition(text)?.let { values = values + ("macros" to it); filled += "protein, carbs, fat and fibre" }
+            else -> com.houseaffairs.app.core.data.scanExpiry(text, today)?.let { values = values + ("expiry" to it); filled += "expiry ${formatDate(it)}" }
+        }
+        f.copy(
+            values = values, edited = true, showMore = f.showMore || f.type == EntryType.RECIPE,
+            scanNote = if (filled.isEmpty()) "Couldn't read it. Try again closer, with good light." else "Filled " + filled.joinToString(", "),
+        )
+    }
 
     fun setWhoCanSee(who: WhoCanSee) = updateForm { it.copy(whoCanSee = who) }
 
@@ -1178,7 +1591,7 @@ class AddViewModel @Inject constructor(
         val id = form.editId ?: return null
         val undo = runCatching { entries.removeById(r.household.id, form.type, id) }.getOrNull() ?: return null
         local.value = LocalState()
-        return SavedEntry("${titleOf(form.type, form.values)} · deleted", undo)
+        return SavedEntry("${titleOf(form.type, form.values)} · deleted", undo = undo)
     }
 
     fun save(): SavedEntry? {
@@ -1194,7 +1607,7 @@ class AddViewModel @Inject constructor(
 
     private fun persist(form: FormState): SavedEntry? {
         val r = ctx ?: return null
-        if (!r.me.canAccess(form.type.module)) return null
+        if (!r.me.canAdd(form.type)) return null
         val uid = r.user.uid
         val visibleTo = when (form.whoCanSee) {
             WhoCanSee.EVERYONE -> Visibility.everyone
@@ -1212,14 +1625,31 @@ class AddViewModel @Inject constructor(
         }
         // A new entry on a topic the owner made private is only seen by the chosen people.
         val topic = if (form.editId == null && form.whoCanSee == WhoCanSee.EVERYONE) {
-            privateTopicOf(form.type.collection, title, (form.values["category"] ?: form.values["supplyType"] ?: form.values["aisle"]) as? String)
+            val category = listOf("category", "supplyType", "groceryType", "aisle").firstNotNullOfOrNull { form.values[it] as? String }
+            privateTopicOf(form.type.collection, title, category, r.household.privateTopics.keys)
                 ?.takeIf { it in r.household.privateTopics }
         } else {
             null
         }
-        val shownTo = topic?.let { privateVisibleTo(r.household.privateTopics.getValue(it), uid) } ?: visibleTo
+        // A gift idea or surprise trip is never shown to the person it's for, on new entries and edits alike.
+        val surprise = com.houseaffairs.app.core.data.surpriseFor(
+            form.type.collection, ListTemplate.of(form.values["template"] as? String) == ListTemplate.GIFTS, form.values,
+        ).filter { it != uid }
+        fun kept(list: List<String>) = com.houseaffairs.app.core.data.hiddenFrom(list, state.value.members.map { it.uid }, surprise, uid, Visibility.EVERYONE)
+        val shownTo = kept(topic?.let { privateVisibleTo(r.household.privateTopics.getValue(it), uid) } ?: visibleTo)
+        val secret = surprise.mapNotNull { id -> state.value.members.firstOrNull { it.uid == id }?.displayName?.substringBefore(' ') }
+            .takeIf { it.isNotEmpty() }?.let { " · hidden from ${it.joinToString(" and ")} 🤫" }.orEmpty()
         if (form.editId != null) {
-            entries.update(r.household.id, form.type, form.editId, form.values, visibleTo)
+            // A subscription's new price: the history says which renewals keep the old one.
+            if (form.type == EntryType.SUBSCRIPTION && form.values[PRICE_CHANGED] == true) {
+                val oldMinor = minorOf(form.original?.get("amount")) ?: 0L
+                val newMinor = minorOf(form.values["amount"]) ?: 0L
+                val choice = com.houseaffairs.app.core.data.PriceFrom.of(form.values["priceFrom"])
+                val from = form.values["priceFromDate"] as? LocalDate
+                val subId = form.editId
+                viewModelScope.launch { moneyRepo.changeSubscriptionPrice(r.household.id, r.user.uid, subId, oldMinor, newMinor, choice, from) }
+            }
+            entries.update(r.household.id, form.type, form.editId, form.values - FORM_ONLY_KEYS, kept(visibleTo), r.user.uid)
             local.value = LocalState()
             val before = form.original
             val beforeVisible = form.originalVisibleTo ?: visibleTo
@@ -1232,13 +1662,24 @@ class AddViewModel @Inject constructor(
             (form.values["category"] as? String)?.takeIf { money.value?.budget != null && com.houseaffairs.app.core.data.isNewCategory(it, money.value?.budget) }
                 ?.let { moneyRepo.addCustomCategory(r.household.id, it) }
         }
+        val overspend = overspendOf(form)
         val hit = local.value.chosenHit
         val ref = entries.save(r.household.id, uid, form.type, form.values, shownTo, form.source)
+        overspend?.let { (cat, over, options) -> askToCover(r.household.id, uid, cat, over, options) }
         // A picked search result: exact title, poster and year now; ratings on the next look-up.
         if (form.type == EntryType.WISH && hit != null) watchRepo.applyHit(r.household.id, ref.id, hit)
         viewModelScope.launch { settings.markQuickAddTried() }
         local.value = LocalState()
-        return SavedEntry("$title · ${form.type.label} saved" + (topic?.let { " privately ($it)" } ?: "")) { entries.delete(ref) }
+        // What people add most becomes their big tiles in the add sheet.
+        viewModelScope.launch { settings.countAdded(countKey(form.type, form.values)) }
+        // Into a trip: where its budget stands now, so nearing it (or going over) is noticed.
+        val tripNote = if (form.type == EntryType.EXPENSE) (form.values["trip"] as? String)?.let { tripName ->
+            money.value?.trips?.firstOrNull { it.trip.title == tripName }?.let { t ->
+                val added = (form.values["amount"] as? MoneyValue)?.let { v -> v.parsed?.let { com.houseaffairs.app.core.util.toMinorUnits(it, v.currency) } } ?: 0L
+                " · " + com.houseaffairs.app.core.data.tripSavedNote(tripName, t.totalMinor + added, t.trip.budgetMinor) { m -> com.houseaffairs.app.core.util.formatMinor(m, r.household.baseCurrency) }
+            }
+        }.orEmpty() else ""
+        return SavedEntry("$title · ${form.type.label} saved" + (topic?.let { " privately ($it)" } ?: "") + secret + tripNote) { entries.delete(ref) }
     }
 
     private fun updateForm(block: (FormState) -> FormState) = local.update { s -> s.form?.let { s.copy(form = block(it)) } ?: s }
@@ -1253,7 +1694,14 @@ class AddViewModel @Inject constructor(
     }
 
     private fun suggestionFor(draft: QuickAddDraft): Suggestion {
-        val (type, values) = prefill(draft)
+        val (type, base) = prefill(draft)
+        // Expenses keep tags as a list of choices; everything else as words.
+        val values = when {
+            typedTags.isEmpty() -> base
+            type.fields.any { it.key == "tags" && it is ChoiceSpec } ->
+                base + ("tags" to ((base["tags"] as? List<*>).orEmpty().filterIsInstance<String>() + typedTags.map { t -> t.replaceFirstChar { it.uppercase() } }).distinct())
+            else -> base + ("tags" to typedTags.joinToString(" "))
+        }
         val form = newForm(type, values, "voice")
         return Suggestion(
             type = type,
@@ -1282,16 +1730,20 @@ class AddViewModel @Inject constructor(
 
     private fun summaryOf(type: EntryType, values: FormValues): String {
         val members = state.value.members
-        return type.fields
+        val main = type.fields
             .filter { it.essential && it.key != type.titleKey && it.visibleWhen(values) }
             .mapNotNull { it.display(values[it.key], members) }
-            .joinToString(" · ")
+        // A repeat that was said ("remind everyday") shows on the card too, though it's an extra field.
+        val repeat = (values["repeat"] as? String)?.takeIf { it != "Never" }?.let { "repeats ${it.lowercase()}" }
+        return (main + listOfNotNull(repeat)).joinToString(" · ")
     }
 
     /** Maps a parsed sentence onto a kind of entry and its form values. */
     private fun prefill(draft: QuickAddDraft): Pair<EntryType, FormValues> {
         val currency = ctx?.household?.baseCurrency ?: "USD"
         return when (draft) {
+            // Answered on the spot, never a form.
+            is QuickAddDraft.SkipDose -> EntryType.MEDICINE to emptyMap()
             is QuickAddDraft.Expense -> EntryType.EXPENSE to mapOf(
                 "amount" to MoneyValue(draft.amount.toPlainString(), draft.currency ?: currency),
                 // "Cook 5000" goes under the family's own Cook rather than the built-in Home.
@@ -1308,7 +1760,7 @@ class AddViewModel @Inject constructor(
                         else -> "Card"
                     }
                 },
-            )
+            ) + (draft.date?.let { mapOf("date" to it) } ?: emptyMap())
             is QuickAddDraft.Subscription -> EntryType.SUBSCRIPTION to mapOf(
                 "title" to draft.title,
                 "amount" to MoneyValue(draft.amount.toPlainString(), draft.currency ?: currency),
@@ -1319,7 +1771,18 @@ class AddViewModel @Inject constructor(
                 // No quantity said: preselect how it's usually measured (g for paneer, ml for milk).
                 "quantity" to (draft.quantity?.split(" ")?.let { QuantityValue(it[0], it.getOrElse(1) { "pcs" }) } ?: QuantityValue("", formUnit(draft.item))),
             )
-            is QuickAddDraft.Task -> EntryType.TASK to mapOf("title" to draft.title, "due" to draft.due, "repeat" to draft.repeat, "priority" to (draft.priority ?: "Low"), "reach" to draft.reach, "time" to draft.time)
+            is QuickAddDraft.Task -> {
+                // "Rohan, please…": given to that family member. Someone outside the app ("remind Mom")
+                // stays with me, named in the title.
+                val person = draft.forName?.let(::memberNamed)
+                val title = if (draft.forName != null && person == null) "${draft.forName}: ${draft.title.replaceFirstChar { it.lowercase() }}" else draft.title
+                EntryType.TASK to mapOf(
+                    "title" to title, "due" to draft.due, "repeat" to draft.repeat, "priority" to (draft.priority ?: "Low"), "reach" to draft.reach, "time" to draft.time,
+                    // "At 6 pm" rings at 6 on the day; the form says so.
+                    "remind" to if (draft.time != null) "On the day" else null,
+                ) +
+                    (person?.let { mapOf("assignee" to it.uid) } ?: emptyMap())
+            }
             is QuickAddDraft.Event -> EntryType.EVENT to mapOf(
                 "title" to draft.title,
                 "kind" to draft.kind,
@@ -1332,6 +1795,8 @@ class AddViewModel @Inject constructor(
                     "title" to draft.title,
                     "forWhom" to person?.let { listOf(it.uid) },
                     "expiry" to draft.expiry,
+                    "frequency" to draft.frequency,
+                    "until" to draft.until,
                     "dosage" to draft.forName?.takeIf { person == null }?.let { "For $it" },
                 )
             }
@@ -1340,7 +1805,11 @@ class AddViewModel @Inject constructor(
                 "quantity" to (draft.quantity?.split(" ")?.let { QuantityValue(it[0], it.getOrElse(1) { "pcs" }) } ?: QuantityValue("", formUnit(draft.title))),
                 "expiry" to draft.expiry,
             )
-            is QuickAddDraft.ListItem -> EntryType.WISH to mapOf("template" to draft.template.label, "title" to draft.title)
+            // "Gift for Riya: …": for her (and so kept from her).
+            is QuickAddDraft.ListItem -> EntryType.WISH to mapOf("template" to draft.template.label, "title" to draft.title) +
+                (draft.forName?.let(::memberNamed)?.let { mapOf("forWhom" to listOf(it.uid)) } ?: emptyMap())
+            is QuickAddDraft.Goal -> EntryType.GOAL to mapOf("title" to draft.title)
+            is QuickAddDraft.Place -> EntryType.PLACE to mapOf("title" to draft.title, "kind" to draft.kind, "goodFor" to draft.goodFor, "rating" to "Want to try")
             is QuickAddDraft.Cooked -> EntryType.RECIPE to mapOf("title" to draft.dish)
             is QuickAddDraft.Credit -> EntryType.CREDIT to mapOf(
                 "title" to draft.title,
@@ -1361,7 +1830,7 @@ class AddViewModel @Inject constructor(
                 "minutes" to (draft.minutes ?: draft.steps?.let { it / 100 })?.toString(),
                 "steps" to draft.steps?.toString(),
             )
-            is QuickAddDraft.Trip -> EntryType.TRIP to mapOf("title" to draft.title, "start" to draft.start)
+            is QuickAddDraft.Trip -> EntryType.TRIP to mapOf("title" to draft.title, "start" to draft.start, "places" to draft.places)
             is QuickAddDraft.Kept -> EntryType.KEPT to mapOf("title" to draft.item, "location" to draft.location, "kind" to com.houseaffairs.app.core.data.keptKindOf(draft.item))
             is QuickAddDraft.Household -> EntryType.HOUSEHOLD to mapOf(
                 "title" to draft.title,
@@ -1375,6 +1844,30 @@ class AddViewModel @Inject constructor(
         }
     }
 
+    /** The medicine "won't take X today" means: an exact name first, then a close one. */
+    private fun skipAnswer(d: QuickAddDraft.SkipDose): Answer {
+        val med = cabinet.value.firstOrNull { it.title.equals(d.medicine, ignoreCase = true) }
+            ?: cabinet.value.firstOrNull { sameIngredient(it.title, d.medicine) || it.title.contains(d.medicine, ignoreCase = true) }
+            ?: return Answer("I can't find “${d.medicine}” in the medicines", listOf("Check its name in Things → Medicines."))
+        val day = if (d.day == LocalDate.now()) "today" else formatDate(d.day).lowercase()
+        return Answer("Skip ${med.title} $day?", listOf("No dose reminders $day, and the count of what's left won't go down."), skip = med.id to d.day)
+    }
+
+    /** Skips that day's doses; the card then says so. */
+    fun skipDose(id: String, day: LocalDate) {
+        val r = ctx ?: return
+        pantry.skipDose(r.household.id, id, day)
+        local.update { s -> s.copy(answer = s.answer?.copy(title = "Skipped ✓", lines = listOf("No reminders for it that day. Reminders pick up again after."), skip = null)) }
+    }
+
+    fun rememberNumber(name: String, number: String) {
+        viewModelScope.launch { settings.rememberNumber(name, number) }
+        local.update { s -> s.copy(answer = s.answer?.copy(sharePhone = number)) }
+    }
+
     private fun memberNamed(name: String): Member? =
         state.value.members.firstOrNull { it.displayName.substringBefore(' ').equals(name, ignoreCase = true) }
 }
+
+/** A money field's value in minor units, for telling whether an amount changed. */
+private fun minorOf(value: Any?): Long? = (value as? MoneyValue)?.let { v -> v.parsed?.let { com.houseaffairs.app.core.util.toMinorUnits(it, v.currency) } }

@@ -80,6 +80,8 @@ service cloud.firestore {
       allow create: if signedIn() && request.resource.data.createdBy == uid();
       allow read: if isMember(hid);
       allow update: if isOwner(hid) && request.resource.data.createdBy == resource.data.createdBy;
+      // The last member deleting their account takes the home with them (the app clears entries first).
+      allow delete: if isOwner(hid);
 
       match /members/{memberId} {
         allow read: if isMember(hid);
@@ -97,18 +99,27 @@ service cloud.firestore {
         allow read: if isMember(hid);
         allow write: if isMember(hid) && request.resource.data.keys().hasOnly(['kind', 'createdBy', 'visibleTo', 'updatedAt'])
           && request.resource.data.kind is string && request.resource.data.kind.size() < 20;
+        allow delete: if isOwner(hid);
       }
 
       // Note for list queries: rules aren't filters. Query with
       // where("visibleTo", "array-contains-any", ["*", uid]) so every result is provably visible.
+      // Anyone in the family may log what they spent and see their own expenses; the home's
+      // totals, budget and everyone else's spending still need Money.
+      function ownExpense(hid, collection, data) {
+        return collection == 'transactions' && isMember(hid) && data.createdBy == uid();
+      }
+
       match /{collection}/{docId} {
         // A missing document (e.g. the budget before it's first set) reads as "not found", not denied.
-        allow read: if (resource == null && hasModule(hid, moduleOf(collection))) || canUseItem(hid, collection, resource.data);
-        allow create: if request.resource.data.createdBy == uid() && canUseItem(hid, collection, request.resource.data);
-        allow update: if canUseItem(hid, collection, resource.data)
-          && request.resource.data.createdBy == resource.data.createdBy
-          && canUseItem(hid, collection, request.resource.data);
-        allow delete: if canUseItem(hid, collection, resource.data);
+        allow read: if (resource == null && hasModule(hid, moduleOf(collection))) || canUseItem(hid, collection, resource.data)
+          || ownExpense(hid, collection, resource.data);
+        allow create: if request.resource.data.createdBy == uid()
+          && (canUseItem(hid, collection, request.resource.data) || ownExpense(hid, collection, request.resource.data));
+        allow update: if ((canUseItem(hid, collection, resource.data) && canUseItem(hid, collection, request.resource.data))
+            || (ownExpense(hid, collection, resource.data) && ownExpense(hid, collection, request.resource.data)))
+          && request.resource.data.createdBy == resource.data.createdBy;
+        allow delete: if canUseItem(hid, collection, resource.data) || ownExpense(hid, collection, resource.data);
       }
     }
   }

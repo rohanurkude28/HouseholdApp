@@ -25,6 +25,7 @@ data class Recipe(
     val meal: String? = null,
     /** Per serving, as "protein · carbs · fat · fibre" in grams ("25g · 30g · 12g · 4g"); approximate for library dishes. */
     val macros: String? = null,
+    val photos: List<String> = emptyList(),
 )
 
 /** What ticking a shopping item off did: the pantry item it filled, and how to undo it. */
@@ -56,12 +57,12 @@ class PantryRepository @Inject constructor(
     /** Food only: household supplies live in the same collection but never get cooked. */
     fun observePantry(householdId: String, uid: String): Flow<List<PantryStock>> =
         visible(householdId, "stock", uid).observeSnapshots()
-            .map { snap -> snap.documents.filter { it.getString("status") != "USED_UP" && it.getString("type") != "HOUSEHOLD" }.map(::toStock).sortedBy { it.expiry ?: java.time.LocalDate.MAX } }
+            .map { snap -> snap.documents.filter { it.getString("status") !in GONE_STATUSES && it.getString("type") != "HOUSEHOLD" }.map(::toStock).sortedBy { it.expiry ?: java.time.LocalDate.MAX } }
             .catch { emit(emptyList()) }
 
     fun observeSupplies(householdId: String, uid: String): Flow<List<PantryStock>> =
         visible(householdId, "stock", uid).observeSnapshots()
-            .map { snap -> snap.documents.filter { it.getString("status") != "USED_UP" && it.getString("type") == "HOUSEHOLD" }.map(::toStock).sortedBy { it.title.lowercase() } }
+            .map { snap -> snap.documents.filter { it.getString("status") !in GONE_STATUSES && it.getString("type") == "HOUSEHOLD" }.map(::toStock).sortedBy { it.title.lowercase() } }
             .catch { emit(emptyList()) }
 
     /** "Used one": a supply goes down by one unit; the last one moves it to the shopping list. */
@@ -85,14 +86,14 @@ class PantryRepository @Inject constructor(
 
     fun observeMedicines(householdId: String, uid: String, ownOnly: Boolean = false): Flow<List<PantryStock>> =
         medicines(householdId, uid, ownOnly).observeSnapshots()
-            .map { snap -> snap.documents.filter { it.getString("status") != "USED_UP" }.map(::toStock).sortedBy { it.expiry ?: java.time.LocalDate.MAX } }
+            .map { snap -> snap.documents.filter { it.getString("status") !in GONE_STATUSES }.map(::toStock).sortedBy { it.expiry ?: java.time.LocalDate.MAX } }
             .catch { emit(emptyList()) }
 
     /** Medicines with what they're for and who they're for, for "I'm feeling…". */
     fun observeMedicineInfo(householdId: String, uid: String, ownOnly: Boolean = false): Flow<List<MedicineInfo>> =
         medicines(householdId, uid, ownOnly).observeSnapshots()
             .map { snap ->
-                snap.documents.filter { it.getString("status") != "USED_UP" }.map { d ->
+                snap.documents.filter { it.getString("status") !in GONE_STATUSES }.map { d ->
                     MedicineInfo(
                         id = d.id,
                         title = d.getString("title").orEmpty(),
@@ -148,6 +149,7 @@ class PantryRepository @Inject constructor(
                     "quantity" to mapOf("amount" to d.after, "unit" to d.stock.unit),
                     "level" to d.level,
                     "status" to if (d.usedUp) "USED_UP" else "IN_STOCK",
+                    "usedUpAt" to if (d.usedUp) com.google.firebase.firestore.FieldValue.serverTimestamp() else com.google.firebase.firestore.FieldValue.delete(),
                 ),
             )
             restore += d.stock.id to mapOf(
@@ -183,7 +185,7 @@ class PantryRepository @Inject constructor(
     /** One-shot read used by voice ("made paneer sabzi"). */
     suspend fun snapshot(householdId: String, uid: String): Triple<List<Recipe>, List<PantryStock>, List<ShoppingEntry>> {
         val recipes = visible(householdId, "recipes", uid).get().await().documents.map(::toRecipe)
-        val pantry = visible(householdId, "stock", uid).get().await().documents.filter { it.getString("status") != "USED_UP" && it.getString("type") != "HOUSEHOLD" }.map(::toStock)
+        val pantry = visible(householdId, "stock", uid).get().await().documents.filter { it.getString("status") !in GONE_STATUSES && it.getString("type") != "HOUSEHOLD" }.map(::toStock)
         val shopping = visible(householdId, "shopping", uid).get().await().documents.filter { it.getBoolean("done") != true }.map(::toShopping)
         return Triple(recipes, pantry, shopping)
     }
@@ -197,7 +199,7 @@ class PantryRepository @Inject constructor(
         val ref = collection(householdId, "shopping").document(shoppingId)
         val item = toShopping(ref.get().await())
         val existing = visible(householdId, "stock", uid).get().await().documents
-            .filter { it.getString("status") != "USED_UP" || it.getString("type") == "HOUSEHOLD" }
+            .filter { it.getString("status") !in GONE_STATUSES || it.getString("type") == "HOUSEHOLD" }
             .map(::toStock)
             .firstOrNull { sameIngredient(it.title, item.title) && it.amount != null }
         val batch = db.batch()
@@ -270,6 +272,71 @@ class PantryRepository @Inject constructor(
             (bought + added) to memory
         }.catch { emit(emptyList<Purchase>() to emptyList()) }
 
+    /**
+     * For the month and year views: what came home, what was finished, and what went to waste
+     * (thrown away, or still there past its date), with what it cost. Food also counts what was
+     * ticked off the shopping list; medicines follow the same teen rule as the cabinet.
+     */
+    fun observeHistory(householdId: String, uid: String, kind: StockKind, ownOnly: Boolean = false): Flow<StockHistory> {
+        val docs = when (kind) {
+            StockKind.MEDICINES -> medicines(householdId, uid, ownOnly).observeSnapshots().map { it.documents }
+            else -> visible(householdId, "stock", uid).observeSnapshots().map { snap ->
+                snap.documents.filter { (it.getString("type") == "HOUSEHOLD") == (kind == StockKind.SUPPLIES) }
+            }
+        }
+        val ticked = if (kind == StockKind.FOOD) {
+            visible(householdId, "shopping", uid).observeSnapshots().map { snap ->
+                snap.documents.filter { it.getBoolean("done") == true }.mapNotNull { d ->
+                    d.localDate("boughtAt")?.let { KitchenBuy(d.getString("title") ?: d.getString("name").orEmpty(), it, d.getString("aisle")) }
+                }
+            }
+        } else {
+            kotlinx.coroutines.flow.flowOf(emptyList())
+        }
+        return combine(ticked, docs) { ticked, stock ->
+            val added = stock.filter { it.getString("source") != "shopping" }.mapNotNull { d ->
+                val type = d.getString("groceryType") ?: d.getString("supplyType") ?: if (kind == StockKind.MEDICINES) "Medicines" else null
+                (d.localDate("boughtOn") ?: d.localDate("createdAt"))?.let { KitchenBuy(d.getString("title").orEmpty(), it, type) }
+            }
+            val lives = stock.mapNotNull { d ->
+                val start = d.localDate("boughtOn") ?: d.localDate("createdAt") ?: return@mapNotNull null
+                d.localDate("usedUpAt")?.takeIf { d.getString("status") == "USED_UP" }?.let { StockLife(d.getString("title").orEmpty(), start, it) }
+            }
+            val wasted = stock.flatMap { d ->
+                val cost = d.getLong("costMinor")
+                val level = d.getLong("level")?.toInt()
+                val title = d.getString("title").orEmpty()
+                // Parts thrown away earlier ("half the milk"), each on its own day, valued at its share.
+                val parts = (d.get("wasteLog") as? List<*>).orEmpty().mapNotNull { raw ->
+                    val m = raw as? Map<*, *> ?: return@mapNotNull null
+                    val share = (m["share"] as? Number)?.toInt() ?: return@mapNotNull null
+                    val at = (m["at"] as? com.google.firebase.Timestamp)?.toDate()?.toInstant()?.atZone(java.time.ZoneId.systemDefault())?.toLocalDate() ?: return@mapNotNull null
+                    Expired(partLabel(title, share), at, cost?.let { it * share / 100 }, 100, thrown = true)
+                }
+                parts + listOfNotNull(
+                    when (d.getString("status")) {
+                        "WASTED" -> d.localDate("wastedAt")?.let { Expired(title, it, cost, level, thrown = true) }
+                        "USED_UP" -> null
+                        else -> d.localDate("expiry")?.let { Expired(title, it, cost, level) }
+                    },
+                )
+            }
+            StockHistory(ticked + added, lives, wasted, stock.filter { it.getString("status") !in GONE_STATUSES }.map(::toStock))
+        }.catch { emit(StockHistory(emptyList(), emptyList(), emptyList(), emptyList())) }
+    }
+
+    /** Every pack of pantry food and supplies, bought and finished, for how long things last. */
+    fun observeLives(householdId: String, uid: String): Flow<List<StockLife>> =
+        visible(householdId, "stock", uid).observeSnapshots().map { snap ->
+            snap.documents.mapNotNull { d ->
+                val start = d.localDate("boughtOn") ?: d.localDate("createdAt") ?: return@mapNotNull null
+                val used = d.getString("status") == "USED_UP"
+                // Finished before the date was recorded: nothing to count.
+                val end = if (used) d.localDate("usedUpAt") ?: return@mapNotNull null else null
+                StockLife(d.getString("title").orEmpty(), start, end)
+            }
+        }.catch { emit(emptyList()) }
+
     /** Puts [title] on the shopping list; the returned undo takes it off again. */
     fun addToShopping(householdId: String, uid: String, title: String): () -> Unit {
         val ref = collection(householdId, "shopping").document()
@@ -278,16 +345,62 @@ class PantryRepository @Inject constructor(
     }
 
     /**
-     * "It's finished": out of the pantry (or the medicine cabinet), onto the shopping list.
+     * "It's finished" (or [thrown] away): out of the pantry (or the medicine cabinet), onto the shopping list.
      * Returns the shopping item it added, if any, so "don't buy again" can take it off.
      */
-    fun usedUp(householdId: String, uid: String, stock: PantryStock, openShopping: List<String>, from: String = "stock"): String? {
+    /** "Put it back": undoes Bin it or Used up, so it's in stock again (and off the buy list if it went on). */
+    fun putBack(householdId: String, stock: PantryStock, from: String = "stock", shoppingId: String? = null) {
+        val del = com.google.firebase.firestore.FieldValue.delete()
+        collection(householdId, from).document(stock.id).update(mapOf("status" to "IN_STOCK", "wastedAt" to del, "usedUpAt" to del, "level" to (stock.initialAmount?.takeIf { it > 0 }?.let { ((stock.amount ?: it) / it * 100).toInt().coerceIn(0, 100) } ?: 100)))
+        shoppingId?.let { collection(householdId, "shopping").document(it).delete() }
+    }
+
+    fun usedUp(householdId: String, uid: String, stock: PantryStock, openShopping: List<String>, from: String = "stock", thrown: Boolean = false, addToList: Boolean = true): String? {
         val batch = db.batch()
-        batch.update(collection(householdId, from).document(stock.id), mapOf("status" to "USED_UP", "level" to 0))
-        val added = if (openShopping.none { sameIngredient(it, stock.title) }) collection(householdId, "shopping").document() else null
+        batch.update(
+            collection(householdId, from).document(stock.id),
+            // Thrown away keeps its level, so the waste is valued by what was left;
+            // finished records when it ran out, so "how long did it last?" has an answer.
+            if (thrown) mapOf("status" to "WASTED", "wastedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp())
+            else mapOf("status" to "USED_UP", "level" to 0, "usedUpAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()),
+        )
+        val added = if (addToList && openShopping.none { sameIngredient(it, stock.title) }) collection(householdId, "shopping").document() else null
         added?.let { batch.set(it, common(uid, "pantry") + mapOf("title" to stock.title, "done" to false)) }
         batch.commit()
         return added?.id
+    }
+
+    /**
+     * "Threw some away": [share] (% of the pack) goes to waste and comes off what's left. When
+     * nothing would be left, it's the whole thing thrown away. Returns true if all of it went.
+     */
+    /** Part of a pack thrown away. Returns what "Put it back" does: the level, amount and waste entry as they were. */
+    suspend fun wastePart(householdId: String, uid: String, stock: PantryStock, openShopping: List<String>, share: Int, from: String = "stock"): () -> Unit {
+        val ref = collection(householdId, from).document(stock.id)
+        val doc = ref.get().await()
+        val level = doc.getLong("level")?.toInt()
+        val left = levelAfterWaste(level, share)
+        if (left <= 0) {
+            val added = usedUp(householdId, uid, stock, openShopping, from, thrown = true, addToList = false)
+            return { putBack(householdId, stock, from, added) }
+        }
+        val entry = mapOf("share" to share, "at" to com.google.firebase.Timestamp.now())
+        val quantity = doc.get("quantity")
+        ref.update(
+            mapOf(
+                "level" to left,
+                "quantity" to stock.amount?.let { a -> stock.initialAmount?.takeIf { it > 0 }?.let { mapOf("amount" to it * left / 100.0, "unit" to stock.unit) } ?: mapOf("amount" to a, "unit" to stock.unit) },
+                "wasteLog" to FieldValue.arrayUnion(entry),
+            ),
+        ).await()
+        return {
+            ref.update(mapOf("level" to (level ?: FieldValue.delete()), "quantity" to (quantity ?: FieldValue.delete()), "wasteLog" to FieldValue.arrayRemove(entry)))
+        }
+    }
+
+    /** "Won't take it today": no dose reminders that day, and what's left isn't counted down for it. */
+    fun skipDose(householdId: String, medicineId: String, day: LocalDate) {
+        collection(householdId, "medicines").document(medicineId).update("skipped", FieldValue.arrayUnion(day.toEpochDay()))
     }
 
     /** "Don't buy again" after finishing something: takes it back off the shopping list. */
@@ -334,6 +447,9 @@ class PantryRepository @Inject constructor(
             category = doc.getString("groceryType") ?: doc.getString("supplyType")
                 ?: (doc.get("usedFor") as? List<*>)?.filterIsInstance<String>()?.firstOrNull(),
             keptAt = doc.getString("keptAt")?.takeIf { it.isNotBlank() },
+            photos = (doc.get("photos") as? List<*>).orEmpty().filterIsInstance<String>(),
+            restock = doc.getString("restock"),
+            schedule = courseOf(doc)?.let { scheduleLine(it, LocalDate.now()) },
         )
     }
 
@@ -354,5 +470,6 @@ class PantryRepository @Inject constructor(
         link = doc.getString("link"),
         meal = doc.getString("mealType"),
         macros = doc.getString("macros")?.takeIf { it.isNotBlank() },
+        photos = (doc.get("photos") as? List<*>).orEmpty().filterIsInstance<String>(),
     )
 }

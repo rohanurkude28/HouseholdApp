@@ -50,41 +50,42 @@ private val CATEGORY_COLORS = listOf(
     Color(0xFF36D1DC), Color(0xFFB06CFF), Color(0xFFFF8A65), Color(0xFF8BC34A),
 )
 
+/** The budget month's name: "November", or "25 Oct – 24 Nov" for a salary-day cycle. */
+internal fun monthLabel(cycle: com.houseaffairs.app.core.data.Cycle): String =
+    if (cycle.start.dayOfMonth == 1) cycle.start.format(DateTimeFormatter.ofPattern("MMMM"))
+    else "${formatDate(cycle.start)} – ${formatDate(cycle.endExclusive.minusDays(1))}"
+
 /**
- * "Where the money went": a month's spending by category with a stacked bar, how each compares
- * with the month before, and the biggest expenses. Arrows step back through earlier months.
+ * This budget month at the top of "This month": what was spent and where, against last month.
+ * Tapping it (outside a category) opens the year, where earlier months are.
  */
 @Composable
-internal fun MonthOverviewCard(m: MoneyState, money: (Long) -> String, onOpen: (String) -> Unit) {
-    val months = remember(m.startedOn, m.budget.cycleStartDay) { cyclesSince(m.startedOn, LocalDate.now(), m.budget.cycleStartDay) }
-    var index by rememberSaveable { mutableIntStateOf(0) }
-    val cycle = months[index.coerceIn(0, months.lastIndex)]
+internal fun MonthOverviewCard(m: MoneyState, money: (Long) -> String, cycle: com.houseaffairs.app.core.data.Cycle, onOpen: (String) -> Unit, onYear: () -> Unit) {
     val o = remember(m.txns, cycle) { monthOverview(m.txns, cycle, m.budget.cycleStartDay) }
-    var expanded by remember(cycle) { mutableStateOf<String?>(null) }
-    val fmt = DateTimeFormatter.ofPattern(if (cycle.start.dayOfMonth == 1) "MMMM yyyy" else "d MMM")
+    com.houseaffairs.app.core.ui.MonthCard(
+        "${monthLabel(cycle)} in money", com.houseaffairs.app.core.designsystem.LocalHouseColors.current.money, onYear,
+        Modifier.fillMaxWidth().padding(horizontal = 20.dp).animateContentSize(),
+    ) {
+        Text("${money(o.totalMinor)} · ${o.count} expenses", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 6.dp))
+        MonthOverviewBody(o, money, current = LocalDate.now() in cycle, onOpen = onOpen)
+    }
+}
 
-    HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp).animateContentSize()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { index++ }, enabled = index < months.lastIndex) { Icon(Icons.AutoMirrored.Outlined.KeyboardArrowLeft, contentDescription = "Earlier month") }
-            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    if (cycle.start.dayOfMonth == 1) cycle.start.format(fmt) else "${cycle.start.format(fmt)} – ${cycle.endExclusive.minusDays(1).format(fmt)}",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Text("${money(o.totalMinor)} · ${o.count} expenses", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            IconButton(onClick = { index-- }, enabled = index > 0) { Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = "Later month") }
-        }
+/** Where one budget month's money went: against the month before, how it was paid, each category opening into its biggest expenses. */
+@Composable
+internal fun MonthOverviewBody(o: com.houseaffairs.app.core.data.MonthOverview, money: (Long) -> String, current: Boolean, onOpen: (String) -> Unit) {
+    var expanded by remember(o.cycle) { mutableStateOf<String?>(null) }
+    Column {
         if (o.categories.isEmpty()) {
             Text("Nothing spent this month yet.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            return@HaCard
+            return@Column
         }
         if (o.lastMonthMinor > 0) {
             val diff = o.totalMinor - o.lastMonthMinor
             Text(
                 when {
-                    index == 0 && diff < 0 -> "${money(-diff)} less than last month so far"
-                    index == 0 -> "${money(diff)} more than all of last month"
+                    current && diff < 0 -> "${money(-diff)} less than last month so far"
+                    current -> "${money(diff)} more than all of last month"
                     diff < 0 -> "${money(-diff)} less than the month before"
                     else -> "${money(diff)} more than the month before"
                 },

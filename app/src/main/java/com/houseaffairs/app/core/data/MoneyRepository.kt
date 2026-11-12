@@ -9,6 +9,7 @@ import com.houseaffairs.app.core.model.Visibility
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -86,6 +87,16 @@ class MoneyRepository @Inject constructor(
                     paidBills = (doc.get("paidBills") as? List<*>).orEmpty().filterIsInstance<String>().toSet(),
                     incomeMinor = doc.getLong("incomeMinor") ?: 0,
                     customCategories = (doc.get("customCategories") as? List<*>).orEmpty().filterIsInstance<String>(),
+                    dreamAllocations = (doc.get("dreamAllocations") as? List<*>).orEmpty().mapNotNull { raw ->
+                        val m = raw as? Map<*, *> ?: return@mapNotNull null
+                        val from = (m["from"] as? com.google.firebase.Timestamp)?.toDate()?.toInstant()?.atZone(ZoneId.systemDefault())?.toLocalDate() ?: return@mapNotNull null
+                        DreamAllocation((m["dreamId"] as? String) ?: return@mapNotNull null, (m["monthlyMinor"] as? Number)?.toLong() ?: 0, from)
+                    },
+                    limitHistory = (doc.get("limitHistory") as? List<*>).orEmpty().mapNotNull { raw ->
+                        val m = raw as? Map<*, *> ?: return@mapNotNull null
+                        val from = (m["from"] as? com.google.firebase.Timestamp)?.toDate()?.toInstant()?.atZone(ZoneId.systemDefault())?.toLocalDate() ?: return@mapNotNull null
+                        LimitChange(from, (m["limitMinor"] as? Number)?.toLong() ?: return@mapNotNull null)
+                    },
                 )
                 // Rollover counts from the budget month the family started tracking.
                 val started = doc.localDate("startedOn") ?: doc.localDate("createdAt") ?: LocalDate.now()
@@ -95,8 +106,12 @@ class MoneyRepository @Inject constructor(
             .retryWhen { _, attempt -> (attempt < 3).also { if (it) delay(1_000L * (attempt + 1)) } }
             .catch { emit(null) }
 
-    suspend fun saveBudget(householdId: String, uid: String, budget: Budget) {
+    /** Saves the budget; a new monthly amount applies [from] this month, next month or always. */
+    suspend fun saveBudget(householdId: String, uid: String, budget: Budget, from: LimitFrom = LimitFrom.THIS_MONTH) {
+        val old = observeBudgetDoc(householdId).first()
+        val history = limitHistoryAfter(old?.budget, budget.limitMinor, from, old?.startedOn, LocalDate.now(), budget.cycleStartDay)
         val fields = mapOf(
+            "limitHistory" to history.map { mapOf("from" to it.from.toTimestamp(), "limitMinor" to it.limitMinor) },
             "limitMinor" to budget.limitMinor,
             "currency" to budget.currency,
             "cycleStartDay" to budget.cycleStartDay,
@@ -104,6 +119,7 @@ class MoneyRepository @Inject constructor(
             "incomeMinor" to budget.incomeMinor,
             "categories" to budget.categories,
             "customCategories" to budget.customCategories,
+            "dreamAllocations" to budget.dreamAllocations.map { mapOf("dreamId" to it.dreamId, "monthlyMinor" to it.monthlyMinor, "from" to it.from.toTimestamp()) },
             "cards" to budget.cards.map { mapOf("name" to it.name.trim(), "statementDay" to it.statementDay, "dueDay" to it.dueDay) },
             "updatedAt" to FieldValue.serverTimestamp(),
         )
@@ -196,6 +212,14 @@ class MoneyRepository @Inject constructor(
                         budgetMinor = d.getLong("budgetMinor"),
                         dream = d.getString("forDream")?.takeIf { it != "Not linked" },
                         done = d.getBoolean("done") == true,
+                        // The planned stops; a new trip's "Places, in order" line is day one until it's edited.
+                        stops = (d.get("stops") as? List<*>)?.mapNotNull { raw ->
+                            val m = raw as? Map<*, *> ?: return@mapNotNull null
+                            Stop(
+                                (m["day"] as? Number)?.toInt() ?: 1, m["title"] as? String ?: return@mapNotNull null, m["time"] as? String,
+                                about = m["about"] as? String, photo = m["photo"] as? String, note = m["note"] as? String,
+                            )
+                        } ?: stopsFrom(d.getString("places")),
                     )
                 }
             }
@@ -214,6 +238,16 @@ class MoneyRepository @Inject constructor(
                 ),
             )
         }
+    }
+
+    /** Saves the plan's stops (and drops the first "places" line, which they now replace). */
+    fun setStops(householdId: String, tripId: String, stops: List<Stop>) {
+        household(householdId).collection("trips").document(tripId).update(
+            mapOf(
+                "stops" to stops.map { mapOf("day" to it.day, "title" to it.title, "time" to it.time, "about" to it.about, "photo" to it.photo, "note" to it.note) },
+                "places" to com.google.firebase.firestore.FieldValue.delete(),
+            ),
+        )
     }
 
     fun reopenTrip(householdId: String, id: String) {
@@ -238,6 +272,8 @@ class MoneyRepository @Inject constructor(
                         targetDate = doc.localDate("targetDate"),
                         achieved = doc.getBoolean("achieved") == true,
                         horizonChoice = doc.getString("horizon"),
+                        photos = (doc.get("photos") as? List<*>).orEmpty().filterIsInstance<String>(),
+                        boardOrder = doc.getDouble("boardOrder"),
                     )
                 }
             }
@@ -314,6 +350,56 @@ class MoneyRepository @Inject constructor(
     }
 
     /** Turns a planned spend into a real one dated today. */
+    /** How many expenses and subscriptions are filed under [name], all time. */
+    suspend fun categoryUse(householdId: String, uid: String, name: String): Int =
+        listOf("transactions", "recurring").sumOf { col ->
+            visible(householdId, col, uid).get().await().documents.count { it.getString("category") == name }
+        }
+
+    /**
+     * Files everything under [from] as [to] instead (a rename, or a merge into an existing one),
+     * or with [to] null removes the category. Returns how many entries moved.
+     */
+    suspend fun moveCategory(householdId: String, uid: String, from: String, to: String?): Int {
+        var moved = 0
+        if (to != null) {
+            for (col in listOf("transactions", "recurring")) {
+                visible(householdId, col, uid).get().await().documents.filter { it.getString("category") == from }.chunked(400).forEach { chunk ->
+                    val batch = db.batch()
+                    chunk.forEach { batch.update(it.reference, "category", to) }
+                    batch.commit().await()
+                    moved += chunk.size
+                }
+            }
+        }
+        val doc = budgetDoc(householdId).get().await()
+        if (doc.exists()) {
+            val budget = observeBudget(householdId).first() ?: return moved
+            val next = budgetWithCategory(budget, from, to)
+            budgetDoc(householdId).update(mapOf("categories" to next.categories, "customCategories" to next.customCategories)).await()
+        }
+        return moved
+    }
+
+    /** Deletes the expenses filed under [name] and the category; returns an undo that puts them back. */
+    suspend fun deleteCategoryWithHistory(householdId: String, uid: String, name: String): () -> Unit {
+        val gone = listOf("transactions", "recurring").flatMap { col ->
+            visible(householdId, col, uid).get().await().documents.filter { it.getString("category") == name }
+        }
+        val saved = gone.map { it.reference to it.data.orEmpty() }
+        saved.chunked(400).forEach { chunk -> db.batch().also { b -> chunk.forEach { (ref, _) -> b.delete(ref) } }.commit().await() }
+        moveCategory(householdId, uid, name, null)
+        return { saved.chunked(400).forEach { chunk -> db.batch().also { b -> chunk.forEach { (ref, data) -> b.set(ref, data) } }.commit() } }
+    }
+
+    /** Saves where dreams were dragged to on the vision board, for the whole family. */
+    fun setBoardOrder(householdId: String, orders: Map<String, Double>) {
+        if (orders.isEmpty()) return
+        val batch = db.batch()
+        orders.forEach { (id, pos) -> batch.update(household(householdId).collection("dreams").document(id), "boardOrder", pos) }
+        batch.commit()
+    }
+
     /** A category typed in a form ("Cook") joins the family's own, so it's offered next time. */
     fun addCustomCategory(householdId: String, name: String) {
         budgetDoc(householdId).update("customCategories", FieldValue.arrayUnion(name.trim()))
@@ -322,6 +408,33 @@ class MoneyRepository @Inject constructor(
     /** Marks a card bill paid (or not), remembered on the budget. */
     fun setBillPaid(householdId: String, key: String, paid: Boolean) {
         budgetDoc(householdId).update("paidBills", if (paid) FieldValue.arrayUnion(key) else FieldValue.arrayRemove(key))
+    }
+
+    /** A subscription's logged payments, newest first: (expense id, date, amount, currency). */
+    suspend fun pastRenewals(householdId: String, uid: String, subscriptionId: String): List<PastPayment> =
+        runCatching { visible(householdId, "transactions", uid).get().await().documents }.getOrDefault(emptyList())
+            .filter { it.getString("fromSubscription") == subscriptionId }
+            .mapNotNull { d -> d.localDate("date")?.let { PastPayment(d.id, it, d.getLong("amountMinor") ?: 0, d.getString("currency") ?: "") } }
+            .sortedByDescending { it.date }
+
+    /**
+     * A subscription's price changed in its form. [choice] says which renewals it's for: from the
+     * next one, from [date], or every one (a mistake fixed, which also corrects logged payments).
+     * Earlier renewals otherwise keep what they cost, through the price history.
+     */
+    suspend fun changeSubscriptionPrice(householdId: String, uid: String, id: String, oldMinor: Long, newMinor: Long, choice: PriceFrom, date: LocalDate?) {
+        val ref = household(householdId).collection("recurring").document(id)
+        val doc = runCatching { ref.get().await() }.getOrNull() ?: return
+        val from = when (choice) {
+            PriceFrom.ALWAYS -> null
+            PriceFrom.DATE -> date ?: LocalDate.now()
+            PriceFrom.NEXT -> doc.localDate("nextDate")?.let { nextRenewal(it, doc.getString("frequency"), doc.localDate("lastLogged"), LocalDate.now()) } ?: LocalDate.now()
+        }
+        val history = changePrice(decodePrices(doc.get("priceHistory")), oldMinor, newMinor, from)
+        ref.update("priceHistory", if (history.isEmpty()) FieldValue.delete() else encodePrices(history))
+        if (choice == PriceFrom.ALWAYS) {
+            pastRenewals(householdId, uid, id).forEach { household(householdId).collection("transactions").document(it.id).update("amountMinor", newMinor) }
+        }
     }
 
     /**
@@ -337,7 +450,8 @@ class MoneyRepository @Inject constructor(
             "type" to "EXPENSE",
             "title" to (doc.getString("title") ?: "Subscription"),
             "merchant" to (doc.getString("title") ?: "Subscription"),
-            "amountMinor" to (doc.getLong("amountMinor") ?: 0L),
+            // What that renewal cost: a price changed from a later date doesn't touch earlier ones.
+            "amountMinor" to priceOn(date, doc.getLong("amountMinor") ?: 0L, decodePrices(doc.get("priceHistory"))),
             "currency" to doc.getString("currency"),
             "category" to (doc.getString("category") ?: "Bills"),
             "paymentMethod" to doc.getString("paymentMethod"),
@@ -383,6 +497,26 @@ class MoneyRepository @Inject constructor(
     private fun visible(householdId: String, name: String, uid: String): Query =
         household(householdId).collection(name).whereArrayContainsAny("visibleTo", listOf(Visibility.EVERYONE, uid))
 
+    /**
+     * Only what [uid] spent, newest first: "My spends" for members without Money. Asked by
+     * creator, which the rules allow without seeing anyone else's spending.
+     */
+    fun observeMine(householdId: String, uid: String): Flow<List<Txn>> =
+        household(householdId).collection("transactions").whereEqualTo("createdBy", uid).observeSnapshots()
+            .map { snap ->
+                snap.documents.mapNotNull { doc ->
+                    Txn(
+                        id = doc.id,
+                        title = doc.getString("title") ?: doc.getString("merchant") ?: doc.getString("category") ?: "Expense",
+                        category = doc.getString("category") ?: "Other",
+                        amountMinor = doc.getLong("amountMinor") ?: return@mapNotNull null,
+                        date = doc.localDate("date") ?: return@mapNotNull null,
+                        planned = doc.getString("status") == "Planned",
+                    )
+                }.sortedByDescending { it.date }
+            }
+            .catch { emit(emptyList()) }
+
     private fun transactions(householdId: String, uid: String, since: LocalDate, currency: String): Flow<List<Txn>> =
         visible(householdId, "transactions", uid)
             .whereGreaterThanOrEqualTo("date", since.toTimestamp())
@@ -417,7 +551,7 @@ class MoneyRepository @Inject constructor(
                         val next = doc.localDate("nextDate") ?: return@mapNotNull null
                         // Once logged, a renewal is spending; until then it's still due (even if the day has passed).
                         val owed = nextRenewal(next, doc.getString("frequency"), doc.localDate("lastLogged"), today)
-                        DuePayment(doc.id, doc.getString("title") ?: "Payment", owed, doc.getLong("amountMinor") ?: 0)
+                        DuePayment(doc.id, doc.getString("title") ?: "Payment", owed, priceOn(owed, doc.getLong("amountMinor") ?: 0, decodePrices(doc.get("priceHistory"))))
                     }
             }
             .catch { emit(emptyList()) }

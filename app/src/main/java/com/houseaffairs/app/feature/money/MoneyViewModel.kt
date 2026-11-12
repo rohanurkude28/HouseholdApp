@@ -64,10 +64,37 @@ class MoneyViewModel @Inject constructor(
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MoneyUiState())
 
-    fun saveBudget(budget: Budget, onDone: () -> Unit) {
+    /** How many expenses use [name]: decides whether deleting it needs to ask about them. */
+    fun categoryUse(name: String, onCount: (Int) -> Unit) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        viewModelScope.launch { onCount(runCatching { money.categoryUse(r.household.id, r.user.uid, name) }.getOrDefault(0)) }
+    }
+
+    /** Renames [from] (or with [to] null, removes it; its expenses move to Other). */
+    fun moveCategory(from: String, to: String?, onDone: () -> Unit) {
         val r = session.state.value as? SessionState.Ready ?: return
         viewModelScope.launch {
-            runCatching { money.saveBudget(r.household.id, r.user.uid, budget) }
+            runCatching {
+                if (to == null && money.categoryUse(r.household.id, r.user.uid, from) > 0) money.moveCategory(r.household.id, r.user.uid, from, "Other")
+                money.moveCategory(r.household.id, r.user.uid, from, to)
+            }.onSuccess { onDone() }.onFailure { error.value = "Couldn't change the category. Check your connection and try again." }
+        }
+    }
+
+    /** Deletes [name] and its expenses; Undo brings the expenses back. */
+    fun deleteCategoryWithHistory(name: String, onSaved: (com.houseaffairs.app.feature.add.SavedEntry) -> Unit, onDone: () -> Unit) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        viewModelScope.launch {
+            runCatching { money.deleteCategoryWithHistory(r.household.id, r.user.uid, name) }
+                .onSuccess { undo -> onDone(); onSaved(com.houseaffairs.app.feature.add.SavedEntry("$name and its expenses deleted") { undo() }) }
+                .onFailure { error.value = "Couldn't delete the category. Check your connection and try again." }
+        }
+    }
+
+    fun saveBudget(budget: Budget, from: com.houseaffairs.app.core.data.LimitFrom = com.houseaffairs.app.core.data.LimitFrom.THIS_MONTH, onDone: () -> Unit) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        viewModelScope.launch {
+            runCatching { money.saveBudget(r.household.id, r.user.uid, budget, from) }
                 .onSuccess { onDone() }
                 .onFailure { error.value = "Couldn't save the budget. Check your connection and try again." }
         }

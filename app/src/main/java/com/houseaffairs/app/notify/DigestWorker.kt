@@ -46,6 +46,7 @@ interface DigestEntryPoint {
     fun home(): HomeRepository
     fun money(): MoneyRepository
     fun settings(): SettingsRepository
+    fun pantry(): com.houseaffairs.app.core.data.PantryRepository
 }
 
 /** Builds today's digest from the same data Home shows and posts one notification. */

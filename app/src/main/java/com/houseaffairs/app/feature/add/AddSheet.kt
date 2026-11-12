@@ -1,5 +1,10 @@
 package com.houseaffairs.app.feature.add
 
+import com.houseaffairs.app.core.data.line
+import com.houseaffairs.app.feature.home.entryType
+import androidx.compose.material3.Surface
+import androidx.compose.foundation.combinedClickable
+import com.houseaffairs.app.core.data.USUAL_COUNT
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.speech.RecognizerIntent
@@ -20,6 +25,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
@@ -110,14 +116,18 @@ fun AddSheet(
     viewModel: AddViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    // One box to ask, add or find: what's at home is read as the sheet opens.
+    LaunchedEffect(Unit) { viewModel.loadFinds() }
     LaunchedEffect(request) {
         // Shared plain text lands in quick add, read like anything typed.
         (request.preset[QUICK_TEXT] as? String)?.let { viewModel.onTextChange(it) }
+        if (viewModel.restoreDraft(request)) return@LaunchedEffect
         val type = request.type ?: return@LaunchedEffect
         if (request.editId != null) viewModel.openEdit(type, request.editId) else viewModel.openForm(type, request.preset)
     }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
+    var opened by remember { androidx.compose.runtime.mutableStateOf(false) }
 
     val finish: (SavedEntry?) -> Unit = { saved ->
         if (saved != null) {
@@ -127,20 +137,34 @@ fun AddSheet(
     }
 
     ModalBottomSheet(
+        // Dragged down or tapped away: what was typed is kept for next time, not lost.
         onDismissRequest = {
-            viewModel.backToPicker()
+            viewModel.keepDraft()
             onDismiss()
         },
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
+        if (state.restored) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp).clip(MaterialTheme.shapes.medium).background(MaterialTheme.colorScheme.secondaryContainer).padding(start = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Picked up where you left off", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.weight(1f))
+                TextButton(onClick = viewModel::startOver) { Text("Start over") }
+            }
+        }
         AnimatedContent(
             targetState = state.form?.type,
             transitionSpec = { fadeIn() togetherWith fadeOut() },
             label = "add step",
         ) { formType ->
             val form = state.form
-            if (formType == null || form == null) {
+            // Opened for a kind ("Add a place"): show nothing for the moment before its form, not the + menu.
+            if (form != null) opened = true
+            if ((formType == null || form == null) && request.type != null && !opened) {
+                Spacer(Modifier.fillMaxWidth().height(320.dp))
+            } else if (formType == null || form == null) {
                 Picker(
                     state,
                     viewModel,
@@ -152,7 +176,11 @@ fun AddSheet(
                     onApplyChange = { finish(viewModel.applyChange()) },
                 )
             } else {
-                EntryForm(form, state, viewModel, onSave = { finish(viewModel.save()) }, onDelete = { scope.launch { finish(viewModel.deleteEditing()) } })
+                EntryForm(
+                    form, state, viewModel, onSave = { finish(viewModel.save()) }, onDelete = { scope.launch { finish(viewModel.deleteEditing()) } },
+                    // Several expenses or items in a row: saved with its Undo, and a fresh form of the same kind.
+                    onSaveAnother = { viewModel.save()?.let { saved -> onSaved(saved); viewModel.openForm(form.type) } },
+                )
             }
         }
     }
@@ -185,27 +213,32 @@ private fun Picker(
             .padding(start = 20.dp, end = 20.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Add anything", style = MaterialTheme.typography.headlineSmall)
-                Text(
-                    "Say it, type it, or pick below",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            VoiceButton(onClick = startVoice)
-        }
+        Text("Ask, add or find", style = MaterialTheme.typography.headlineSmall)
 
+        // One box for everything: type, speak, or scan a bill. Its hint cycles through real examples.
+        var hint by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+        LaunchedEffect(state.examples) {
+            while (state.examples.size > 1) { kotlinx.coroutines.delay(3000); hint = (hint + 1) % state.examples.size }
+        }
         TextField(
             value = state.text,
             onValueChange = viewModel::onTextChange,
             placeholder = {
                 Text(
-                    "Type or say anything…",
+                    state.examples.getOrNull(hint % state.examples.size.coerceAtLeast(1))?.let { "“$it”" } ?: "Type or say anything…",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 )
+            },
+            trailingIcon = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // A bill adds the expense and every item on it at once.
+                    if (state.text.isEmpty()) com.houseaffairs.app.core.ui.ScanButton("Scan a bill: the expense and each item", viewModel::fromBill)
+                    VoiceButton(onClick = startVoice, size = 44.dp)
+                    Spacer(Modifier.width(6.dp))
+                }
             },
             textStyle = MaterialTheme.typography.titleLarge,
             singleLine = true,
@@ -236,6 +269,14 @@ private fun Picker(
             Text("Voice input isn't available on this device.", color = MaterialTheme.colorScheme.error)
         }
 
+        // Things already at home that match what's typed: found first when the line would only
+        // become a new task, otherwise under the suggestion.
+        val finds by viewModel.finds.collectAsStateWithLifecycle()
+        val found = remember(state.text, finds) {
+            if (state.text.trim().length < 2) emptyList() else com.houseaffairs.app.core.data.searchAll(state.text, finds, viewModel::categoryOfWord).flatMap { it.items }.take(5)
+        }
+        val findsFirst = found.isNotEmpty() && (suggestion == null || suggestion.type == EntryType.TASK) && state.answer == null && state.batch == null
+        if (findsFirst) FoundAtHome(found, viewModel)
         val cook = state.cook
         val batch = state.batch
         val change = state.change
@@ -246,16 +287,10 @@ private fun Picker(
         } else if (state.move != null) {
             MoveCard(state.move, onMove)
         } else if (state.answer != null) {
-            AnswerCard(state.answer, onMove, onLocationGranted)
+            AnswerCard(state.answer, onMove, onLocationGranted, onNumber = viewModel::rememberNumber, onSkip = viewModel::skipDose)
         } else if (cook != null) {
             CookCard(cook, state.members, viewModel, onCook = onCook, onSaveRecipe = viewModel::saveCookAsRecipe)
-        } else if (suggestion == null) {
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                state.examples.forEach { example ->
-                    SuggestionChip(onClick = { viewModel.onTextChange(example) }, label = { Text(example) }, shape = CircleShape)
-                }
-            }
-        } else {
+        } else if (suggestion != null) {
             SuggestionCard(
                 suggestion, blocked,
                 thinking = state.thinking,
@@ -275,40 +310,14 @@ private fun Picker(
             )
         }
 
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        Text("Or choose what to add", style = MaterialTheme.typography.titleMedium)
-
-        val colors = LocalHouseColors.current
-        val tiles = EntryType.entries.filter { it in state.allowedTypes && it.listed }
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            maxItemsInEachRow = 4,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            tiles.forEach { type ->
-                Column(
-                    Modifier
-                        .weight(1f)
-                        .clip(MaterialTheme.shapes.medium)
-                        .clickable(enabled = type.available) { viewModel.openForm(type) }
-                        .alpha(if (type.available) 1f else 0.45f)
-                        .padding(vertical = 8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    IconBlob(type.icon, type.accent(colors), size = 52.dp)
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        if (type.available) type.label else "${type.label}\n(soon)",
-                        style = MaterialTheme.typography.labelMedium,
-                        textAlign = TextAlign.Center,
-                        maxLines = 2,
-                    )
-                }
-            }
-            // Keep the last row's tiles the same width as the others.
-            repeat((4 - tiles.size % 4) % 4) { Spacer(Modifier.weight(1f)) }
-        }
+        if (found.isNotEmpty() && !findsFirst) FoundAtHome(found, viewModel)
+        // While something is typed, the suggestion is the only thing to look at.
+        if (state.text.isBlank()) AddMenu(
+            usual = viewModel.usual.collectAsStateWithLifecycle().value,
+            groups = viewModel.options.collectAsStateWithLifecycle().value,
+            pinned = viewModel.pinned.collectAsStateWithLifecycle().value,
+            onPick = viewModel::pick, onPin = viewModel::togglePin, onExample = viewModel::onTextChange,
+        )
     }
 }
 
@@ -569,7 +578,13 @@ private fun MoveCard(move: MoveAction, onMove: (MoveAction) -> Unit) {
 }
 
 @Composable
-private fun AnswerCard(answer: Answer, onMove: (MoveAction) -> Unit, onLocationGranted: () -> Unit = {}) {
+private fun AnswerCard(
+    answer: Answer,
+    onMove: (MoveAction) -> Unit,
+    onLocationGranted: () -> Unit = {},
+    onNumber: (String, String) -> Unit = { _, _ -> },
+    onSkip: (String, java.time.LocalDate) -> Unit = { _, _ -> },
+) {
     val stock = LocalHouseColors.current.stock
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
         if (granted.values.any { it }) onLocationGranted()
@@ -623,12 +638,47 @@ private fun AnswerCard(answer: Answer, onMove: (MoveAction) -> Unit, onLocationG
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Allow location") }
         }
+        answer.skip?.let { (id, day) ->
+            Spacer(Modifier.height(12.dp))
+            Button(onClick = { onSkip(id, day) }, shape = CircleShape, modifier = Modifier.fillMaxWidth()) { Text("Skip it") }
+        }
+        answer.shareWith?.let { name ->
+            Spacer(Modifier.height(12.dp))
+            ShareLocationButtons(name, answer.sharePhone, onPicked = { onNumber(name, it) })
+        }
         answer.move?.let { move ->
             Spacer(Modifier.height(12.dp))
             Button(onClick = { onMove(move) }, shape = CircleShape, modifier = Modifier.fillMaxWidth()) {
                 Text("Move ${com.houseaffairs.app.core.util.formatMinor(move.amountMinor, move.currency)} from ${move.fromLabel}")
             }
         }
+    }
+}
+
+/**
+ * Opens [name]'s WhatsApp chat, where live location is one tap away. Without a number yet, the
+ * contacts picker finds it (no contacts permission needed) and this phone remembers it.
+ */
+@Composable
+private fun ShareLocationButtons(name: String, phone: String?, onPicked: (String) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    fun open(number: String) {
+        val text = android.net.Uri.encode("📍 Sharing my live location with you")
+        val url = "https://wa.me/" + com.houseaffairs.app.core.util.whatsAppNumber(number) + "?text=" + text
+        runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
+    }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val uri = result.data?.data ?: return@rememberLauncherForActivityResult
+        context.contentResolver.query(uri, arrayOf(android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0)?.let { onPicked(it); open(it) }
+        }
+    }
+    val pick = { picker.launch(android.content.Intent(android.content.Intent.ACTION_PICK, android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI)) }
+    if (phone != null) {
+        Button(onClick = { open(phone) }, shape = CircleShape, modifier = Modifier.fillMaxWidth()) { Text("Open $name's WhatsApp") }
+        androidx.compose.material3.TextButton(onClick = pick, modifier = Modifier.fillMaxWidth()) { Text("Use a different number") }
+    } else {
+        Button(onClick = pick, shape = CircleShape, modifier = Modifier.fillMaxWidth()) { Text("Pick $name's number") }
     }
 }
 
@@ -679,9 +729,118 @@ private fun CookCard(
             if (plan.toBuy.isNotEmpty()) {
                 Text("Adds to shopping: ${plan.toBuy.joinToString()}", style = MaterialTheme.typography.bodyMedium, color = accent.color)
             }
+            // Can't take out more than there is: name what's short instead.
+            if (!plan.enough) {
+                Text(
+                    listOfNotNull(
+                        plan.missing.takeIf { it.isNotEmpty() }?.let { "Missing: " + it.joinToString { i -> i.name.lowercase() } },
+                        plan.short.takeIf { it.isNotEmpty() }?.let { "Not enough " + it.joinToString().lowercase() },
+                    ).joinToString(" · "),
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error,
+                )
+            }
             Spacer(Modifier.height(12.dp))
-            Button(onClick = onCook, shape = CircleShape, modifier = Modifier.fillMaxWidth()) {
-                Text(if (cook.people == 0) "Update pantry" else "Update pantry for ${cook.people}")
+            Button(onClick = onCook, enabled = plan.enough, shape = CircleShape, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    when {
+                        !plan.enough -> "Not enough in the pantry"
+                        cook.people == 0 -> "Update pantry"
+                        else -> "Update pantry for ${cook.people}"
+                    },
+                )
+            }
+        }
+    }
+}
+
+/** "In your home": up to five things that match what's typed, each opening its own form. */
+@Composable
+private fun FoundAtHome(found: List<com.houseaffairs.app.core.data.Findable>, viewModel: AddViewModel) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("In your home", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.large).background(MaterialTheme.colorScheme.surfaceContainer)) {
+            found.forEach { hit ->
+                val type = hit.entryType()
+                Row(
+                    Modifier.fillMaxWidth().clickable(enabled = type != null) { type?.let { viewModel.openEdit(it, hit.id) } }.padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (hit.photo != null) com.houseaffairs.app.core.photo.PhotoThumb(hit.photo, 32.dp)
+                    else type?.let { Icon(it.icon, contentDescription = null, tint = it.accent(LocalHouseColors.current).color, modifier = Modifier.size(22.dp)) }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(hit.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                        Text(listOf(hit.group, hit.line({ m, c -> com.houseaffairs.app.core.ui.shownMinor(m, c ?: "INR") }, java.time.LocalDate.now())).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Typed together, these become several entries at once (the parser splits them). */
+private val SEVERAL_EXAMPLES = listOf("200 uber and 500 groceries", "add milk, eggs and bread to shopping list")
+
+/**
+ * The add menu before anything is typed: big tiles for what this person pinned or adds most,
+ * then everything else the app can add, one swipeable row per area, each option once. Holding
+ * any option pins it to the tiles; holding a tile unpins it.
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun AddMenu(
+    usual: List<AddOption>,
+    groups: List<Pair<String, List<AddOption>>>,
+    pinned: Set<String>,
+    onPick: (AddOption) -> Unit,
+    onPin: (AddOption) -> Unit,
+    onExample: (String) -> Unit,
+) {
+    usual.chunked(USUAL_COUNT).forEach { row ->
+        // Equal heights, even when one label takes two lines.
+        Row(Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            row.forEach { option ->
+                Column(
+                    Modifier.weight(1f).fillMaxHeight().clip(MaterialTheme.shapes.large).background(MaterialTheme.colorScheme.surfaceContainer)
+                        .combinedClickable(onClick = { onPick(option) }, onLongClick = { onPin(option) }, onLongClickLabel = if (option.key in pinned) "Unpin" else "Pin to top")
+                        .padding(vertical = 14.dp, horizontal = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(option.emoji, style = MaterialTheme.typography.headlineSmall)
+                    Spacer(Modifier.height(4.dp))
+                    Text(option.label, style = MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center, maxLines = 2)
+                }
+            }
+            repeat(USUAL_COUNT - row.size) { Spacer(Modifier.weight(1f)) }
+        }
+    }
+    Text(
+        if (pinned.isEmpty()) "Hold anything below to pin it up here." else "Hold a tile to unpin it.",
+        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    val shown = usual.map { it.key }.toSet()
+    // One row per area, swiped sideways: everything is there, nothing piles up.
+    (listOf("Several at once" to SEVERAL_EXAMPLES.map { AddOption("EX:$it", "✍️", it, text = it) }) + groups).forEach { (name, all) ->
+        val options = all.filter { it.key !in shown }
+        if (options.isEmpty()) return@forEach
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(name, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                options.forEach { option ->
+                    val example = option.key.startsWith("EX:")
+                    Surface(
+                        shape = CircleShape,
+                        color = Color.Transparent,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.clip(CircleShape).combinedClickable(
+                            onClick = { if (example) onExample(option.text!!) else onPick(option) },
+                            onLongClick = { if (!example) onPin(option) },
+                            onLongClickLabel = "Pin to top",
+                        ),
+                    ) {
+                        Text(if (example) option.label else "${option.emoji}  ${option.label}", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                    }
+                }
             }
         }
     }
@@ -706,11 +865,11 @@ private fun VoiceButton(onClick: () -> Unit, size: androidx.compose.ui.unit.Dp =
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun EntryForm(form: FormState, state: AddUiState, viewModel: AddViewModel, onSave: () -> Unit, onDelete: () -> Unit = {}) {
+private fun EntryForm(form: FormState, state: AddUiState, viewModel: AddViewModel, onSave: () -> Unit, onDelete: () -> Unit = {}, onSaveAnother: () -> Unit = {}) {
     val accent = form.type.accent(LocalHouseColors.current)
     val startVoice = rememberVoiceInput(viewModel::fillByVoice, viewModel::onVoiceUnavailable)
     val visible = form.type.fields.filter { spec ->
-        spec.visibleWhen(form.values) &&
+        spec.key !in form.locked && spec.visibleWhen(form.values) &&
             !(spec is ChoiceSpec && spec.hideWithoutDynamic && state.dynamicOptions[spec.dynamicOptions].isNullOrEmpty())
     }
     val essential = visible.filter { it.essential }
@@ -730,15 +889,28 @@ private fun EntryForm(form: FormState, state: AddUiState, viewModel: AddViewMode
             IconBlob(form.type.icon, accent, size = 40.dp)
             Spacer(Modifier.width(12.dp))
             Text(
-                if (form.editId != null) "Edit ${form.type.label.lowercase()}" else form.type.formTitle,
+                when {
+                    form.editId != null -> "Edit ${form.type.label.lowercase()}"
+                    // "Add a gift idea", "Add to Books": the list it's going on.
+                    "template" in form.locked -> com.houseaffairs.app.feature.quickadd.ListTemplate.of(form.values["template"] as? String)?.let { t ->
+                        if (t == com.houseaffairs.app.feature.quickadd.ListTemplate.GIFTS) "Add a gift idea" else "Add to ${t.title}"
+                    } ?: form.type.formTitle
+                    else -> form.type.formTitle
+                },
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.weight(1f),
             )
+            // Receipts, expiry dates and nutrition labels, read straight into the form.
+            scanHintFor(form.type)?.let { hint -> com.houseaffairs.app.core.ui.ScanButton(hint, viewModel::applyScan) }
             VoiceButton(onClick = startVoice, size = 44.dp)
         }
 
+        form.scanNote?.let { Text("📷 $it", style = MaterialTheme.typography.bodySmall, color = accent.color) }
         essential.forEach { spec ->
-            FieldEditor(spec, form.values[spec.key], { viewModel.update(spec.key, it) }, accent, state.members, spec.key in missingKeys, state.dynamicOptions)
+            // The shop field wears the category's icon, so a guess made while typing is seen at once.
+            val leading = if (form.type == EntryType.EXPENSE && spec.key == "merchant") com.houseaffairs.app.core.ui.categoryIcon(form.values["category"] as? String ?: "") else null
+            FieldEditor(spec, form.values[spec.key], { viewModel.update(spec.key, it) }, accent, state.members, spec.key in missingKeys, state.dynamicOptions, leading)
+            if (spec is TextSpec && spec.isAddress) AddressHintsRow(spec.key, form.values[spec.key] as? String, viewModel)
         }
 
         TextButton(onClick = viewModel::toggleMore) {
@@ -751,6 +923,7 @@ private fun EntryForm(form: FormState, state: AddUiState, viewModel: AddViewMode
             Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
                 extra.forEach { spec ->
                     FieldEditor(spec, form.values[spec.key], { viewModel.update(spec.key, it) }, accent, state.members, spec.key in missingKeys, state.dynamicOptions)
+                    if (spec is TextSpec && spec.isAddress) AddressHintsRow(spec.key, form.values[spec.key] as? String, viewModel)
                 }
                 WhoCanSeeEditor(form, state, viewModel, accent)
             }
@@ -773,8 +946,29 @@ private fun EntryForm(form: FormState, state: AddUiState, viewModel: AddViewMode
                 OutlinedButton(onClick = { viewModel.openEdit(EntryType.RECIPE, id) }, shape = CircleShape) { Text("Open $title") }
             }
         }
+        // A subscription's logged payments: tap one to fix just that one (a backdated price, say).
+        if (form.pastPayments.isNotEmpty()) {
+            Text("Past payments", style = MaterialTheme.typography.titleSmall)
+            Text("Tap one to change just that payment.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Column(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.large).background(MaterialTheme.colorScheme.surfaceContainer)) {
+                form.pastPayments.take(12).forEach { p ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { viewModel.openEdit(EntryType.EXPENSE, p.id) }.padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(p.date.format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy")), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        Text(com.houseaffairs.app.core.util.formatMinor(p.amountMinor, p.currency), style = MaterialTheme.typography.titleSmall)
+                    }
+                }
+            }
+        }
         Button(onClick = onSave, shape = CircleShape, modifier = Modifier.fillMaxWidth().height(56.dp)) {
             Text(if (form.editId != null) "Save changes" else "Save", style = MaterialTheme.typography.titleMedium)
+        }
+        if (form.editId == null) {
+            OutlinedButton(onClick = onSaveAnother, shape = CircleShape, modifier = Modifier.fillMaxWidth()) {
+                Text("Save + add another ${form.type.label.lowercase()}")
+            }
         }
         if (form.editId != null) {
             // Two taps, so a stray one doesn't delete; Undo is offered afterwards too.
@@ -828,4 +1022,37 @@ private fun WhoCanSeeEditor(form: FormState, state: AddUiState, viewModel: AddVi
             modifier = Modifier.padding(top = 6.dp),
         )
     }
+}
+
+/** Full addresses for what's typed, and whether the map can find it, so "near me" works. */
+@Composable
+private fun AddressHintsRow(key: String, value: String?, viewModel: AddViewModel) {
+    val hints by viewModel.addresses.collectAsStateWithLifecycle()
+    val typed = value?.trim().orEmpty()
+    if (typed.length < 3 || hints.query.trim() != typed) return
+    val onMap = hints.lines.any { it.equals(typed, ignoreCase = true) }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        when {
+            !hints.checked -> Text("Looking it up on the map…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            onMap -> Text("📍 Found on the map", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            hints.lines.isEmpty() -> Text("Not found on the map, so “near me” may miss it. Add the city, or paste a Google Maps link below.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            else -> Text("Pick the right one:", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (!onMap) hints.lines.forEach { line ->
+            Text(
+                "📍 $line",
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).clickable { viewModel.pickAddress(key, line) }.padding(vertical = 8.dp, horizontal = 4.dp),
+            )
+        }
+    }
+}
+
+/** What scanning reads for each kind of entry; null where there's nothing to scan. */
+private fun scanHintFor(type: EntryType): String? = when (type) {
+    EntryType.EXPENSE -> "Scan a receipt: amount, shop, date"
+    EntryType.GROCERY, EntryType.MEDICINE, EntryType.HOUSEHOLD -> "Scan the pack for its expiry date"
+    EntryType.CREDIT -> "Scan the card for its expiry"
+    EntryType.RECIPE -> "Scan a nutrition label for protein, carbs, fat, fibre"
+    else -> null
 }

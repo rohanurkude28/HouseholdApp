@@ -124,6 +124,11 @@ class HouseholdRepository @Inject constructor(
         ).await()
     }
 
+    /** The people who don't see the family's costs. Owner only (rules). */
+    suspend fun setHideCosts(householdId: String, uids: List<String>) {
+        household(householdId).update("hideCostsFrom", uids.distinct()).await()
+    }
+
     /** Makes [topic] private to [uids], or public again when null. Owner only (rules). */
     suspend fun setPrivateTopic(householdId: String, topic: String, uids: List<String>?) {
         household(householdId).update(
@@ -157,6 +162,69 @@ class HouseholdRepository @Inject constructor(
         }
     }
 
+    /**
+     * "Download my data": every entry this person can see, by collection, as plain values.
+     * Collections their role can't open are skipped rather than failing the whole export.
+     */
+    suspend fun exportEntries(householdId: String, me: Member): Map<String, List<Map<String, Any?>>> {
+        val uid = requireUser().uid
+        return kotlinx.coroutines.coroutineScope {
+            DATA_COLLECTIONS.map { name ->
+                async {
+                    val col = household(householdId).collection(name)
+                    name to runCatching {
+                        val docs = if (name == "medicines" && RolePolicy.ownMedicinesOnly(me.role)) {
+                            col.whereArrayContains("forWhom", uid).get().await().documents
+                        } else {
+                            col.whereArrayContainsAny("visibleTo", listOf("*", uid)).get().await().documents +
+                                col.whereEqualTo("createdBy", uid).get().await().documents
+                        }
+                        docs.distinctBy { it.id }.map { d -> mapOf("id" to d.id) + d.data.orEmpty().mapValues { plain(it.value) } }
+                    }.getOrDefault(emptyList())
+                }
+            }.awaitAll().toMap()
+        }
+    }
+
+    /**
+     * Account deletion, the Firestore part. Private entries this person made always go; shared ones
+     * too unless [keepShared]. An owner hands the home to [successorOf]; the last member takes the
+     * whole home with them. Signing in again afterwards starts from "create or join a home".
+     */
+    suspend fun eraseMe(householdId: String, keepShared: Boolean) {
+        val uid = requireUser().uid
+        val everyone = members(householdId).get().await().toObjects(Member::class.java)
+        val me = everyone.first { it.uid == uid }
+        val alone = everyone.none { it.uid != uid }
+        if (alone) {
+            resetHousehold(householdId)
+            household(householdId).collection("phrases").get().await().documents.chunked(450).forEach { chunk ->
+                db.batch().apply { chunk.forEach { delete(it.reference) } }.commit().await()
+            }
+        } else {
+            val heir = if (me.role == Role.OWNER) {
+                successorOf(everyone, uid) ?: throw IllegalStateException("Make another member an adult first, so someone can look after the home.")
+            } else null
+            kotlinx.coroutines.coroutineScope {
+                DATA_COLLECTIONS.map { name ->
+                    async {
+                        // A module this person lost access to can't be cleared by them; the rest still goes.
+                        runCatching {
+                            val mine = household(householdId).collection(name).whereEqualTo("createdBy", uid).get().await().documents
+                            val gone = if (keepShared) mine.filter { "*" !in (it.get("visibleTo") as? List<*>).orEmpty() } else mine
+                            gone.chunked(450).forEach { chunk -> db.batch().apply { chunk.forEach { delete(it.reference) } }.commit().await() }
+                        }
+                    }
+                }.awaitAll()
+            }
+            heir?.let { setRole(householdId, it.uid, Role.OWNER) }
+        }
+        // While still a member: the rules check membership for these.
+        if (alone) household(householdId).delete().await()
+        members(householdId).document(uid).delete().await()
+        users.document(uid).delete().await()
+    }
+
     suspend fun setBaseCurrency(householdId: String, currency: String) {
         household(householdId).update("baseCurrency", currency).await()
     }
@@ -166,6 +234,18 @@ class HouseholdRepository @Inject constructor(
         members(householdId).document(uid)
             .update(mapOf("role" to role.name, "moduleAccess" to RolePolicy.defaultAccess(role)))
             .await()
+    }
+
+    /** Firestore types as text a person or spreadsheet can read; dates in the phone's own time zone. */
+    private fun plain(value: Any?): Any? = when (value) {
+        is Timestamp -> java.time.LocalDateTime.ofInstant(value.toDate().toInstant(), java.time.ZoneId.systemDefault()).withNano(0)
+            .let { if (it.toLocalTime() == java.time.LocalTime.MIDNIGHT) it.toLocalDate().toString() else it.toString() }
+        is Map<*, *> -> value.entries.associate { (k, v) -> k.toString() to plain(v) }
+        is List<*> -> value.map(::plain)
+        is com.google.firebase.firestore.DocumentReference -> value.id
+        is com.google.firebase.firestore.GeoPoint -> mapOf("lat" to value.latitude, "lng" to value.longitude)
+        is com.google.firebase.firestore.Blob -> null
+        else -> value
     }
 
     private fun requireUser(): FirebaseUser = checkNotNull(auth.currentUser) { "Not signed in" }

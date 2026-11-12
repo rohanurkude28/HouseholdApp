@@ -30,6 +30,10 @@ data class WishItem(
     val votes: List<String> = emptyList(),
     /** For gift ideas: the event it's for ("Riya's birthday"). */
     val event: String? = null,
+    /** A link the family saved (reel, website, shop). */
+    val link: String? = null,
+    /** Photos of it (PhotoStore ids): the sofa, the place, the gift. */
+    val photos: List<String> = emptyList(),
 )
 
 /**

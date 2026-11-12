@@ -167,12 +167,15 @@ class PlansViewModel @Inject constructor(
         val r = session.state.value as? SessionState.Ready ?: return null
         val undo = watchRepo.markWatched(r.household.id, id)
         com.houseaffairs.app.core.ui.FollowUps.show(com.houseaffairs.app.core.data.ratedFollowUp(title) { liked -> watchRepo.rate(r.household.id, id, liked) })
-        return SavedEntry("$title · done") { undo() }
+        return SavedEntry("$title · done", celebrate = true) { undo() }
     }
 
-    fun setGoalProgress(id: String, progress: Int) {
-        val r = session.state.value as? SessionState.Ready ?: return
-        things.setGoalProgress(r.household.id, id, progress)
+    /** A goal moved to another step; Undo puts it back where it was. */
+    fun setGoalProgress(goal: com.houseaffairs.app.core.data.Goal, progress: Int): SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val undo = things.setGoalProgress(r.household.id, goal.id, progress, before = goal.progress)
+        val step = com.houseaffairs.app.core.data.goalStep(progress)
+        return SavedEntry("${goal.title} · ${step.lowercase()}" + if (progress >= 100) " 🎉" else "", celebrate = progress >= 100) { undo() }
     }
 
     /** ❤️ or un-❤️ a list item. */
@@ -188,6 +191,15 @@ class PlansViewModel @Inject constructor(
     }
 
     val myUid: String get() = (session.state.value as? SessionState.Ready)?.user?.uid.orEmpty()
+
+    /** A trip's new plan: its stops by day, in order. */
+    fun setStops(trip: com.houseaffairs.app.core.data.Trip, stops: List<com.houseaffairs.app.core.data.Stop>) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        moneyRepo.setStops(r.household.id, trip.id, stops)
+    }
+
+    fun nameOf(uid: String): String =
+        if (uid == myUid) "You" else members.value.firstOrNull { it.uid == uid }?.displayName?.substringBefore(' ') ?: "Someone"
 
     fun selectPlaceKind(kind: String?) {
         placeKind.value = if (placeKind.value == kind) null else kind
@@ -216,11 +228,18 @@ class PlansViewModel @Inject constructor(
     fun markTripDone(trip: com.houseaffairs.app.core.data.Trip): SavedEntry? {
         val r = session.state.value as? SessionState.Ready ?: return null
         val undo = moneyRepo.setTripDone(r.household.id, trip)
-        return SavedEntry("${trip.title} · done") { undo() }
+        return SavedEntry("${trip.title} · done", celebrate = true) { undo() }
     }
 
     fun setAchieved(dream: Dream, achieved: Boolean) {
         (session.state.value as? SessionState.Ready)?.let { moneyRepo.markDreamAchieved(it.household.id, dream.id, achieved) }
+    }
+
+    /** The vision board after a drag: [ids] in their new order. */
+    fun reorderDreams(ids: List<String>) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        val before = state.value.dreams.associate { it.id to it.boardOrder }
+        moneyRepo.setBoardOrder(r.household.id, com.houseaffairs.app.core.data.boardOrders(ids, before))
     }
 
     fun reopen(item: com.houseaffairs.app.core.data.FinishedItem) {
@@ -232,9 +251,71 @@ class PlansViewModel @Inject constructor(
         (session.state.value as? SessionState.Ready)?.let { moneyRepo.reopenTrip(it.household.id, trip.id) }
     }
 
+    /** Yes to a task given to me; the undo puts the question back. */
+    fun acceptTask(task: com.houseaffairs.app.core.data.TaskItem): com.houseaffairs.app.feature.add.SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val undo = home.answerTask(r.household.id, r.user.uid, task, accept = true)
+        return com.houseaffairs.app.feature.add.SavedEntry("You'll do “${task.title}”") { undo() }
+    }
+
+    /** "Can't do it": back to whoever gave it, with the reason. */
+    fun declineTask(task: com.houseaffairs.app.core.data.TaskItem, note: String?): com.houseaffairs.app.feature.add.SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val undo = home.answerTask(r.household.id, r.user.uid, task, accept = false, note = note)
+        return com.houseaffairs.app.feature.add.SavedEntry("Sent “${task.title}” back") { undo() }
+    }
+
+    /** "I'll do it" on a task that came back. */
+    fun keepTask(task: com.houseaffairs.app.core.data.TaskItem) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        home.keepTask(r.household.id, task)
+    }
+
+    private val parser = com.houseaffairs.app.feature.quickadd.QuickAddParser(nowMinute = { java.time.LocalTime.now().let { it.hour * 60 + it.minute } })
+
+    /**
+     * Typed straight into Tasks: "call mom at 5 tomorrow" keeps its date and time; without a
+     * date it goes on [day] (the day picked in the week strip, else today).
+     */
+    fun quickAddTask(text: String, day: java.time.LocalDate?): SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val line = text.trim().takeIf { it.isNotEmpty() } ?: return null
+        val draft = parser.parse(line) as? com.houseaffairs.app.feature.quickadd.QuickAddDraft.Task
+        val title = draft?.title?.takeIf { it.isNotBlank() } ?: line.replaceFirstChar { it.uppercase() }
+        val due = draft?.due ?: day ?: java.time.LocalDate.now()
+        val undo = home.addTask(r.household.id, r.user.uid, title, due = due, time = draft?.time, repeat = draft?.repeat, source = "tasks")
+        return SavedEntry("$title · ${com.houseaffairs.app.feature.add.formatDate(due)}") { undo() }
+    }
+
+    /** A chore added to the family's list: due today, for anyone, repeating. */
+    fun addChore(title: String, repeat: String): SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val undo = home.addTask(r.household.id, r.user.uid, title.trim(), repeat = repeat, source = "chore", assignee = null)
+        return SavedEntry("${title.trim()} · a family chore, ${repeat.lowercase()}") { undo() }
+    }
+
+    fun removeChore(task: TaskItem): SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val undo = home.removeTask(r.household.id, task.id)
+        return SavedEntry("${task.title} · off the chores list") { undo() }
+    }
+
+    fun setChoreRepeat(task: TaskItem, repeat: String): SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val undo = home.setRepeat(r.household.id, task.id, repeat, task.repeat)
+        return SavedEntry("${task.title} · ${repeat.lowercase()}") { undo() }
+    }
+
+    /** A new day from the date chip ("Tomorrow", "This weekend"…), or no date, with Undo. */
+    fun reschedule(task: TaskItem, to: java.time.LocalDate?, label: String): SavedEntry? {
+        val r = session.state.value as? SessionState.Ready ?: return null
+        val undo = home.moveTask(r.household.id, task.id, to, task.dueDate)
+        return SavedEntry("${task.title} · ${label.lowercase()}") { undo() }
+    }
+
     fun completeTask(task: TaskItem): SavedEntry? {
         val r = session.state.value as? SessionState.Ready ?: return null
         val undo = home.completeTask(r.household.id, r.user.uid, task)
-        return SavedEntry(com.houseaffairs.app.feature.home.doneMessage(task, members.value)) { undo() }
+        return SavedEntry(com.houseaffairs.app.feature.home.doneMessage(task, members.value), celebrate = true) { undo() }
     }
 }

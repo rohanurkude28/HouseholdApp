@@ -36,6 +36,10 @@ data class TextSpec(
     val isLink: Boolean = false,
     /** A phone number: number keyboard plus a button to pick from contacts. */
     val isPhone: Boolean = false,
+    /** Protein · carbs · fat · fibre per serving: four number boxes, saved as "25g · 30g · 12g · 4g". */
+    val isMacros: Boolean = false,
+    /** An area or address: matching full addresses are offered as it's typed, and it says if the map can find it. */
+    val isAddress: Boolean = false,
     override val required: Boolean = false,
     override val essential: Boolean = true,
     override val visibleWhen: (FormValues) -> Boolean = { true },
@@ -105,6 +109,15 @@ data class MembersSpec(
     override val visibleWhen: (FormValues) -> Boolean = { true },
 ) : FieldSpec
 
+/** Photos (ids into PhotoStore): taken or picked, shown as a small grid, a tap opens one. */
+data class PhotosSpec(
+    override val key: String = "photos",
+    override val label: String = "Photos",
+    override val required: Boolean = false,
+    override val essential: Boolean = true,
+    override val visibleWhen: (FormValues) -> Boolean = { true },
+) : FieldSpec
+
 /** A recipe's ingredient list: name, quantity and unit per row, so cooking can update the pantry. */
 data class IngredientsSpec(
     override val key: String = "ingredients",
@@ -123,6 +136,7 @@ fun FieldSpec.isFilled(value: Any?): Boolean = when (this) {
     is LevelSpec -> value is Int
     is MembersSpec -> (value as? List<*>)?.isNotEmpty() == true
     is IngredientsSpec -> (value as? List<*>)?.filterIsInstance<Ingredient>()?.any { it.name.isNotBlank() } == true
+    is PhotosSpec -> (value as? List<*>)?.isNotEmpty() == true
 }
 
 private val DATE_LABEL: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MMM")
@@ -151,5 +165,6 @@ fun FieldSpec.display(value: Any?, members: List<Member>): String? {
             members.firstOrNull { it.uid == uid }?.displayName?.substringBefore(' ') ?: "Someone"
         }
         is IngredientsSpec -> (value as List<*>).filterIsInstance<Ingredient>().count { it.name.isNotBlank() }.let { "$it ingredients" }
+        is PhotosSpec -> (value as List<*>).size.let { if (it == 1) "1 photo" else "$it photos" }
     }
 }

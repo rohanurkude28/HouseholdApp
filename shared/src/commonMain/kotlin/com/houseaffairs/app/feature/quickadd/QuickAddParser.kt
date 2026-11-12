@@ -69,13 +69,16 @@ sealed interface QuickAddDraft {
         val paidWith: String? = null,
         /** The card's name when said ("on HDFC card"). */
         val card: String? = null,
+        /** The day when said ("yesterday", "last night", "on 3 Nov"); null means today. */
+        val date: LocalDate? = null,
     ) : QuickAddDraft
 
     /** "Walked 30 min", "45 minutes yoga", "gardening for an hour", "did 8000 steps". */
     data class Activity(val kind: String, val minutes: Int?, val steps: Int?) : QuickAddDraft
 
     /** "Start trip Goa" / "outing: Sunday picnic this sunday". */
-    data class Trip(val title: String, val start: LocalDate?) : QuickAddDraft
+    /** [places] is the day's plan in order, when said ("…to Cubbon Park, Lalbagh and MTR"). */
+    data class Trip(val title: String, val start: LocalDate?, val places: String? = null) : QuickAddDraft
 
     data class Subscription(val title: String, val amount: Decimal, val currency: String?, val frequency: String) : QuickAddDraft
     /** [quantity] is "500 g", "2 pcs"…, or null when none was said. */
@@ -89,11 +92,21 @@ sealed interface QuickAddDraft {
         val reach: String? = null,
         /** "5:30 pm" when a time was said; the task then reminds at that time. */
         val time: String? = null,
+        /** Who it's for when said: "Rohan, please pay the bill", "remind Mom to…". */
+        val forName: String? = null,
     ) : QuickAddDraft
     data class Event(val title: String, val kind: String, val date: LocalDate?) : QuickAddDraft
-    data class Medicine(val title: String, val forName: String?, val expiry: LocalDate?) : QuickAddDraft
+    /** [frequency] is one of `DOSE_FREQUENCIES` when said ("twice a day"); [until] ends the course ("for 5 days"). */
+    data class Medicine(val title: String, val forName: String?, val expiry: LocalDate?, val frequency: String? = null, val until: LocalDate? = null) : QuickAddDraft
     data class Grocery(val title: String, val quantity: String?, val expiry: LocalDate?) : QuickAddDraft
-    data class ListItem(val template: ListTemplate, val title: String) : QuickAddDraft
+    /** [forName] is who a gift idea is for, when said ("gift for Riya: a smart watch"). */
+    data class ListItem(val template: ListTemplate, val title: String, val forName: String? = null) : QuickAddDraft
+
+    /** "Goal: run 5k this week": a goal for this week. */
+    data class Goal(val title: String) : QuickAddDraft
+
+    /** "Good dosa at Vidyarthi Bhavan", "try Toit for beer": a place worth going back to, and what for. */
+    data class Place(val title: String, val kind: String, val goodFor: String?) : QuickAddDraft
 
     /** Several things said at once: "add milk, eggs and bread to shopping", "200 uber and 500 groceries". */
     data class Batch(val drafts: List<QuickAddDraft>) : QuickAddDraft
@@ -124,7 +137,14 @@ sealed interface QuickAddDraft {
     data class Dream(val title: String, val kind: String, val amount: Decimal?, val date: LocalDate?) : QuickAddDraft
 
     /** A question for the assistant rather than something to save. */
-    data class Ask(val question: Question, val subject: String?, val person: String? = null) : QuickAddDraft
+    data class Ask(
+        val question: Question,
+        val subject: String?,
+        val person: String? = null,
+        val count: Int? = null,
+        /** For SPENT: "this month" (the default), "last month", "this week", "this year"… */
+        val period: String? = null,
+    ) : QuickAddDraft
 
     enum class Question {
         COOK, EXPIRING, LEFT, AFFORD, WHERE,
@@ -143,7 +163,40 @@ sealed interface QuickAddDraft {
 
         /** "Want to watch a movie" / "read something": picks from that list (subject = the list's name). */
         PICK,
+
+        /** "Can I cook paneer tikka for 3?" (subject = the dish, count = people). */
+        CAN_COOK,
+
+        /** "By when can we go to Bali?" (subject = the dream). */
+        WHEN_DREAM,
+
+        /** "How long did the detergent last?" (subject = the item). */
+        LASTED,
+
+        /** "How much did we spend on groceries this month?" (subject = category or shop; null = everything). */
+        SPENT,
+
+        /** "Share my live location with Ravi" (subject = the person). */
+        SHARE_LOCATION,
+
+        /** "Do we have eggs?", "is there milk?", "any curd left?" (subject = the item). */
+        HAVE,
+
+        /** "When is Riya's birthday?" (subject = what to look up). */
+        WHEN,
+
+        /** "What's due this week?", "show my tasks" (subject = "today", "tomorrow" or "this week"). */
+        AGENDA,
+
+        /** "Anything to buy?", "what's on the shopping list?" */
+        TO_BUY,
+
+        /** "Got salary 85000", "received 2000 from mom": money coming in, which isn't spending. */
+        INCOME,
     }
+
+    /** "Won't take crocin today" / "skip crocin tonight": no doses (or reminders) that day, and the count stays. */
+    data class SkipDose(val medicine: String, val day: LocalDate) : QuickAddDraft
 
     /** "Gold necklace is in the bank locker" / "kept spare keys in the blue drawer". */
     data class Kept(val item: String, val location: String) : QuickAddDraft
@@ -165,16 +218,23 @@ sealed interface QuickAddDraft {
  *
  * Rule-based and on-device for the beta. Drafts only pre-fill a form; nothing is saved unseen.
  */
+/** Joins several conditions in one symptom question's subject. */
+const val SYMPTOM_JOIN = "|"
+
 class QuickAddParser(
     private val today: () -> LocalDate = ::systemToday,
     /** Minutes after midnight now, so "at 9 am" said at 10 means tomorrow; null when unknown. */
     private val nowMinute: () -> Int? = { null },
 ) {
 
+    /** The spending category one word points at ("uber" → Transport), for guessing while a form is typed. */
+    fun categoryOfWord(word: String): String? = CATEGORY_BY_KEYWORD[word] ?: SUBCATEGORY_BY_WORD[word]?.first
+
     fun parse(input: String): QuickAddDraft? {
         val text = withLakhs(input.trim().replace(WHITESPACE, " "))
         if (text.isEmpty()) return null
-        return parseWant(text)
+        return parseSkipDose(text)
+            ?: parseWant(text)
             ?: parseAsk(text)
             ?: parseChange(text)
             ?: parseBatch(text)
@@ -212,6 +272,15 @@ class QuickAddParser(
     /** [input] as something new to save, ignoring change commands ("update passport" as a task). */
     fun parseAsNew(input: String): QuickAddDraft? = parseSingle(withLakhs(input.trim().replace(WHITESPACE, " ")))
 
+    private fun parseSkipDose(text: String): QuickAddDraft.SkipDose? {
+        val t = text.trim().trimEnd('.', '!').trim()
+        val m = SKIP_DOSE.matchEntire(t) ?: SKIP_DOSE_SHORT.matchEntire(t) ?: return null
+        val name = m.groupValues[1].trim().removePrefix("my ").removeSuffix(" dose").removeSuffix(" doses").trim()
+        if (name.isEmpty()) return null
+        val day = if (m.groupValues[2].equals("tomorrow", ignoreCase = true)) today().plusDays(1) else today()
+        return QuickAddDraft.SkipDose(name.capitalized(), day)
+    }
+
     /** "5 lakh" → "500000", "1.2 crore" → "12000000": said that way, but every amount rule reads digits. */
     private fun withLakhs(text: String): String = LAKH.replace(text) { m ->
         val n = decimalOf(m.groupValues[1]) ?: return@replace m.value
@@ -221,7 +290,12 @@ class QuickAddParser(
 
     /** Everything but questions, changes and batches; also used for each part of a batch. */
     private fun parseSingle(text: String): QuickAddDraft? {
-        return parseActivity(text)
+        return parseGoal(text)
+            ?: parseLent(text)
+            ?: parsePersonTask(text)
+            // "Remind me every day at 9 pm to take vitamins" is a reminder, whatever it mentions.
+            ?: (if (REMINDER.containsMatchIn(text) || REMIND_START.containsMatchIn(text)) parseReminder(text) else null)
+            ?: parseActivity(text)
             ?: parseTrip(text)
             ?: parseAddTo(text)
             ?: parseMove(text)
@@ -230,26 +304,76 @@ class QuickAddParser(
             ?: parseCredit(text)
             ?: parseFund(text)
             ?: parseKept(text)
+            // "Running low on detergent" is something to buy, before detergent reads as a supply.
+            ?: parseRunningOut(text)
             ?: parseHousehold(text)
             ?: parseDream(text)
             ?: parseCooked(text)
-            ?: parseRunningOut(text)
             ?: parseEvent(text)
             ?: parseMedicine(text)
             ?: parseMoney(text)
             ?: parseGrocery(text)
             ?: parseMeasured(text)
+            // Plain lines that read as a list or a place, before anything falls through to a task.
+            ?: parseListShortcut(text)
+            ?: parsePlaceTip(text)
             ?: parseTask(text)
     }
 
+    /** "Goal: run 5k this week", "weekly goal finish a book": this week's goal, not a savings dream. */
+    private fun parseGoal(text: String): QuickAddDraft.Goal? {
+        val m = GOAL_LINE.matchEntire(text.trim()) ?: return null
+        val title = m.groupValues[1].replace(THIS_WEEK, "").trim().trim(*PUNCTUATION).capitalized()
+        return title.takeIf { it.isNotEmpty() }?.let { QuickAddDraft.Goal(it) }
+    }
+
+    /** "Lent 5000 to Ravi" → get it back; "borrowed 2000 from Mom" → pay it back. A task, so it isn't forgotten. */
+    private fun parseLent(text: String): QuickAddDraft.Task? {
+        val m = LENT.matchEntire(text.trim()) ?: return null
+        val amount = m.groupValues[2].trim()
+        val who = m.groupValues[3].trim().trim(*PUNCTUATION).capitalized()
+        val title = if (m.groupValues[1].lowercase().startsWith("borrow")) "Return $amount to $who" else "Get $amount back from $who"
+        return QuickAddDraft.Task(title, null)
+    }
+
+    /** "Watch Dune 2", "read Atomic Habits", "listen to Coldplay", "gift for Riya: a smart watch". */
+    private fun parseListShortcut(text: String): QuickAddDraft.ListItem? {
+        val t = text.trim().trimEnd('.', '!')
+        GIFT_IDEA.matchEntire(t)?.let { m ->
+            val what = m.groupValues[2].trim().trim(*PUNCTUATION)
+            if (what.isNotEmpty()) return QuickAddDraft.ListItem(ListTemplate.GIFTS, what.capitalized(), m.groupValues[1].trim().ifEmpty { null }?.capitalized())
+        }
+        val m = LIST_VERB.matchEntire(t) ?: return null
+        val what = m.groupValues[2].trim().trim(*PUNCTUATION)
+        if (what.isEmpty() || what.split(" ").size > 6 || what.lowercase().split(" ").first() in NOT_A_TITLE) return null
+        val template = when (m.groupValues[1].lowercase()) {
+            "watch", "see" -> ListTemplate.WATCH
+            "read" -> ListTemplate.BOOKS
+            else -> ListTemplate.MUSIC
+        }
+        return QuickAddDraft.ListItem(template, what.split(" ").joinToString(" ") { it.capitalized() })
+    }
+
+    /** "Good dosa at Vidyarthi Bhavan" → the place, good for dosa; "try Toit for beer" → Toit, for beer. */
+    private fun parsePlaceTip(text: String): QuickAddDraft.Place? {
+        val t = text.trim().trimEnd('.', '!')
+        PLACE_GOOD_AT.matchEntire(t)?.let { m ->
+            return QuickAddDraft.Place(m.groupValues[2].trim().split(" ").joinToString(" ") { it.capitalized() }, "Restaurant", m.groupValues[1].trim().capitalized())
+        }
+        PLACE_TRY.matchEntire(t)?.let { m ->
+            return QuickAddDraft.Place(m.groupValues[1].trim().split(" ").joinToString(" ") { it.capitalized() }, "Restaurant", m.groupValues[2].trim().capitalized())
+        }
+        return null
+    }
+
     private fun parseAddTo(text: String): QuickAddDraft? {
-        val match = ADD_TO.matchEntire(text) ?: return null
+        val match = ADD_TO.matchEntire(text.trimEnd('.', '!', '?').trim()) ?: return null
         val what = match.groupValues[1].trim()
         val target = match.groupValues[2].trim().lowercase()
         val template = ListTemplate.entries.firstOrNull { target in it.aliases }
         if (target !in SHOPPING_ALIASES && template == null) return null
         // "milk, eggs and bread": several items. Titles like "Tom and Jerry" only split on commas.
-        val parts = (if (template?.isMedia == true) what.split(",") else what.split(LIST_SPLIT))
+        val parts = (if (template?.isMedia == true) what.split(",") else what.split(LIST_SPLIT).flatMap { if (template == null) groceryWords(it) else listOf(it) })
             .map { it.trim().removePrefix("and ").trim() }.filter { it.isNotEmpty() }
         val drafts = parts.map { item ->
             if (template == null) shoppingOf(item) ?: QuickAddDraft.Shopping(item.capitalized()) else QuickAddDraft.ListItem(template, item.capitalized())
@@ -262,11 +386,116 @@ class QuickAddParser(
      * as something to save. Plain tasks don't count, so "call Riya and Aman" stays one task.
      */
     private fun parseBatch(text: String): QuickAddDraft.Batch? {
+        counted(text)?.let { return it }
+        // A reminder's own words ("remind me to call mom and pay rent", "…and remind everyday") are one reminder.
+        if (REMINDER.containsMatchIn(text) || REMIND_START.containsMatchIn(text) || ANY_REMIND.containsMatchIn(text)) return null
+        // "Add tomatoes, milk and paneer to groceries": one list, split by the add-to rule.
+        if (ADD_TO.matchEntire(text.trimEnd('.', '!', '?').trim()) != null) return null
         val parts = text.split(BATCH_SPLIT).map { it.trim() }.filter { it.isNotEmpty() }
         if (parts.size < 2) return null
-        val drafts = parts.map { parseSingle(it) ?: return null }
-        if (drafts.any { it is QuickAddDraft.Task || it is QuickAddDraft.Batch || it is QuickAddDraft.Cooked || it is QuickAddDraft.Move }) return null
-        return QuickAddDraft.Batch(drafts)
+        val singles = parts.map { parseSingle(it) ?: return null }
+        if (singles.any { it is QuickAddDraft.Batch || it is QuickAddDraft.Cooked || it is QuickAddDraft.Move }) return null
+        // "Call mom, pay rent and buy milk": each part starts with something to do, so each is its own.
+        // "Call Riya and Aman" isn't: "Aman" doesn't, so it stays one task.
+        val doing = parts.map { p -> p.split(" ").first().normalizedWord().let { it in TASK_VERBS || it in BUY_WORDS } }
+        val firstMoney = singles.firstOrNull { it is QuickAddDraft.Expense } as? QuickAddDraft.Expense
+        val drafts = singles.mapIndexed { i, d ->
+            val p = parts[i]
+            when {
+                d !is QuickAddDraft.Task -> d
+                doing[i] -> d
+                // "Bought milk 60, eggs 90": the price goes with the first one's kind of spend.
+                firstMoney != null -> pricedLike(p, firstMoney) ?: return null
+                // "Milk, eggs and bread": short, unknown words in a list are things to buy.
+                singles.none { it is QuickAddDraft.Task && doing[singles.indexOf(it)] } && p.split(" ").size <= 3 && p.none(Char::isDigit) ->
+                    shoppingOf(p) ?: QuickAddDraft.Shopping(p.capitalized())
+                else -> return null
+            }
+        }
+        return QuickAddDraft.Batch(drafts.flatMap { (it as? QuickAddDraft.Batch)?.drafts ?: listOf(it) })
+    }
+
+    /** "2 milk 1 bread 6 eggs": counts and items in a row, each one to buy. */
+    private fun counted(text: String): QuickAddDraft.Batch? {
+        if (CURRENCY_MARKER.containsMatchIn(text) || !COUNTED_LIST.matches(text.trim())) return null
+        val items = COUNTED_ITEM.findAll(text.trim()).map { m -> QuickAddDraft.Shopping(m.groupValues[2].trim().capitalized(), "${m.groupValues[1]} pcs") }.toList()
+        return items.takeIf { it.size >= 2 }?.let { QuickAddDraft.Batch(it) }
+    }
+
+    /** "eggs 90" after "bought milk 60": an item and its price, spent like the first. */
+    private fun pricedLike(part: String, first: QuickAddDraft.Expense): QuickAddDraft.Expense? {
+        val m = ITEM_PRICE.matchEntire(part.trim()) ?: return null
+        val amount = justAmount(m.groupValues[2]) ?: return null
+        val item = m.groupValues[1].trim()
+        val sub = SUBCATEGORY_BY_WORD[item.lowercase()]
+        return QuickAddDraft.Expense(amount, first.currency, CATEGORY_BY_KEYWORD[item.lowercase()] ?: sub?.first ?: first.category, item.capitalized(), part, sub?.second, first.paidWith, first.card)
+    }
+
+    /** "milk eggs bread" → three items, when every word is a grocery the aisles know; else one. */
+    private fun groceryWords(item: String): List<String> {
+        val words = item.trim().split(WHITESPACE).filter { it.isNotEmpty() && it.lowercase() !in setOf("and", "some", "a", "an") }
+        if (words.size < 2 || words.any { it.any(Char::isDigit) }) return listOf(item)
+        return if (words.all { com.houseaffairs.app.core.data.aisleOf(it) != com.houseaffairs.app.core.data.Aisle.OTHER }) words else listOf(item)
+    }
+
+    /**
+     * "Set an alarm for 6 am", "wake me up at 6", "remind me in 30 minutes to check the oven",
+     * "remind me at 6 to call Ravi", "reminder: dentist friday 4pm": a task with a time, which then
+     * rings. A bare hour ("at 6") is the next 6 o'clock; "in 30 minutes" needs the clock.
+     */
+    private fun parseReminder(text: String): QuickAddDraft.Task {
+        val alarm = ALARM_WORDS.containsMatchIn(text)
+        var rest = REMIND_START.replace(text.trim().trimEnd('.', '!', '?'), "").trim()
+        val now = nowMinute()
+        var minute: Int? = null
+        var day: LocalDate? = null
+        // "in 30 minutes", "in an hour", "in 2 hours".
+        IN_A_WHILE.find(rest)?.let { m ->
+            val n = when (val c = m.groupValues[1].lowercase()) { "a", "an" -> 1.0; "half an" -> 0.5; else -> c.toDoubleOrNull() ?: 1.0 }
+            val mins = (if (m.groupValues[2].lowercase().startsWith("h")) n * 60 else n).toInt()
+            if (now != null) {
+                val at = now + mins
+                minute = at % (24 * 60)
+                day = today().plusDays((at / (24 * 60)).toLong())
+                rest = rest.removeRange(m.range).trim()
+            }
+        }
+        // "at 6" with no am or pm: the next 6 o'clock from now.
+        if (minute == null && TASK_TIME.find(rest) == null) BARE_HOUR.find(rest)?.let { m ->
+            val h = m.groupValues[1].toInt()
+            if (h in 1..12) {
+                // An alarm or wake-up at "6" is the morning; a reminder is whichever 6 comes next.
+                val choices = if (alarm) listOf(h % 12 * 60) else listOf(h % 12 * 60, h % 12 * 60 + 12 * 60)
+                val n = now ?: -1
+                minute = choices.firstOrNull { it > n } ?: choices.first()
+                if (choices.none { it > n }) day = today().plusDays(1)
+                rest = rest.removeRange(m.range).trim()
+            }
+        }
+        // "on 15th", "on the 3rd": the next such date.
+        ON_DAY.find(rest)?.let { m ->
+            val d = m.groupValues[1].toInt()
+            if (d in 1..31) {
+                val t = today()
+                val thisMonth = clampedDate(t.year, t.monthValue, d)
+                day = if (thisMonth.isBefore(t)) clampedDate(addMonths(t.year, t.monthValue, 1).first, addMonths(t.year, t.monthValue, 1).second, d) else thisMonth
+                rest = rest.removeRange(m.range).trim()
+            }
+        }
+        // "tomorrow morning": a sensible hour when none is said.
+        val partOfDay = PART_OF_DAY.find(rest)?.let { m -> rest = rest.removeRange(m.range).trim(); m.groupValues[1].lowercase() }
+        val task = parseTask(rest.ifEmpty { "-" })
+        val time = task.time ?: minute?.let(::formatClock) ?: if (TASK_TIME.find(rest) == null) partOfDay?.let { PART_OF_DAY_MINUTE[it] }?.let(::formatClock) else null
+        var title = task.title.replace(DANGLING, "").trim()
+        while (LEADING_JOIN.containsMatchIn(title)) title = title.replace(LEADING_JOIN, "").trim()
+        // Only time words were said ("set an alarm for 6 am"): parseTask hands those back as the title.
+        val leftover = TASK_TIME.replace(rest, " ").split(WHITESPACE).filter { it.isNotBlank() }.toMutableList()
+        extractDate(leftover)
+        val onlyWhen = rest.isBlank() || leftover.all { it.normalizedWord() in setOf("for", "at", "on", "to", "by", "tomorrow", "today", "tonight", "-") }
+        title = (if (onlyWhen) "" else title).capitalized()
+            .ifEmpty { if (WAKE.containsMatchIn(text)) "Wake up" else if (alarm) "Alarm" else "Reminder" }
+        val timedDue = time?.let { minuteOfDay(it) }?.let { at -> if ((now ?: -1) >= at) today().plusDays(1) else today() }
+        return task.copy(title = title, time = time, due = day ?: task.due ?: timedDue)
     }
 
     private fun parseChange(input: String): QuickAddDraft.Change? {
@@ -373,7 +602,34 @@ class QuickAddParser(
         val t = text.trim().trimEnd('?', '.', '!').trim()
         // Paying a card bill moves money you already counted when you spent it, so it isn't an expense.
         if (CARD_BILL.containsMatchIn(t)) return QuickAddDraft.Ask(QuickAddDraft.Question.CARD_BILL, if (Regex("\\b(paid|pay|paying|cleared|settled)\\b", RegexOption.IGNORE_CASE).containsMatchIn(t)) "paid" else null)
+        CAN_COOK.matchEntire(t)?.let { m ->
+            val dish = m.groupValues[1].ifEmpty { m.groupValues[3] }.trim().trim(*PUNCTUATION)
+            if (dish.isNotEmpty() && dish.lowercase() !in setOf("something", "anything", "it", "dinner", "lunch", "breakfast")) {
+                return QuickAddDraft.Ask(QuickAddDraft.Question.CAN_COOK, dish.capitalized(), count = m.groupValues[2].ifEmpty { m.groupValues[4] }.toIntOrNull())
+            }
+        }
+        (WHEN_DREAM.matchEntire(t) ?: HOW_LONG_TO_DREAM.matchEntire(t))?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.WHEN_DREAM, m.groupValues[1].trim().trim(*PUNCTUATION).capitalized()) }
+        (LASTED.matchEntire(t) ?: RUN_OUT.matchEntire(t))?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.LASTED, m.groupValues[1].trim().trim(*PUNCTUATION).capitalized()) }
+        ASK_SPENT.matchEntire(t)?.let { m ->
+            val subject = m.groupValues[1].trim().trim(*PUNCTUATION).removePrefix("the ").ifEmpty { null }
+            val period = m.groupValues[2].ifEmpty { null }?.lowercase()?.let { if (it == "today") it else "$it ${m.groupValues[3].lowercase()}" }
+            return QuickAddDraft.Ask(QuickAddDraft.Question.SPENT, subject?.capitalized(), period = period ?: "this month")
+        }
+        // "How much for groceries last month": spending, not what's left.
+        ASK_SPENT_ON.matchEntire(t)?.let { m ->
+            val period = m.groupValues[2].ifEmpty { null }?.lowercase()?.let { "$it ${m.groupValues[3].lowercase()}" }
+            return QuickAddDraft.Ask(QuickAddDraft.Question.SPENT, m.groupValues[1].trim().trim(*PUNCTUATION).removePrefix("the ").capitalized(), period = period ?: "this month")
+        }
+        if (ASK_INCOME.matchEntire(t) != null) return QuickAddDraft.Ask(QuickAddDraft.Question.INCOME, t)
+        SHARE_LOCATION.matchEntire(t)?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.SHARE_LOCATION, m.groupValues[1].trim().trim(*PUNCTUATION).capitalized()) }
         ASK_COOK.matchEntire(t)?.let { return QuickAddDraft.Ask(QuickAddDraft.Question.COOK, null) }
+        if (ASK_TO_BUY.matchEntire(t) != null) return QuickAddDraft.Ask(QuickAddDraft.Question.TO_BUY, null)
+        ASK_AGENDA.matchEntire(t)?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.AGENDA, m.groupValues[1].lowercase().ifEmpty { "today" }) }
+        (ASK_HAVE.matchEntire(t))?.let { m ->
+            val item = m.groups.drop(1).firstOrNull { it != null && it.value.isNotBlank() }?.value?.trim()?.trim(*PUNCTUATION)
+            if (!item.isNullOrEmpty() && item.lowercase() !in setOf("time", "money", "plans", "anything", "something")) return QuickAddDraft.Ask(QuickAddDraft.Question.HAVE, item.capitalized())
+        }
+        ASK_WHEN.matchEntire(t)?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.WHEN, m.groupValues[1].trim().trim(*PUNCTUATION).capitalized()) }
         // Before symptoms: "I feel like eating something spicy" is hunger, not illness.
         (CRAVING.matchEntire(t) ?: CRAVING_TASTE.matchEntire(t))?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.CRAVING, m.groupValues[1].trim()) }
         ASK_EXPIRING.matchEntire(t)?.let { return QuickAddDraft.Ask(QuickAddDraft.Question.EXPIRING, null) }
@@ -381,10 +637,17 @@ class QuickAddParser(
         ASK_AFFORD.matchEntire(t)?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.AFFORD, m.groupValues[1].trim()) }
         ASK_WHERE.matchEntire(t)?.let { m -> return QuickAddDraft.Ask(QuickAddDraft.Question.WHERE, m.groupValues[1].trim()) }
         SYMPTOM_SENTENCE.matchEntire(t)?.let { m ->
-            val care = com.houseaffairs.app.core.data.careFor(t) ?: return@let
+            // Every condition said ("fever and cold"), joined with "|" so each gets its own answer.
+            val cares = com.houseaffairs.app.core.data.caresFor(t).takeIf { it.isNotEmpty() } ?: return@let
             val who = m.groupValues[1].trim().takeIf { it.isNotEmpty() && it.lowercase() !in setOf("i", "we", "i'm", "im", "my", "me") }
-            return QuickAddDraft.Ask(QuickAddDraft.Question.SYMPTOM, care.tag, who?.replaceFirstChar { it.uppercaseChar() })
+            return QuickAddDraft.Ask(QuickAddDraft.Question.SYMPTOM, cares.joinToString(SYMPTOM_JOIN) { it.tag }, who?.replaceFirstChar { it.uppercaseChar() })
         }
+        // "Headache since morning", "stomach upset", "kid fell and cut his knee": a symptom said plainly.
+        com.houseaffairs.app.core.data.caresFor(t).takeIf { cares ->
+            cares.isNotEmpty() && AMOUNT.find(t) == null && t.split(" ").none { it.normalizedWord() in MEDICINE_WORDS } &&
+                // Short words that mean other things at home ("gas cylinder", "cold coffee") don't start a symptom on their own.
+                (cares.any { c -> c.words.any { w -> w.length >= 5 && w !in AMBIGUOUS_SYMPTOMS && (t.lowercase() + " ").startsWith("$w ") } } || HURT_EVENT.containsMatchIn(t))
+        }?.let { cares -> return QuickAddDraft.Ask(QuickAddDraft.Question.SYMPTOM, cares.joinToString(SYMPTOM_JOIN) { it.tag }) }
         (GOING_TO.matchEntire(t) ?: NEAR.matchEntire(t))?.let { m ->
             val place = m.groupValues[1].trim().trim(*PUNCTUATION)
             val first = place.substringBefore(' ').lowercase()
@@ -416,6 +679,22 @@ class QuickAddParser(
     }
 
     private fun parseTrip(text: String): QuickAddDraft.Trip? {
+        // "Sunday outing to Cubbon Park, Lalbagh and MTR": the outing and its stops, in order.
+        TRIP_STOPS.matchEntire(text.trimEnd('.'))?.let { m ->
+            val places = m.groupValues[2].trim()
+            if (places.split(Regex(",|\\band\\b|\\bthen\\b")).count { it.isNotBlank() } >= 2) {
+                val title = m.groupValues[1].trim().capitalized()
+                val start = extractDate(title.split(" ").toMutableList())
+                return QuickAddDraft.Trip(title, start, places)
+            }
+        }
+        TRIP_TO.matchEntire(text.trim().trimEnd('.', '!'))?.let { m ->
+            val words = m.groupValues[2].split(" ").filter { it.isNotEmpty() }.toMutableList()
+            // "A weekend at Coorg" with no day said: this coming weekend.
+            val start = extractDate(words) ?: if (m.groupValues[1].lowercase() == "weekend") weekendFrom(today()) else null
+            val title = words.joinToString(" ").trim().trim(*PUNCTUATION).split(" ").joinToString(" ") { it.capitalized() }
+            if (title.isNotEmpty()) return QuickAddDraft.Trip(title, start)
+        }
         val m = TRIP_START.matchEntire(text) ?: return null
         val words = (m.groupValues[1].ifEmpty { m.groupValues[2] }).split(" ").toMutableList()
         val start = extractDate(words)
@@ -486,6 +765,11 @@ class QuickAddParser(
                 val where = match.groupValues[2].lowercase()
                 match.groupValues[0].contains(Regex("\\b(kept|stored|placed)\\b", RegexOption.IGNORE_CASE)) ||
                     STORAGE_WORDS.any { where.contains(it) }
+            }
+            // "Spare keys in the drawer": no "is", but somewhere things are kept.
+            ?: KEPT_BARE.matchEntire(text)?.takeIf { match ->
+                val where = match.groupValues[2].lowercase().split(" ")
+                match.groupValues[1].split(" ").size <= 4 && where.any { w -> STORAGE_WORDS.any { w.startsWith(it) } }
             }
             ?: return null
         if (m.groupValues[1].any(Char::isDigit) && AMOUNT.containsMatchIn(m.groupValues[1])) return null
@@ -622,9 +906,14 @@ class QuickAddParser(
     }
 
     private fun parseRunningOut(text: String): QuickAddDraft? {
-        val item = (OUT_OF.matchEntire(text) ?: ITEM_OVER.matchEntire(text))?.groupValues?.get(1)?.trim() ?: return null
+        // "…detergent. Add it to the shopping list." says the same thing twice.
+        val said = ADD_IT_TO_LIST.replace(text, "").trim().trimEnd('.', '!').trim()
+        val item = (OUT_OF.matchEntire(said) ?: ITEM_OVER.matchEntire(said))?.groupValues?.get(1)?.trim()?.trimEnd('.', '!') ?: return null
         // "need to call the plumber" is a task, not something to buy.
         if (item.startsWith("to ", ignoreCase = true)) return null
+        // "need milk eggs and curd": each one, when they're all groceries.
+        val items = item.split(LIST_SPLIT).flatMap { groceryWords(it) }.map { it.trim() }.filter { it.isNotEmpty() }
+        if (items.size > 1) return QuickAddDraft.Batch(items.map { shoppingOf(it) ?: QuickAddDraft.Shopping(it.capitalized()) })
         return shoppingOf(item)
     }
 
@@ -671,14 +960,33 @@ class QuickAddParser(
         }
     }
 
-    private fun parseMedicine(text: String): QuickAddDraft.Medicine? {
-        val words = text.split(" ").toMutableList()
-        if (words.none { it.normalizedWord() in MEDICINE_WORDS }) return null
-        if (CURRENCY_MARKER.containsMatchIn(text)) return null // "₹120 crocin" is an expense
+    private fun parseMedicine(input: String): QuickAddDraft.Medicine? {
+        if (input.split(" ").none { it.normalizedWord() in MEDICINE_WORDS }) return null
+        if (CURRENCY_MARKER.containsMatchIn(input)) return null // "₹120 crocin" is an expense
+        // "Medicine 340 apollo": a pharmacy bill, not a medicine called that.
+        val said = input.split(" ").map { it.normalizedWord() }
+        if (said.any { it in PHARMACIES } || (said.any { it == "medicine" || it == "medicines" } && AMOUNT.find(input)?.groupValues?.get(2)?.replace(",", "")?.toIntOrNull()?.let { it >= 20 } == true && said.none { it in EXPIRY_WORDS })) return null
+        var text = input
+        // "twice a day", "3 times daily", "every night": a schedule, so doses can be reminded.
+        val frequency = DOSE_FREQUENCY.find(text)?.let { m ->
+            text = text.removeRange(m.range).trim()
+            when (m.groupValues[1].lowercase()) {
+                "twice", "2 times", "two times", "2x" -> "Twice a day"
+                "thrice", "3 times", "three times", "3x" -> "Three times a day"
+                else -> "Once a day"
+            }
+        }
+        // "for 5 days", "for a week": when the course ends.
+        val until = COURSE_LENGTH.find(text)?.let { m ->
+            text = text.removeRange(m.range).trim()
+            val n = m.groupValues[1].let { if (it.equals("a", true) || it.equals("one", true)) 1 else it.toIntOrNull() ?: 1 }
+            today().plusDays((if (m.groupValues[2].lowercase().startsWith("week")) n * 7 else n).toLong() - 1)
+        }
+        val words = text.split(" ").filter { it.isNotEmpty() }.toMutableList()
         val expiry = extractExpiry(words)
         val forName = extractFor(words)
         val title = words.filterNot { it.normalizedWord() in ACQUIRE_VERBS }.joinToString(" ").trim().capitalized()
-        return QuickAddDraft.Medicine(title.ifEmpty { "Medicine" }, forName, expiry)
+        return QuickAddDraft.Medicine(title.ifEmpty { "Medicine" }, forName, expiry, frequency, until)
     }
 
     private fun parseGrocery(text: String): QuickAddDraft.Grocery? {
@@ -720,12 +1028,17 @@ class QuickAddParser(
         if (!looksLikeMoney) return null
 
         val currency = currencyToken?.let(::currencyCode)
-        val merchant = merchantFrom(words)
+        // "Uber 230 yesterday", "zomato 640 last night": that day, and kept out of the shop's name.
+        val dated = words.toMutableList()
+        val date = extractDate(dated)
+        // A known brand said anywhere is the shop: "amazon order 1299 headphones" → Amazon.
+        val merchant = dated.firstOrNull { it.normalizedWord() in BRANDS }?.trim(*PUNCTUATION)
+            ?: merchantFrom(dated.filter { it.normalizedWord() !in MERCHANT_NOISE })
         if (frequency != null) {
             return QuickAddDraft.Subscription((merchant ?: category ?: "Subscription").capitalized(), amount, currency, frequency)
         }
         val sub = normalized.firstNotNullOfOrNull { SUBCATEGORY_BY_WORD[it] }?.takeIf { (cat, _) -> category == null || cat == category }
-        return QuickAddDraft.Expense(amount, currency, category ?: sub?.first ?: "Other", merchant, text, sub?.second, paidWith, card)
+        return QuickAddDraft.Expense(amount, currency, category ?: sub?.first ?: "Other", merchant, text, sub?.second, paidWith, card, date)
     }
 
     /**
@@ -750,8 +1063,30 @@ class QuickAddParser(
         return Triple("Card", name, drop)
     }
 
+    /**
+     * A task for someone: "remind Mom to take her medicine at 9 pm", "ask Ravi to fix the tap",
+     * "Rohan, please pay the electricity bill tomorrow". Talking to someone only counts when the
+     * rest is a task ("Ravi, 500 for groceries" stays an expense).
+     */
+    private fun parsePersonTask(text: String): QuickAddDraft.Task? {
+        val t = text.trim().trimEnd('.', '!', '?').trim()
+        REMIND_PERSON.matchEntire(t)?.let { m ->
+            val name = m.groupValues[1]
+            if (name.lowercase() !in NOT_NAMES) return parseTask(m.groupValues[2]).copy(forName = name.capitalized())
+        }
+        val m = ADDRESSED.matchEntire(t) ?: return null
+        val name = m.groupValues[1]
+        if (name.lowercase() in NOT_NAMES) return null
+        val rest = m.groupValues[2].trim()
+        if (parseSingle(rest) !is QuickAddDraft.Task) return null
+        return parseTask(rest).copy(forName = name.capitalized())
+    }
+
     private fun parseTask(text: String): QuickAddDraft.Task {
-        var rest = WANT_PREFIX.replace(TASK_PREFIX.replace(text, ""), "")
+        // "…at 6 PM IST": the phone's own time zone is the one that matters.
+        var rest = WANT_PREFIX.replace(TASK_PREFIX.replace(TIME_ZONE.replace(text, ""), ""), "")
+        // "…and remind everyday": the reminder is the task's time; the words only say it repeats.
+        rest = REMIND_TAIL.replace(rest, " ").replace(WHITESPACE, " ").trim()
         // "every sunday" repeats weekly from the coming Sunday; "daily", "every month"… just repeat.
         val repeat = TASK_REPEAT.find(rest)?.let { m ->
             val unit = m.groupValues[1].ifEmpty { m.groupValues[2] }.lowercase()
@@ -769,13 +1104,13 @@ class QuickAddParser(
         }
         // "at 5:30 pm", "17:30", "noon": a time to be reminded at.
         var minute = TASK_TIME.find(rest)?.let { m ->
-            minuteOfDay(m.groupValues[1].replace(".", ":"))?.also { rest = rest.removeRange(m.range).trim() }
+            minuteOfDay(m.groupValues[1].replace(".", ":"))?.let { afternoonIfBare(m.groupValues[1], it) }?.also { rest = rest.removeRange(m.range).trim() }
         }
         val tonight = Regex("\\btonight\\b", RegexOption.IGNORE_CASE).containsMatchIn(rest)
         val words = rest.split(" ").filter { it.isNotEmpty() }.toMutableList()
         val due = extractDate(words)
         if (minute == null && tonight) minute = 20 * 60
-        val title = words.joinToString(" ").trim().trimEnd(',', '-').capitalized()
+        val title = words.joinToString(" ").trim().trimEnd(',', '-', '.').removePrefix("to ").removePrefix("To ").trim().capitalized()
         // "Call mom", "message Ravi": the task opens the dialer or WhatsApp, and is due today unless a day was said.
         val reach = reachOf(title)
         // A time with no day is the next one: today, or tomorrow once it has passed.
@@ -825,6 +1160,27 @@ class QuickAddParser(
         val today = today()
         for (i in words.indices) {
             val w = words[i].normalizedWord()
+            val next = words.getOrNull(i + 1)?.normalizedWord()
+            // Phrases of a few words: "this weekend", "next week", "next month", "in 3 days", "last night".
+            val phrase: Pair<LocalDate, Int>? = when {
+                w == "day" && next == "after" && words.getOrNull(i + 2)?.normalizedWord() == "tomorrow" -> today.plusDays(2) to 3
+                w == "last" && next == "night" -> today.minusDays(1) to 2
+                (w == "this" || w == "coming") && next == "weekend" -> weekendFrom(today) to 2
+                w == "next" && next == "weekend" -> weekendFrom(today).plusDays(7) to 2
+                w == "weekend" && words.getOrNull(i - 1)?.normalizedWord() !in setOf("this", "next", "coming") -> weekendFrom(today) to 1
+                w == "next" && next == "week" -> nextOrSame(today.plusDays(1), DayOfWeek.MONDAY) to 2
+                w == "next" && next == "month" -> addMonths(today.year, today.monthValue, 1).let { (y, mo) -> clampedDate(y, mo, today.dayOfMonth) } to 2
+                w == "in" && next?.toIntOrNull() != null && words.getOrNull(i + 2)?.normalizedWord()?.removeSuffix("s") in setOf("day", "week") -> {
+                    val n = next.toInt().toLong()
+                    (if (words[i + 2].normalizedWord().startsWith("week")) today.plusDays(n * 7) else today.plusDays(n)) to 3
+                }
+                else -> null
+            }
+            if (phrase != null) {
+                repeat(phrase.second) { words.removeAt(i) }
+                if (i > 0 && words[i - 1].lowercase() in DATE_PREPOSITIONS) words.removeAt(i - 1)
+                return phrase.first
+            }
             val simple = when (w) {
                 "today", "tonight" -> today
                 "tomorrow", "tmrw", "tmr" -> today.plusDays(1)
@@ -852,6 +1208,13 @@ class QuickAddParser(
         }
         return null
     }
+
+    /** "Pick up kids at 4:30": without am or pm, 1 to 6 o'clock means the afternoon. 7 stays as said, since alarms are often at 7. */
+    private fun afternoonIfBare(said: String, minute: Int): Int =
+        if (!Regex("am|pm|a\\.m|p\\.m|noon", RegexOption.IGNORE_CASE).containsMatchIn(said) && minute / 60 in 1..6) minute + 12 * 60 else minute
+
+    /** The coming Saturday (today, on a Saturday). */
+    private fun weekendFrom(today: LocalDate): LocalDate = nextOrSame(today, DayOfWeek.SATURDAY)
 
     private fun consume(words: MutableList<String>, start: Int, count: Int) {
         repeat(count) { words.removeAt(start) }
@@ -929,8 +1292,39 @@ class QuickAddParser(
             "^(?:please )?add (.+) (?:to|in|on)(?: the| my| our)? (.+?)(?: list)?$",
             RegexOption.IGNORE_CASE,
         )
+        /** "twice a day", "3 times daily", "once daily", "every night". */
+        val DOSE_FREQUENCY = Regex("\\b(once|twice|thrice|three times|two times|[23] times|[23]x)(?: a| per)? ?(?:day|daily)\\b|\\b(daily|every day|every night|every morning)\\b", RegexOption.IGNORE_CASE)
+
+        /** "for 5 days", "for a week", "for 2 weeks". */
+        val COURSE_LENGTH = Regex("\\bfor (\\d+|a|one) (days?|weeks?)\\b", RegexOption.IGNORE_CASE)
+
+        /** "remind Mom to…", "ask Ravi to…", "tell Riya to…" (not "remind me to"). */
+        val REMIND_PERSON = Regex("^(?:please )?(?:remind|ask|tell) ([a-z]+) to (.+)$", RegexOption.IGNORE_CASE)
+
+        /** "Rohan, please pay the bill" / "Rohan please pay the bill" (voice drops the comma). */
+        val ADDRESSED = Regex("^([a-z]+)(?:\\s*,\\s*(?:please |pls |kindly |can you |could you )?| (?:please|pls|kindly|can you|could you) )(.+)$", RegexOption.IGNORE_CASE)
+
+        /** Words that start a sentence but aren't someone's name. */
+        val NOT_NAMES = setOf(
+            "me", "us", "i", "we", "you", "it", "them", "him", "her", "ok", "okay", "so", "also", "then", "now", "today",
+            "tomorrow", "and", "but", "please", "hey", "hi", "hello", "yes", "no", "well", "oh", "the", "a",
+            "everyday", "daily", "every", "each", "weekly", "monthly", "always",
+        )
+
+        /** "add it to the shopping list" after naming what's running low. */
+        val ADD_IT_TO_LIST = Regex("[.,!]?\\s*(?:please )?(?:add|put) (?:it|them|that|those) (?:to|on|in)(?: the| my| our)? (?:shopping|grocery|groceries)(?: list)?[.!]?$", RegexOption.IGNORE_CASE)
+
+        /** "How much did we spend on groceries this month", "what have I spent at DMart last week". */
+        val ASK_SPENT = Regex(
+            "^(?:how much|what) (?:did|have|has) (?:we|i|the family|the home|our family) (?:spend|spent)(?: (?:on|for|at) (.+?))?(?: (this|last|today)(?: (week|month|year))?| so far)?$",
+            RegexOption.IGNORE_CASE,
+        )
+
+        /** "Share my live location with Ravi", "send my location to Mom". */
+        val SHARE_LOCATION = Regex("^(?:share|send) (?:my )?(?:live |current )?location (?:with|to) (.+)$", RegexOption.IGNORE_CASE)
+
         val OUT_OF = Regex(
-            "^(?:we(?:['’]re| are) |i(?:['’]m| am) )?(?:ran out of|out of|no more|need to buy|need|buy) (.+)$",
+            "^(?:we(?:['’]re| are) |i(?:['’]m| am) |we )?(?:running low on|running out of|low on|almost out of|nearly out of|ran out of|out of|no more|need to buy|need|buy) (.+)$",
             RegexOption.IGNORE_CASE,
         )
         val ITEM_OVER = Regex(
@@ -946,9 +1340,18 @@ class QuickAddParser(
             RegexOption.IGNORE_CASE,
         )
         val ASK_COOK = Regex(
-            "^(?:(?:what|which)(?: dish(?:es)?)? (?:can|should|shall|could) (?:i|we) (?:cook|make)|what to (?:cook|make)|suggest (?:a |some )?(?:dish|dishes|recipe|recipes|something to cook)|(?:any )?(?:dinner|lunch|breakfast) ideas)\\b.*$",
+            "^(?:what(?:'s| is) for (?:dinner|lunch|breakfast)|what (?:should|shall) (?:we|i) (?:eat|have)|what to eat|(?:(?:what|which)(?: dish(?:es)?)? (?:can|should|shall|could) (?:i|we) (?:cook|make))|what to (?:cook|make)|suggest (?:a |some )?(?:dish|dishes|recipe|recipes|something to cook)|(?:any )?(?:dinner|lunch|breakfast) ideas)\\b.*$",
             RegexOption.IGNORE_CASE,
         )
+        val CAN_COOK = Regex(
+            "^(?:can|could|shall) (?:i|we) (?:cook|make)\\s+(?:the |some |a )?(.+?)(?:\\s+for\\s+(\\d+)(?:\\s+(?:people|persons|person|of us|guests|plates))?)?$" +
+                "|^(?:is there|do we have|have we got) enough (?:to (?:cook|make)\\s+|for\\s+)(?:the |some )?(.+?)(?:\\s+for\\s+(\\d+)(?:\\s+(?:people|persons|person))?)?$",
+            RegexOption.IGNORE_CASE,
+        )
+        val WHEN_DREAM = Regex("^(?:by when|when) (?:can|could|will|would|shall) (?:we|i) (?:go to|go on|go for|visit|buy|get|afford|have|reach|do|take)\\s+(?:the |a |an |our |my )?(.+)$", RegexOption.IGNORE_CASE)
+        val HOW_LONG_TO_DREAM = Regex("^how long (?:until|till|before|to save for|to afford)\\s+(?:we can (?:go to|buy|afford) )?(?:the |a |an |our |my )?(.+)$", RegexOption.IGNORE_CASE)
+        val LASTED = Regex("^how long (?:did|does|do|will|would) (?:the |our |my |a |one )?(.+?) (?:last|go|run)(?: for| us)?$", RegexOption.IGNORE_CASE)
+        val RUN_OUT = Regex("^when (?:will|would|does|do) (?:the |our |my )?(.+?) (?:run out|finish|get over|be over)$", RegexOption.IGNORE_CASE)
         val ASK_EXPIRING = Regex("^what(?:'s| is| all is)? (?:expiring|about to expire|going (?:bad|off)).*$", RegexOption.IGNORE_CASE)
         val ASK_LEFT = Regex(
             "^how much(?: money| budget)?(?: is| do (?:we|i) have)?(?: left| remaining| available)?(?: (?:for|in|on)(?: the| my| our)? (.+))?$",
@@ -969,6 +1372,9 @@ class QuickAddParser(
         )
         val DURATION = Regex("\\b(\\d+(?:\\.\\d+)?|an|a)\\s?(minutes|minute|mins|min|m|hours|hour|hrs|hr|h)\\b")
         val STEPS = Regex("\\b(\\d[\\d,]*)\\s?steps\\b")
+        /** "Sunday outing to A, B and C", "plan a day out: A then B". */
+        val TRIP_STOPS = Regex("^(?:plan(?:ning)?\\s+(?:a\\s+|an\\s+|the\\s+)?)?(.*?\\b(?:outing|trip|day out|road trip))\\s*(?:to|via|covering|:)\\s+(.+)$", RegexOption.IGNORE_CASE)
+
         val TRIP_START = Regex(
             "^(?:start(?:ing)?|plan(?:ning)?|new|begin)\\s+(?:a\\s+|an\\s+|the\\s+)?(?:trip|outing|holiday|vacation)(?:\\s+to|\\s*:)?\\s+(.+)$|^(?:trip|outing)\\s*:\\s*(.+)$",
             RegexOption.IGNORE_CASE,
@@ -999,6 +1405,38 @@ class QuickAddParser(
             RegexOption.IGNORE_CASE,
         )
         val NOT_A_PLACE = setOf("pay", "call", "buy", "get", "cook", "make", "do", "book", "clean", "take", "meet", "send", "watch", "be", "sleep", "fix", "start", "finish")
+        val ASK_SPENT_ON = Regex("^how much (?:did (?:we|i) spend |have (?:we|i) spent |we spent |spent )?(?:on|for) (.+?)(?: (this|last) (week|month|year))?$", RegexOption.IGNORE_CASE)
+        val ASK_INCOME = Regex(
+            "^(?:(?:got|received|receive|earned|credited)\\s+(?:my |the |a |our )?(?:salary|bonus|refund|cashback|stipend|pension)\\b.*|(?:got|received)\\s+(?:₹|rs\\.?\\s?)?\\d[\\d,]*k?\\s+(?:from|by)\\s+\\w+.*|(?:salary|bonus|refund|pension)\\s+(?:credited|received|came|is in|has come).*)$",
+            RegexOption.IGNORE_CASE,
+        )
+        val ASK_TO_BUY = Regex(
+            "^(?:anything|what(?:'s| is)?(?: all)?|what do (?:we|i) need|what should (?:we|i))\\s*(?:to buy|to get|on the (?:shopping |buy |grocery )?list|we need to buy)|^(?:show (?:me )?)?(?:the |our |my )?(?:shopping|grocery|buy) list$",
+            RegexOption.IGNORE_CASE,
+        )
+        val ASK_AGENDA = Regex(
+            "^(?:what(?:'s| is)\\s+(?:due|on|planned|pending|left to do)|what do (?:i|we) have(?: to do)?|show (?:me )?(?:my |our )?(?:tasks|to-?dos|agenda|plan)|(?:my|our) (?:day|tasks|agenda))(?:\\s+(today|tomorrow|this week|this weekend))?$",
+            RegexOption.IGNORE_CASE,
+        )
+        val ASK_HAVE = Regex(
+            "^(?:do|did) (?:we|i) (?:still )?(?:have|got) (?:any |some )?(.+?)(?: left| at home)?$|^is there (?:any |some )?(.+?)(?: left| at home)?$|^any (.+?) left$|^how many (.+?) (?:are |do we have )?left$",
+            RegexOption.IGNORE_CASE,
+        )
+        val ASK_WHEN = Regex("^when(?:'s| is| was| are)\\s+(?:the |my |our )?(.+)$", RegexOption.IGNORE_CASE)
+        /** "Kid fell and cut his knee", "burnt hand while cooking": something happened, and it hurts. */
+        val AMBIGUOUS_SYMPTOMS = setOf("gas", "cold", "cut", "burn", "burns", "rash", "sprain", "bloating", "scratch", "graze", "wound", "temperature")
+        val HURT_EVENT = Regex("\\b(?:fell|fallen|hurt|cut|burnt|burned|bleeding|sprained|twisted|bitten|stung)\\b", RegexOption.IGNORE_CASE)
+        val GOAL_LINE = Regex("^(?:(?:my |this week'?s |weekly |new )?goal\\s*[:\\-]?\\s+|this week i (?:want to|will|wanna) )(.+)$", RegexOption.IGNORE_CASE)
+        val THIS_WEEK = Regex("\\s*\\b(?:this|for the) week\\b", RegexOption.IGNORE_CASE)
+        val LENT = Regex("^(lent|loaned|borrowed)\\s+((?:₹|rs\\.?\\s?)?\\d[\\d,]*k?)\\s+(?:to|from)\\s+(.+)$", RegexOption.IGNORE_CASE)
+        val GIFT_IDEA = Regex("^gift(?: idea)?(?: for (\\w+))?\\s*[:\\-]\\s*(.+)$|^gift idea (?:for (\\w+) )?(.+)$", RegexOption.IGNORE_CASE)
+        val LIST_VERB = Regex("^(watch|see|read|listen to)\\s+(.+)$", RegexOption.IGNORE_CASE)
+        /** "Watch out", "read the meter": everyday words, not titles. */
+        val NOT_A_TITLE = setOf("out", "the", "kids", "baby", "over", "my", "our", "your", "his", "her", "it", "this", "that", "meter", "news", "messages", "mail", "emails")
+        val PLACE_GOOD_AT = Regex("^(?:good|great|best|amazing|awesome|nice|lovely)\\s+(.+?)\\s+(?:at|@)\\s+(.+)$", RegexOption.IGNORE_CASE)
+        val PLACE_TRY = Regex("^try\\s+(.+?)\\s+for\\s+(?:the |their |its )?(.+)$", RegexOption.IGNORE_CASE)
+        val TRIP_TO = Regex("^(?:(?:plan(?:ning)?|going on|go on|a|our|the)\\s+)?(?:a\\s+|an\\s+|our\\s+)?(trip|holiday|vacation|getaway|weekend)\\s+(?:to|in|at)\\s+(.+)$", RegexOption.IGNORE_CASE)
+        val KEPT_BARE = Regex("^(?:the |my |our )?(.+?)\\s+(?:in|inside|under|behind)\\s+(?:the |my |our )?(.+)$", RegexOption.IGNORE_CASE)
         val ASK_WHERE = Regex("^where(?:'s| is| are| did (?:i|we) (?:keep|put|leave)| do (?:we|i) keep)(?: the| my| our)? (.+?)(?: kept)?$", RegexOption.IGNORE_CASE)
         val KEPT_VERB = Regex(
             "^(?:i |we )?(?:kept|keep|stored|store|placed|hid|left|put)\\s+(?:the |my |our )?(.+?)\\s+(?:in|inside|at|on|under|behind|with)\\s+(?:the |my |our )?(.+)$",
@@ -1036,7 +1474,7 @@ class QuickAddParser(
         val REVALUE_UPDATE = Regex("^(?:update|set)\\s+(?:the |my |our )?(.+?)(?: value)?\\s+to\\s+(.+)$", RegexOption.IGNORE_CASE)
         val ASK_AFFORD = Regex("^can (?:we|i) afford(?: the| a| an| our| my)? (.+)$", RegexOption.IGNORE_CASE)
         val MOVE = Regex("^(?:move|shift|transfer|use)\\s+(.+?)\\s+from\\s+(?:the\\s+|my\\s+|our\\s+)?(.+?)\\s+(?:to|into|for)\\s+(?:the\\s+|my\\s+|our\\s+)?(.+)$", RegexOption.IGNORE_CASE)
-        val FUND = Regex("^(?:save|put|add|keep|set aside|park|invest)\\s+(.+?)\\s+(?:to|for|into|towards|in)\\s+(?:the\\s+|my\\s+|our\\s+)?(.+)$", RegexOption.IGNORE_CASE)
+        val FUND = Regex("^(?:save|put|add|keep|set aside|park|invest|transferred|transfer|moved|deposited|deposit)\\s+(.+?)\\s+(?:to|for|into|towards|in)\\s+(?:the\\s+|my\\s+|our\\s+)?(.+)$", RegexOption.IGNORE_CASE)
         val FOR_TAIL = Regex("\\s(?:for|towards)\\s+(?:the\\s+|my\\s+|our\\s+)?(.+)$", RegexOption.IGNORE_CASE)
         val TO_DO_LATER = Regex(
             "^(?:add\\s+)?(.+?)\\s+to\\s+(watch|see|read|listen to|learn|study)(?:\\s+(?:together|later|sometime|someday|this weekend|with family))?$",
@@ -1117,15 +1555,52 @@ class QuickAddParser(
         )
         /** First words that make a line a task for sure. */
         val TASK_VERBS = setOf(
-            "call", "pay", "book", "fix", "clean", "renew", "submit", "send", "email", "mail", "pick", "drop", "take",
+            "call", "pay", "book", "fix", "clean", "renew", "submit", "send", "email", "mail", "pick", "drop", "take", "lent", "loaned", "borrowed",
             "return", "file", "recharge", "iron", "wash", "repair", "service", "schedule", "cancel", "check", "update",
             "apply", "finish", "complete", "meet", "remind", "collect", "deposit", "register", "print", "reply", "text",
             "message", "ask", "tell", "do", "make", "change", "replace", "install", "sort", "organise", "organize", "plan",
         )
         val TASK_TIME = Regex("(?:\\s|^)(?:at|@|by|around)?\\s*(\\d{1,2}(?:[:.]\\d{2})?\\s?(?:am|pm|a\\.m\\.|p\\.m\\.)|\\d{1,2}:\\d{2}|noon)(?=\\s|$|[,.!?])", RegexOption.IGNORE_CASE)
-        val TASK_PREFIX = Regex("^(?:remind me to|remind me|todo:?|to-do:?|task:?)\\s+", RegexOption.IGNORE_CASE)
+        /** "Set an alarm", "set me a reminder", "alarm", "wake me up", "reminder:": a reminder, whatever follows. */
+        val REMIND_START = Regex(
+            "^(?:please\\s+)?(?:(?:can|could) you\\s+)?(?:(?:set|put|add|create|make)\\s+(?:me\\s+)?(?:an?\\s+|the\\s+)?(?:alarm|reminder|timer)s?(?:\\s+for\\s+me)?|reminder|alarm|wake me(?: up)?|remind me)\\b[:,]?\\s*",
+            RegexOption.IGNORE_CASE,
+        )
+        val ANY_REMIND = Regex("\\bremind", RegexOption.IGNORE_CASE)
+        val WAKE = Regex("\\bwake me\\b", RegexOption.IGNORE_CASE)
+        val ALARM_WORDS = Regex("\\b(?:alarm|wake me)\\b", RegexOption.IGNORE_CASE)
+        val IN_A_WHILE = Regex("\\bin\\s+(\\d+(?:\\.\\d+)?|an?|half an)\\s*(minutes?|mins?|hours?|hrs?)\\b", RegexOption.IGNORE_CASE)
+        val BARE_HOUR = Regex("\\b(?:at|by|around)\\s+(\\d{1,2})(?![\\d:.]|\\s*(?:am|pm|a\\.m|p\\.m|th|st|nd|rd))\\b", RegexOption.IGNORE_CASE)
+        val ON_DAY = Regex("\\bon\\s+(?:the\\s+)?(\\d{1,2})(?:st|nd|rd|th)\\b(?!\\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec))", RegexOption.IGNORE_CASE)
+        val PART_OF_DAY = Regex("\\b(?:in the\\s+)?(morning|afternoon|evening|night)\\b", RegexOption.IGNORE_CASE)
+        val PART_OF_DAY_MINUTE = mapOf("morning" to 9 * 60, "afternoon" to 14 * 60, "evening" to 18 * 60, "night" to 21 * 60)
+        /** Words left hanging once the time is taken out: "for", "at" at the end. */
+        val DANGLING = Regex("\\s+(?:for|at|on|by|to)$", RegexOption.IGNORE_CASE)
+        val LEADING_JOIN = Regex("^(?:to|for|that|about|me to)\\s+", RegexOption.IGNORE_CASE)
+        /** "2 milk 1 bread 6 eggs". */
+        val COUNTED_LIST = Regex("^(?:\\d{1,2}\\s+[a-z][a-z]*(?:\\s+[a-z]+)?\\s*,?\\s*){2,}$", RegexOption.IGNORE_CASE)
+        val COUNTED_ITEM = Regex("(\\d{1,2})\\s+([a-z][a-z]*(?:\\s+(?!\\d)[a-z]+)?)", RegexOption.IGNORE_CASE)
+        /** "eggs 90", "bread ₹45". */
+        val ITEM_PRICE = Regex("^([a-z][a-z ]*?)\\s+((?:₹|rs\\.?\\s?)?\\d[\\d,]*(?:\\.\\d+)?k?)$", RegexOption.IGNORE_CASE)
+        val BUY_WORDS = setOf("buy", "get", "order", "bought", "pick")
+        val TASK_PREFIX = Regex("^(?:please )?(?:remind me to|remind me|remind to|remind|todo:?|to-do:?|task:?)\\s+", RegexOption.IGNORE_CASE)
 
-        val SHOPPING_ALIASES = setOf("shopping", "grocery", "groceries", "cart")
+        /** Starts by asking to be reminded: "remind me…", "remind every day…" (not "remind Mom to…"). */
+        val REMINDER = Regex("^(?:please )?remind(?: me)?(?:\\s+(?:to|every ?day|daily|every|at|on|tomorrow|today)\\b|$)", RegexOption.IGNORE_CASE)
+
+        /** "and remind me", ", remind everyday": the repeat stays, these words go. */
+        val REMIND_TAIL = Regex("(?:,|\\band\\b)?\\s*\\bremind(?: me)?\\b(?!\\s+to\\b)", RegexOption.IGNORE_CASE)
+
+        /** "6 PM IST": time zones said after a time. */
+        val TIME_ZONE = Regex("\\s*\\b(?:IST|GMT|UTC|BST|PST|PDT|EST|EDT|CET|CEST|SGT|GST)\\b", RegexOption.IGNORE_CASE)
+
+        /** "won't take crocin today", "not having my vitamins tonight", "don't give Riya calpol today". */
+        val SKIP_DOSE = Regex("^(?:i |we |she |he |riya )?(?:won['’]?t|will not|wont|not going to|am not going to|don['’]?t|do not|not|skipping|skip) (?:take|taking|eat|eating|have|having|give|giving)(?: my| the| her| his)? (.+?)(?: (today|tonight|tomorrow|this evening|this morning))?$", RegexOption.IGNORE_CASE)
+
+        /** "skip crocin today", "no crocin tonight": a day word is needed so "skip" alone isn't misread. */
+        val SKIP_DOSE_SHORT = Regex("^(?:skip|skipping|no)(?: my| the)? (.+?) (today|tonight|tomorrow)$", RegexOption.IGNORE_CASE)
+
+        val SHOPPING_ALIASES = setOf("shopping", "grocery", "groceries", "cart", "list", "buy", "to buy", "buy list", "shopping list")
         val CARD_BILL = Regex("\\b(?:credit\\s+)?card\\s+bill\\b|\\bcc\\s+bill\\b|\\bcard\\s+statement\\b", RegexOption.IGNORE_CASE)
         val UPI_WORDS = setOf("upi", "gpay", "phonepe", "paytm", "bhim")
         val LIST_SPLIT = Regex("\\s*,(?!\\d)\\s*|\\s+and\\s+|\\s*&\\s*", RegexOption.IGNORE_CASE)
@@ -1185,7 +1660,7 @@ class QuickAddParser(
             "rupees", "rupee", "inr", "shelled", "forked", "out", "over", "spend", "pay", "today", "yesterday", "tonight", "by",
             "per", "every", "each", "monthly", "yearly", "annually", "weekly", "quarterly", "month", "year", "week", "quarter",
         )
-        val DATE_PREPOSITIONS = setOf("on", "by", "this", "next", "till", "until", "before")
+        val DATE_PREPOSITIONS = setOf("on", "by", "this", "next", "till", "until", "before", "from")
         val FREQUENCY_WORDS = mapOf("monthly" to "Monthly", "yearly" to "Yearly", "annually" to "Yearly", "annual" to "Yearly", "weekly" to "Weekly", "quarterly" to "Quarterly")
         val FREQUENCY_UNITS = mapOf("month" to "Monthly", "year" to "Yearly", "week" to "Weekly", "quarter" to "Quarterly")
         val EVENT_KINDS = mapOf(
@@ -1221,17 +1696,23 @@ class QuickAddParser(
             "Shopping" to listOf("amazon", "flipkart", "myntra", "ikea"),
             "Entertainment" to listOf("netflix", "spotify", "prime", "hotstar", "bookmyshow", "youtube"),
             "Travel" to listOf("airbnb", "makemytrip", "booking"),
+            "Health" to listOf("apollo", "medplus", "pharmeasy", "netmeds", "1mg"),
         )
+        val PHARMACIES = setOf("apollo", "medplus", "pharmeasy", "netmeds", "1mg", "pharmacy", "chemist")
+        /** Brand names, kept as the shop wherever they're said. */
+        val BRANDS: Set<String> by lazy { BRAND_KEYWORDS.values.flatten().toSet() }
+        /** Said around a purchase but never part of a shop's name. */
+        val MERCHANT_NOISE = setOf("renewed", "renew", "renewal", "order", "ordered", "delivery", "delivered", "bill", "paid", "night", "morning", "evening", "last")
         val GENERIC_KEYWORDS = mapOf(
             "Groceries" to listOf("grocery", "groceries", "vegetables", "veggies", "fruits", "milk", "supermarket"),
             "Dining" to listOf("dinner", "lunch", "breakfast", "restaurant", "cafe", "coffee", "food", "snacks"),
             "Transport" to listOf("taxi", "cab", "auto", "fuel", "petrol", "diesel", "metro", "bus", "train", "parking", "toll"),
             "Bills" to listOf("electricity", "water", "gas", "internet", "wifi", "broadband", "mobile", "recharge", "bill", "insurance", "premium", "lic", "fees", "tuition"),
             "Rent" to listOf("rent", "emi", "maintenance"),
-            "Health" to listOf("medicine", "medicines", "pharmacy", "doctor", "hospital", "clinic", "lab", "dentist", "gym"),
+            "Health" to listOf("medicine", "medicines", "pharmacy", "chemist", "doctor", "hospital", "clinic", "lab", "dentist", "gym"),
             "Shopping" to listOf("clothes", "shoes", "shopping", "books", "novel", "stationery"),
             "Entertainment" to listOf("movie", "movies", "concert", "tickets"),
-            "Home" to listOf("furniture", "repair", "plumber", "electrician", "maid", "cleaning", "cook", "driver", "nanny", "gardener", "watchman", "dhobi"),
+            "Home" to listOf("furniture", "repair", "plumber", "electrician", "carpenter", "painter", "service", "servicing", "maid", "cleaning", "cook", "driver", "nanny", "gardener", "watchman", "dhobi"),
             "Travel" to listOf("flight", "hotel", "trip", "travel", "visa"),
             "Gifts" to listOf("gift", "gifts", "present"),
         )

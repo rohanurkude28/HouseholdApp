@@ -65,6 +65,11 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.work.runtime)
     implementation(libs.coil.compose)
+    // Reads receipts, expiry dates and nutrition labels on the phone (no upload, no key). The
+    // Play-services build fetches its model once instead of adding ~40 MB to the app.
+    implementation(libs.mlkit.text)
+    // Steps, sleep and workouts from Health Connect, for the live-well wheel.
+    implementation(libs.health.connect)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

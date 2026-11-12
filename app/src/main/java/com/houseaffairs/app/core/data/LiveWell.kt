@@ -67,6 +67,22 @@ data class CookedMeal(val title: String, val people: Int, val plantBased: Boolea
 
 data class ActivityLog(val kind: String, val minutes: Int, val people: Int, val id: String = "", val date: java.time.LocalDate? = null)
 
+/**
+ * The daily live-to-100 check-in, one answer per pillar: 0 = no, 1 = a little, 2 = yes. Asked
+ * on opening the app before anything else, so the wheel rests on what people did, not guesses.
+ */
+data class DayCheck(val move: Int, val eat: Int, val connect: Int, val calm: Int) {
+    fun of(p: Pillar): Int = when (p) { Pillar.MOVE -> move; Pillar.EAT -> eat; Pillar.CONNECT -> connect; Pillar.OUTLOOK -> calm }
+}
+
+/** The four questions, in the person's words, for the check-in. */
+val DAY_QUESTIONS: List<Triple<Pillar, String, String>> = listOf(
+    Triple(Pillar.MOVE, "🚶", "Did you move? A walk, chores or exercise"),
+    Triple(Pillar.EAT, "🥗", "Did you eat well? Home-cooked, mostly plants"),
+    Triple(Pillar.CONNECT, "🫂", "Time with family or friends?"),
+    Triple(Pillar.OUTLOOK, "🧘", "Did you slow down? Quiet time, prayer, gratitude"),
+)
+
 /** A person's weekly self check-in: 0 = not really, 1 = a little, 2 = yes. */
 data class CheckIn(val unwind: Int, val social: Int, val gratitude: Int)
 
@@ -90,7 +106,24 @@ data class WeekData(
     val diaryDays: Int = 0,
     /** Things on the Study list finished this week. */
     val learned: Int = 0,
+    /** From Health Connect, when it's connected on this phone: steps so far this week. */
+    val steps: Long? = null,
+    /** Average hours of sleep a night this week, from Health Connect. */
+    val sleepHours: Double? = null,
+    /** Workouts a watch or fitness app recorded, in minutes. */
+    val exerciseMinutes: Int = 0,
+    /** This week's daily check-ins, one per day answered. */
+    val dayChecks: List<DayCheck> = emptyList(),
 )
+
+/** 0..1 from the daily check-ins for [p], or null with none this week. */
+fun dayScore(checks: List<DayCheck>, p: Pillar): Float? =
+    checks.takeIf { it.isNotEmpty() }?.map { it.of(p) / 2f }?.average()?.toFloat()
+
+/** "Yes on 4 of 5 days" for a pillar's check-in answers. */
+fun dayLine(checks: List<DayCheck>, p: Pillar): String =
+    "Yes on ${checks.count { it.of(p) == 2 }} of ${checks.size} days you checked in"
+
 
 data class Habit(
     val pillar: Pillar,
@@ -111,6 +144,16 @@ data class Wheel(val habits: List<Habit>) {
 
 private fun ratio(value: Float, target: Float) = min(value / target, 1f)
 
+/** Steps a day the wheel aims for. */
+const val STEPS_A_DAY = 7_000
+
+/** 7–9 hours a night scores full; each hour short (or long past 10) costs a quarter. */
+fun sleepScore(hours: Double): Float = when {
+    hours in 7.0..9.0 -> 1f
+    hours < 7.0 -> (1 - (7.0 - hours) * 0.25).toFloat().coerceIn(0f, 1f)
+    else -> (1 - (hours - 9.0) * 0.25).toFloat().coerceIn(0.5f, 1f)
+}
+
 private val WALKING = setOf("Walk", "Run", "Cycling")
 private val CHORES = setOf("Gardening", "Housework")
 private val STUDY = setOf("Study")
@@ -124,9 +167,11 @@ fun isPlantBased(ingredients: List<Ingredient>): Boolean =
 /** Scores the week. Pure, so the rules are tested and easy to tune. */
 fun liveWell(w: WeekData, plan: WellPlan = WellPlan()): Wheel {
     fun minutes(kinds: Set<String>?) = w.activities.filter { kinds == null || it.kind in kinds }.sumOf { it.minutes }
-    val walk = minutes(WALKING)
+    // Steps from a phone or watch count as walking too (about 100 steps a minute), whichever is more.
+    val walk = maxOf(minutes(WALKING), ((w.steps ?: 0) / 100).toInt())
     val chores = minutes(CHORES)
-    val workout = w.activities.filter { it.kind !in WALKING && it.kind !in CHORES && it.kind !in STUDY }.sumOf { it.minutes }
+    // Logged by hand or recorded by a watch: the larger, so the same workout isn't counted twice.
+    val workout = maxOf(w.activities.filter { it.kind !in WALKING && it.kind !in CHORES && it.kind !in STUDY }.sumOf { it.minutes }, w.exerciseMinutes)
     val study = minutes(STUDY)
     val home = w.meals.size
     val plant = w.meals.count { it.plantBased }
@@ -143,6 +188,13 @@ fun liveWell(w: WeekData, plan: WellPlan = WellPlan()): Wheel {
     return Wheel(
         listOf(
             Habit(Pillar.MOVE, "Walk", ratio(walk.toFloat(), aim(plan.walkMinutes)), line(walk, plan.walkMinutes, "min walking"), "A 20-minute walk after dinner, every day, gets you there."),
+            // Only with Health Connect: steps a day against 7,000, a level long-lived people reach.
+            *listOfNotNull(w.steps?.let { total ->
+                val perDay = total / w.days.coerceAtLeast(1)
+                Habit(Pillar.MOVE, "Steps", ratio(perDay.toFloat(), STEPS_A_DAY.toFloat()), "${"%,d".format(perDay)} steps a day (aim ${"%,d".format(STEPS_A_DAY)})", "A 10-minute walk after each meal adds about 3,000 steps.")
+            }).toTypedArray(),
+            // Only once there are daily check-ins: what the person says they did each day.
+            *listOfNotNull(dayScore(w.dayChecks, Pillar.MOVE)?.let { Habit(Pillar.MOVE, "Moved each day", it, dayLine(w.dayChecks, Pillar.MOVE), "Any movement counts: stairs, sweeping, a walk to the shop.") }).toTypedArray(),
             Habit(Pillar.MOVE, "Garden & chores", ratio(chores.toFloat(), aim(60)), line(chores, 60, "min gardening or housework"), "Do one chore by hand instead of the shortcut, like sweeping or watering plants."),
             Habit(Pillar.MOVE, "Workout", ratio(workout.toFloat(), aim(plan.workoutMinutes)), line(workout, plan.workoutMinutes, "min yoga, gym or sport"), "Two 45-minute sessions a week is plenty. Try yoga together."),
 
@@ -153,6 +205,7 @@ fun liveWell(w: WeekData, plan: WellPlan = WellPlan()): Wheel {
                 if (home == 0) "No meals logged yet" else "$plant of $home meals plant-based",
                 "Make dal, beans or a vegetable dish the star of more meals.",
             ),
+            *listOfNotNull(dayScore(w.dayChecks, Pillar.EAT)?.let { Habit(Pillar.EAT, "Ate well", it, dayLine(w.dayChecks, Pillar.EAT), "Half the plate vegetables or dal, and stop when 80% full.") }).toTypedArray(),
             Habit(
                 Pillar.EAT, "Moderation",
                 w.diningAllowanceMinor?.takeIf { it > 0 }?.let { allowance ->
@@ -167,11 +220,24 @@ fun liveWell(w: WeekData, plan: WellPlan = WellPlan()): Wheel {
                 "Swap one meal out for a home-cooked one this week.",
             ),
 
+            // Only with Health Connect: 7 to 9 hours is the full score; less or more scores lower.
+            *listOfNotNull(w.sleepHours?.let { h ->
+                Habit(Pillar.OUTLOOK, "Sleep", sleepScore(h), "%.1f hours a night".format(h), "Same bedtime every night, screens off half an hour before.")
+            }).toTypedArray(),
             Habit(Pillar.CONNECT, "Family meals", ratio(family.toFloat(), aim(plan.familyMeals)), line(family, plan.familyMeals, "meals eaten together"), "Pick a few dinners a week where everyone eats together, phones away."),
             Habit(Pillar.CONNECT, "Together time", ratio(together.toFloat(), aim(2).coerceAtLeast(1f)), line(together, 2, "outings or activities together"), "Plan a Sunday outing or a family walk."),
-            Habit(Pillar.CONNECT, "Right tribe", c?.let { it.social / 2f }, if (c == null) "Answer the weekly check-in" else "Time with friends and family", "Call or meet someone who lifts you up."),
+            // The daily check-in, or else the weekly one.
+            Habit(
+                Pillar.CONNECT, "Right tribe", dayScore(w.dayChecks, Pillar.CONNECT) ?: c?.let { it.social / 2f },
+                when { w.dayChecks.isNotEmpty() -> dayLine(w.dayChecks, Pillar.CONNECT); c == null -> "Answer the daily check-in"; else -> "Time with friends and family" },
+                "Call or meet someone who lifts you up.",
+            ),
 
-            Habit(Pillar.OUTLOOK, "Unwind", c?.let { it.unwind / 2f }, if (c == null) "Answer the weekly check-in" else "Time to slow down", "Ten quiet minutes a day: a walk, prayer, music or tea on the balcony."),
+            Habit(
+                Pillar.OUTLOOK, "Unwind", dayScore(w.dayChecks, Pillar.OUTLOOK) ?: c?.let { it.unwind / 2f },
+                when { w.dayChecks.isNotEmpty() -> dayLine(w.dayChecks, Pillar.OUTLOOK); c == null -> "Answer the daily check-in"; else -> "Time to slow down" },
+                "Ten quiet minutes a day: a walk, prayer, music or tea on the balcony.",
+            ),
             Habit(
                 Pillar.OUTLOOK, "Purpose",
                 if (w.tasksDone + w.tasksOverdue == 0 && w.savedToDreamsMinor == 0L) null

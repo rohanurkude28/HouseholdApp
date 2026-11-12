@@ -1,11 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Placeholder house mark, drawn inside the 66dp adaptive-icon safe zone. -->
+<!-- The app mark: a rounded house in the teal → blue → pink gradient with a tick, inside the 66dp safe zone. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <path android:pathData="M50.4,30.4 Q54,27.3 57.6,30.4 L73.2,43.9 Q75,45.5 75,48 L75,75 Q75,80 70,80 L38,80 Q33,80 33,75 L33,48 Q33,45.5 34.8,43.9 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="36"
+                android:startY="30"
+                android:endX="74"
+                android:endY="80"
+                android:startColor="#FF3EE8B5"
+                android:centerColor="#FF4C7FE8"
+                android:endColor="#FFF0508C" />
+        </aapt:attr>
+    </path>
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M54,32 L76,51 L70,51 L70,74 L59,74 L59,61 L49,61 L49,74 L38,74 L38,51 L32,51 Z" />
+        android:pathData="M43.5,58.5 L50.5,65.5 L65,51"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="5.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
 </vector>
