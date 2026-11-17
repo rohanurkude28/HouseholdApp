@@ -49,6 +49,11 @@ import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 
+/** A request to ask today's check-in now (the evening notification was tapped). */
+object CheckInInbox {
+    val asked = MutableStateFlow(false)
+}
+
 /** Days without a check-in, asked about on opening the app before anything else. */
 @HiltViewModel
 class CatchUpViewModel @Inject constructor(
@@ -65,18 +70,37 @@ class CatchUpViewModel @Inject constructor(
         private set
 
     init {
+        viewModelScope.launch { ask(force = false) }
+        // Tapping tonight's "How was today?" notification asks straight away, even if the app was open.
         viewModelScope.launch {
-            val r = session.state.first { it is SessionState.Ready } as SessionState.Ready
-            val today = LocalDate.now()
-            if (settings.diaryAskedDay.first() == today.toString()) return@launch
-            val skipped = settings.diarySkipped.first().mapNotNull { runCatching { LocalDate.parse(it) }.getOrNull() }.toSet()
-            val candidates = missedDays(today, LocalTime.now().hour, emptySet(), skipped)
-            val written = runCatching { weekly.writtenDays(r.household.id, r.user.uid, candidates) }.getOrDefault(candidates.toSet())
-            _days.value = candidates.filter { it !in written }
-            required = _days.value.firstOrNull()
-            if (_days.value.isEmpty()) settings.markDiaryAsked(today.toString())
+            CheckInInbox.asked.collect { if (it) { CheckInInbox.asked.value = false; ask(force = true) } }
         }
     }
+
+    /**
+     * Works out the days to ask about. Asked once in the day and once from the evening on (when
+     * today joins), so opening the app in the morning doesn't hide tonight's check-in. [force]
+     * (from the notification) asks about today whatever the hour.
+     */
+    private suspend fun ask(force: Boolean) {
+        val r = session.state.first { it is SessionState.Ready } as SessionState.Ready
+        val today = LocalDate.now()
+        val hour = LocalTime.now().hour
+        val mark = askedMark(today, hour)
+        if (!force && settings.diaryAskedDay.first() == mark) return
+        val skipped = settings.diarySkipped.first().mapNotNull { runCatching { LocalDate.parse(it) }.getOrNull() }.toSet()
+        val candidates = missedDays(today, if (force) 23 else hour, emptySet(), if (force) skipped - today else skipped)
+        val written = runCatching { weekly.writtenDays(r.household.id, r.user.uid, candidates) }.getOrDefault(candidates.toSet())
+        _days.value = candidates.filter { it !in written }
+        required = _days.value.firstOrNull()
+        if (_days.value.isEmpty()) settings.markDiaryAsked(mark)
+    }
+
+    /** A day's steps from Health Connect, when this person connected it on this phone. */
+    suspend fun stepsOn(day: LocalDate): Long? = weekly.stepsOn(day)
+
+    /** "2026-11-12" by day, "2026-11-12 evening" once today's check-in is due. */
+    private fun askedMark(today: LocalDate, hour: Int) = if (hour >= 20) "$today evening" else today.toString()
 
     fun save(day: LocalDate, mood: String, note: String, check: DayCheck) {
         val r = session.state.value as? SessionState.Ready ?: return
@@ -94,84 +118,23 @@ class CatchUpViewModel @Inject constructor(
     /** Closed without answering: not again today, the days stay for tomorrow. */
     fun later() {
         _days.value = emptyList()
-        viewModelScope.launch { settings.markDiaryAsked(LocalDate.now().toString()) }
+        viewModelScope.launch { settings.markDiaryAsked(askedMark(LocalDate.now(), LocalTime.now().hour)) }
     }
 
     private fun next(day: LocalDate) {
         _days.update { it - day }
-        if (_days.value.isEmpty()) viewModelScope.launch { settings.markDiaryAsked(LocalDate.now().toString()) }
+        if (_days.value.isEmpty()) viewModelScope.launch { settings.markDiaryAsked(askedMark(LocalDate.now(), LocalTime.now().hour)) }
     }
 }
 
-private fun Modifier.androidx_clip() = this.then(Modifier.clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp)))
-
-private val DIARY_MOODS = listOf("😄", "🙂", "😐", "😔", "😣")
-private val ANSWERS = listOf("No", "A little", "Yes")
-
-/**
- * "How was yesterday?": the live-to-100 check-in, one missed day at a time. Four quick answers
- * (moved, ate well, people, slowed down) and a mood are needed; a line is optional. The latest
- * day can't be skipped or closed, since the wheel and the coaching rest on it; older days can.
- */
+/** Android's check-in: the shared dialog (:ui DayCheckIn.kt), one missed day at a time. */
 @Composable
 fun DiaryCatchUp(viewModel: CatchUpViewModel = hiltViewModel()) {
     val days by viewModel.days.collectAsStateWithLifecycle()
     val day = days.firstOrNull() ?: return
-    var mood by remember(day) { mutableStateOf<String?>(null) }
-    var note by remember(day) { mutableStateOf("") }
-    var answers by remember(day) { mutableStateOf(mapOf<Pillar, Int>()) }
-    val today = LocalDate.now()
-    val name = when (day) {
-        today -> "today"
-        today.minusDays(1) -> "yesterday"
-        else -> day.format(DateTimeFormatter.ofPattern("EEEE d MMM"))
-    }
-    // Only the latest day is required; days before it can be let go.
-    val required = day == viewModel.required
-    val complete = mood != null && answers.size == DAY_QUESTIONS.size
-    AlertDialog(
-        onDismissRequest = { if (!required) viewModel.later() },
-        properties = androidx.compose.ui.window.DialogProperties(dismissOnBackPress = !required, dismissOnClickOutside = !required),
-        title = { Text("How was $name?") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Four taps for your live-to-100 wheel.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                DAY_QUESTIONS.forEach { (pillar, emoji, question) ->
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("$emoji  $question", style = MaterialTheme.typography.bodyMedium)
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            ANSWERS.forEachIndexed { value, label ->
-                                FilterChip(selected = answers[pillar] == value, onClick = { answers = answers + (pillar to value) }, label = { Text(label) }, shape = CircleShape)
-                            }
-                        }
-                    }
-                }
-                Text("And overall?", style = MaterialTheme.typography.bodyMedium)
-                // Five equal tiles, so all fit on any width.
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    DIARY_MOODS.forEach { m ->
-                        androidx.compose.foundation.layout.Box(
-                            Modifier.weight(1f).androidx_clip().then(
-                                Modifier.background(if (mood == m) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest),
-                            ).clickable { mood = m }.padding(vertical = 8.dp),
-                            contentAlignment = androidx.compose.ui.Alignment.Center,
-                        ) { Text(m, fontSize = 24.sp) }
-                    }
-                }
-                OutlinedTextField(note, { note = it }, placeholder = { Text("One good thing, if you like") }, singleLine = false, minLines = 2, modifier = Modifier.fillMaxWidth())
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val m = mood ?: return@Button
-                    fun a(p: Pillar) = answers[p] ?: 0
-                    viewModel.save(day, m, note, DayCheck(a(Pillar.MOVE), a(Pillar.EAT), a(Pillar.CONNECT), a(Pillar.OUTLOOK)))
-                },
-                enabled = complete,
-                shape = CircleShape,
-            ) { Text("Save") }
-        },
-        dismissButton = { if (!required) TextButton(onClick = { viewModel.skip(day) }) { Text("Skip this day") } },
+    com.houseaffairs.app.feature.review.DayCheckInDialog(
+        day, required = day == viewModel.required, stepsOn = viewModel::stepsOn,
+        onSave = { mood, note, check -> viewModel.save(day, mood, note, check) },
+        onSkip = { viewModel.skip(day) }, onLater = viewModel::later,
     )
 }

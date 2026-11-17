@@ -334,54 +334,6 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ThemeSelector(selected: ThemeMode, onSelect: (ThemeMode) -> Unit) {
-    val options = listOf(ThemeMode.SYSTEM to "System", ThemeMode.LIGHT to "Light", ThemeMode.DARK to "Dark")
-    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-        options.forEachIndexed { index, (mode, label) ->
-            SegmentedButton(
-                selected = mode == selected,
-                onClick = { onSelect(mode) },
-                shape = SegmentedButtonDefaults.itemShape(index, options.size),
-                colors = SegmentedButtonDefaults.colors(
-                    activeContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                    activeContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                ),
-            ) { Text(label) }
-        }
-    }
-}
-
-@Composable
-private fun MemberRow(member: Member, isMe: Boolean, canEdit: Boolean, onRoleChange: (Role) -> Unit) {
-    var menuOpen by remember { mutableStateOf(false) }
-    ListItem(
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        leadingContent = { Avatar(member.displayName, size = 40.dp) },
-        headlineContent = { Text(if (isMe) "${member.displayName} (you)" else member.displayName) },
-        supportingContent = { Text(RolePolicy.label(member.role)) },
-        trailingContent = if (canEdit) {
-            {
-                Box {
-                    TextButton(onClick = { menuOpen = true }) { Text("Change role") }
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        RolePolicy.invitableRoles.forEach { role ->
-                            DropdownMenuItem(
-                                text = { Text(RolePolicy.label(role)) },
-                                onClick = {
-                                    menuOpen = false
-                                    onRoleChange(role)
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-        } else {
-            null
-        },
-    )
-}
 
 /** No undo for this one, so it asks the owner to type RESET first. */
 @Composable
@@ -408,48 +360,6 @@ private fun ResetDialog(onReset: () -> Unit, onDismiss: () -> Unit) {
 }
 
 /** Like Reset, there's no undo, so it asks for DELETE to be typed. */
-@Composable
-private fun DeleteAccountDialog(alone: Boolean, isOwner: Boolean, onDelete: (keepShared: Boolean) -> Unit, onDismiss: () -> Unit) {
-    var typed by remember { mutableStateOf("") }
-    // Family entries such as expenses shape everyone's budget history, so they stay unless asked.
-    var keepShared by remember { mutableStateOf(true) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Delete your account?") },
-        text = {
-            Column {
-                Text(
-                    when {
-                        alone -> "You're the only member, so the whole home and everything in it is deleted with your account."
-                        isOwner -> "Your private entries and your account are deleted. The adult who joined first becomes the owner."
-                        else -> "Your private entries and your account are deleted, and you leave the home."
-                    } + " Download your data first if you want a copy. This can't be undone.",
-                )
-                if (!alone) {
-                    Spacer(Modifier.height(8.dp))
-                    Row(
-                        Modifier.fillMaxWidth().selectable(selected = keepShared, onClick = { keepShared = !keepShared }),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Checkbox(checked = keepShared, onCheckedChange = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Keep what I added for the whole family (expenses, groceries, tasks)", style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(value = typed, onValueChange = { typed = it }, singleLine = true, label = { Text("Type DELETE to confirm") })
-            }
-        },
-        confirmButton = {
-            val ready = typed.trim().equals("DELETE", ignoreCase = true)
-            TextButton(onClick = { onDelete(alone.not() && keepShared) }, enabled = ready) {
-                Text("Delete", color = if (ready) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f))
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
-
 @Composable
 private fun InviteRoleDialog(onInvite: (Role) -> Unit, onDismiss: () -> Unit) {
     var role by remember { mutableStateOf(Role.ADULT) }
@@ -599,45 +509,11 @@ private fun DriveBackupGroup(isOwner: Boolean, drive: com.houseaffairs.app.core.
     }
 }
 
-@Composable
-private fun SettingsGroup(content: @Composable ColumnScope.() -> Unit) {
-    Surface(
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-    ) {
-        Column(Modifier.padding(vertical = 6.dp), content = content)
-    }
-}
+
+
 
 @Composable
-private fun SettingsRow(icon: ImageVector, accent: Accent, title: String, subtitle: String?, onClick: (() -> Unit)? = null) {
-    ListItem(
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        leadingContent = { IconBlob(icon, accent, size = 40.dp) },
-        headlineContent = { Text(title, style = MaterialTheme.typography.titleSmall) },
-        supportingContent = subtitle?.let { { Text(it) } },
-        trailingContent = if (onClick != null) {
-            { Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-        } else {
-            null
-        },
-        modifier = if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier,
-    )
-}
-
-@Composable
-private fun RolePill(role: Role) {
-    Text(
-        RolePolicy.label(role),
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onPrimaryContainer,
-        modifier = Modifier.clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer).padding(horizontal = 10.dp, vertical = 4.dp),
-    )
-}
-
 @OptIn(ExperimentalLayoutApi::class)
-@Composable
 private fun NotificationsGroup(prefs: SettingsRepository.NotificationPrefs, onChange: (SettingsRepository.NotificationPrefs) -> Unit) {
     val context = LocalContext.current
     val colors = LocalHouseColors.current

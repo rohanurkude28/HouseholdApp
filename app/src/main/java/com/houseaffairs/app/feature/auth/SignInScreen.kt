@@ -44,6 +44,8 @@ import com.houseaffairs.app.core.data.TEST_ACCOUNTS
 import com.houseaffairs.app.core.data.TestAccount
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -77,9 +79,18 @@ class SignInViewModel @Inject constructor(
         }
     }
 
-    /** No Google account: signs in anonymously and opens a demo home full of sample data. */
+    /** A demo was left on this phone and can be picked up where it was. */
+    val demoKept = settings.demoPaused.map { it && com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.isAnonymous == true }
+        .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, false)
+
+    /** No Google account: opens the demo home, the same one as before if it was only left. */
     fun tryDemo() {
+        if (com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.isAnonymous == true) {
+            viewModelScope.launch { settings.setDemoPaused(false) }
+            return
+        }
         viewModelScope.launch {
+            settings.setDemoPaused(false)
             _state.value = SignInUiState(loading = true)
             val error = runCatching {
                 auth.signInDemo().getOrThrow()
@@ -112,12 +123,13 @@ class SignInViewModel @Inject constructor(
 @Composable
 fun SignInScreen(viewModel: SignInViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val demoKept by viewModel.demoKept.collectAsStateWithLifecycle()
     val context = LocalContext.current
     LightStatusBarIcons()
 
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         HeroBackground(
-            dayPart = DayPart.now(),
+            dayPart = DayPart.at(java.time.LocalTime.now().hour),
             groundColor = MaterialTheme.colorScheme.background,
             modifier = Modifier.fillMaxWidth().weight(1f),
         ) {
@@ -158,7 +170,7 @@ fun SignInScreen(viewModel: SignInViewModel = hiltViewModel()) {
                         modifier = Modifier.fillMaxWidth().height(52.dp),
                     ) { Text("Continue as ${account.name}") }
                 }
-                TextButton(onClick = viewModel::tryDemo, enabled = !state.loading) { Text("Try the demo, no account needed") }
+                TextButton(onClick = viewModel::tryDemo, enabled = !state.loading) { Text(if (demoKept) "Back to your demo home" else "Try the demo, no account needed") }
             } else {
                 Button(
                     onClick = { viewModel.signIn(context) },
@@ -173,7 +185,7 @@ fun SignInScreen(viewModel: SignInViewModel = hiltViewModel()) {
                     }
                 }
                 // Try it without a Google account: a demo home with sample data.
-                TextButton(onClick = viewModel::tryDemo, enabled = !state.loading) { Text("Try the demo, no account needed") }
+                TextButton(onClick = viewModel::tryDemo, enabled = !state.loading) { Text(if (demoKept) "Back to your demo home" else "Try the demo, no account needed") }
                 Text(
                     "No passwords. Your family's data stays private to your home.",
                     style = MaterialTheme.typography.bodySmall,

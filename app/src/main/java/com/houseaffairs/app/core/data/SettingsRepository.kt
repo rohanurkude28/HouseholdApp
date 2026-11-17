@@ -13,7 +13,6 @@ import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 
-enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
 /** Off; a once-a-day "back up today?" when you open the app; or automatically every day. */
 enum class BackupMode { OFF, REMIND, AUTO }
@@ -199,6 +198,10 @@ class SettingsRepository @Inject constructor(
      * The first-run tour on this phone: the step to show, or null once it's finished or skipped.
      * Owner's "Reset everything" and Settings → "Show the tour" start it again.
      */
+    /** The demo was left but kept: its account is still signed in, shown as signed out until resumed. */
+    val demoPaused: Flow<Boolean> = dataStore.data.map { it[DEMO_PAUSED] == true }
+    suspend fun setDemoPaused(paused: Boolean) = dataStore.edit { it[DEMO_PAUSED] = paused }
+
     val tourStep: Flow<Int?> = dataStore.data.map { if (it[TOUR_DONE] == true) null else it[TOUR_STEP] ?: 0 }
 
     suspend fun setTourStep(step: Int) {
@@ -276,6 +279,7 @@ class SettingsRepository @Inject constructor(
         val DIGEST_HOUR = intPreferencesKey("digest_hour")
         val DIGEST_AREAS_OFF = stringSetPreferencesKey("digest_areas_off")
         val TOUR_STEP = intPreferencesKey("tour_step")
+        val DEMO_PAUSED = androidx.datastore.preferences.core.booleanPreferencesKey("demo_paused")
         val TOUR_DONE = booleanPreferencesKey("tour_done")
         val SETUP_DONE = booleanPreferencesKey("setup_done")
         val FEEDBACK = booleanPreferencesKey("feedback_on")

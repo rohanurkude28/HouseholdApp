@@ -46,7 +46,7 @@ class CalendarSyncer @Inject constructor(
             is CalendarAuth.Result.NeedsConsent -> return Outcome.NeedsConsent.also { store.setError("Allow calendar access again in Settings") }
             is CalendarAuth.Result.Failed -> return fail(a.message)
         }
-        val data = withTimeoutOrNull(20_000) { home.observe(ready.household.id, ready.me, ready.household.baseCurrency).first { it.loaded } }
+        val data = withTimeoutOrNull(20_000) { home.observe(ready.household.id, ready.me.uid, ready.me.role, ready.me::canAccess, ready.household.baseCurrency).first { it.loaded } }
             ?: return fail("Couldn't read your tasks")
         val uid = ready.user.uid
         val app = data.tasks.filter { it.dueDate != null && (it.assignee == null || it.assignee == uid) }
@@ -86,7 +86,7 @@ class CalendarSyncer @Inject constructor(
                         ),
                     ).await()
                     api.link(calendarId, g.id, "tasks/${ref.id}")
-                    state["tasks/${ref.id}"] = Synced(g.id, g.title, g.date)
+                    state["tasks/${ref.id}"] = Synced(g.id, g.title, g.date!!)
                 }
                 store.save(uid, calendarId, state, saved.skipped + plan.forget, System.currentTimeMillis())
                 Outcome.Done(plan.create.size + plan.update.size + plan.delete.size, plan.pull.size, plan.adopt.size)

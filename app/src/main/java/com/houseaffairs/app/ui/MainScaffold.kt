@@ -259,7 +259,8 @@ fun MainScaffold(session: SessionState.Ready) {
     LaunchedEffect(widgetRoute) {
         widgetRoute?.let { r ->
             com.houseaffairs.app.widget.WidgetInbox.route.value = null
-            if (tabs.any { it.route == r.substringBefore('/') }) openTab(r)
+            if (r == com.houseaffairs.app.core.data.CHECK_IN_ROUTE) CheckInInbox.asked.value = true
+            else if (tabs.any { it.route == r.substringBefore('/') }) openTab(r)
         }
     }
 
@@ -294,13 +295,16 @@ fun MainScaffold(session: SessionState.Ready) {
     if (session.user.isAnonymous && !touring) {
         // Above the bottom bar, at the side: clear of each tab's title and of the centre + button.
         androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize().navigationBarsPadding().padding(bottom = 104.dp, end = 12.dp), contentAlignment = androidx.compose.ui.Alignment.BottomEnd) {
+            // Small, and two taps to leave: it floats over lists, so a stray tap mustn't end the demo.
+            var leaving by remember { mutableStateOf(false) }
+            LaunchedEffect(leaving) { if (leaving) { kotlinx.coroutines.delay(4_000); leaving = false } }
             androidx.compose.material3.Surface(
-                onClick = main::exitDemo,
+                onClick = { if (leaving) main.exitDemo() else leaving = true },
                 shape = androidx.compose.foundation.shape.CircleShape,
-                color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.72f),
+                color = androidx.compose.ui.graphics.Color.Black.copy(alpha = if (leaving) 0.85f else 0.55f),
                 contentColor = androidx.compose.ui.graphics.Color.White,
             ) {
-                Text("🧪 Demo · Exit ›", style = androidx.compose.material3.MaterialTheme.typography.labelMedium, modifier = androidx.compose.ui.Modifier.padding(horizontal = 14.dp, vertical = 6.dp))
+                Text(if (leaving) "Tap again to leave the demo" else "🧪 Demo", style = androidx.compose.material3.MaterialTheme.typography.labelMedium, modifier = androidx.compose.ui.Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
             }
         }
     }

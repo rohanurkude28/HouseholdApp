@@ -22,9 +22,9 @@ class MainViewModel @Inject constructor(
     private val auth: com.houseaffairs.app.core.data.AuthRepository,
 ) : ViewModel() {
 
-    /** Leaves the demo home for the sign-in screen. */
+    /** Leaves the demo home for the sign-in screen, keeping it: "Back to your demo home" returns to it. */
     fun exitDemo() {
-        viewModelScope.launch { auth.signOut() }
+        viewModelScope.launch { settings.setDemoPaused(true) }
     }
     val session: StateFlow<SessionState> = sessionManager.state
     val themeMode: StateFlow<ThemeMode> =

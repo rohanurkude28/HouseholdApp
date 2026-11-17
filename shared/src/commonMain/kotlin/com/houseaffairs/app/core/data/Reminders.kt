@@ -98,3 +98,14 @@ private fun dueIn(days: Int) = when (days) {
     1 -> "Due tomorrow"
     else -> "Due in $days days"
 }
+
+/** The route a tapped reminder opens: the check-in itself, or the tab its item lives on. */
+const val CHECK_IN_ROUTE = "checkin"
+
+fun routeForReminder(key: String): String = when (key.removePrefix("snooze:").substringBefore(':')) {
+    "checkin" -> CHECK_IN_ROUTE
+    "task", "chore", "habit" -> "plans/TASKS"
+    "event" -> "plans/EVENTS"
+    "dose", "refill" -> "vault/MEDICINES"
+    else -> "home"
+}

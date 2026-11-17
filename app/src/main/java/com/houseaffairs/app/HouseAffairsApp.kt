@@ -50,7 +50,7 @@ class HouseAffairsApp : Application() {
             session.state
                 .flatMapLatest { s ->
                     when (s) {
-                        is SessionState.Ready -> home.observe(s.household.id, s.me, s.household.baseCurrency).filter { it.loaded }.map { it to s.me.uid }
+                        is SessionState.Ready -> home.observe(s.household.id, s.me.uid, s.me.role, s.me::canAccess, s.household.baseCurrency).filter { it.loaded }.map { it to s.me.uid }
                         // Signed out: nothing should ring. Still loading (an alarm woke the app): leave them be.
                         SessionState.SignedOut -> flowOf(null)
                         else -> emptyFlow()

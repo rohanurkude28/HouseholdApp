@@ -25,6 +25,9 @@ interface Assistant {
 
     /** Reads a bill the on-phone rules couldn't; null when it can't (or isn't connected). */
     suspend fun readBill(text: String): com.houseaffairs.app.core.data.BillScan? = null
+
+    /** Search tags for an entry, reusing the family's [known] ones where they fit; empty when it can't. */
+    suspend fun suggestTags(about: String, known: List<String>): List<String> = emptyList()
 }
 
 /** The instructions sent with each line. Few-shot, JSON out, so [draftFromAi] can check every field. */

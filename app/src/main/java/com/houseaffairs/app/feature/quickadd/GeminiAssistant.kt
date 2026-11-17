@@ -38,6 +38,9 @@ class GeminiAssistant @Inject constructor() : Assistant {
     override suspend fun readBill(text: String): com.houseaffairs.app.core.data.BillScan? =
         ask(billPrompt(text))?.let { billFromAi(it, java.time.LocalDate.now()) }
 
+    override suspend fun suggestTags(about: String, known: List<String>): List<String> =
+        ask(com.houseaffairs.app.core.data.tagPrompt(about, known))?.let { com.houseaffairs.app.core.data.tagsFromAi(it) }.orEmpty()
+
     private suspend fun ask(prompt: String): String? =
         withTimeoutOrNull(TIMEOUT_MS) { runCatching { model.generateContent(prompt).text }.getOrNull() }
 

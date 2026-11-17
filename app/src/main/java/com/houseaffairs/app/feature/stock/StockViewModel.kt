@@ -15,6 +15,7 @@ import com.houseaffairs.app.core.data.planCooking
 import com.houseaffairs.app.core.data.DishIdea
 import com.houseaffairs.app.core.data.cookIdeas
 import com.houseaffairs.app.core.data.useItUp
+import com.houseaffairs.app.core.data.searchDishes
 import com.houseaffairs.app.core.data.withHistory
 import com.houseaffairs.app.core.data.recipeFit
 import com.houseaffairs.app.core.model.AppModule
@@ -36,13 +37,12 @@ import kotlinx.coroutines.launch
 import java.time.LocalDate
 import javax.inject.Inject
 
-enum class StockTab(val label: String) { RECIPES("Cook"), PANTRY("Pantry"), SHOPPING("Shopping") }
-
-data class RecipeView(val recipe: Recipe, val fit: RecipeFit)
 
 data class StockUiState(
-    val tab: StockTab = StockTab.RECIPES,
+    val tab: StockTab = StockTab.SHOPPING,
     val tabs: List<StockTab> = StockTab.entries,
+    /** False until the lists first arrive, so an empty list is never shown while they load. */
+    val loaded: Boolean = false,
     val pantry: List<PantryStock> = emptyList(),
     val medicines: List<PantryStock> = emptyList(),
     val supplies: List<PantryStock> = emptyList(),
@@ -82,7 +82,7 @@ class StockViewModel @Inject constructor(
     private val scope = session.state.filterIsInstance<SessionState.Ready>()
         .map { Scope(it.household.id, it.user.uid, it.me.canAccess(AppModule.MEDICINE), com.houseaffairs.app.core.model.RolePolicy.ownMedicinesOnly(it.me.role)) }
         .distinctUntilChanged()
-    private val tab = MutableStateFlow(StockTab.RECIPES)
+    private val tab = MutableStateFlow(StockTab.SHOPPING)
     private val mood = MutableStateFlow<String?>(null)
     /** Search on the Cook tab: the family's recipes and the library, by name or ingredient. */
     val query = MutableStateFlow("")
@@ -117,6 +117,7 @@ class StockViewModel @Inject constructor(
             lastTime = d.shopping.mapNotNull { item -> com.houseaffairs.app.core.data.lastTimeNote(item.title, d.memory)?.let { item.id to it } }.toMap(),
             tab = t,
             tabs = StockTab.entries,
+            loaded = true,
             pantry = d.pantry,
             medicines = d.medicines,
             supplies = d.supplies,
@@ -232,13 +233,3 @@ class StockViewModel @Inject constructor(
     }
 }
 
-/** Dishes whose name or ingredients match [query], cookable first. Empty for a blank query. Pure, so it's tested. */
-fun searchDishes(query: String, pantry: List<PantryStock>, saved: List<Recipe>, today: LocalDate): List<DishIdea> {
-    val q = query.trim().lowercase()
-    if (q.length < 2) return emptyList()
-    return (saved.map { it to true })
-        .filter { (r, _) -> r.title.lowercase().contains(q) || r.ingredients.any { it.name.lowercase().contains(q) } }
-        .map { (r, isSaved) -> DishIdea(r, isSaved, recipeFit(r.ingredients, pantry, today), emptyList()) }
-        .sortedWith(compareByDescending<DishIdea> { it.fit.canCook }.thenBy { it.fit.missing.size }.thenByDescending { it.saved })
-        .take(10)
-}

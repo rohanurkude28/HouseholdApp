@@ -1,5 +1,6 @@
 package com.houseaffairs.ios
 
+import com.houseaffairs.app.core.data.*
 import com.houseaffairs.app.core.model.Role
 import com.houseaffairs.app.core.model.RolePolicy
 import dev.gitlive.firebase.Firebase

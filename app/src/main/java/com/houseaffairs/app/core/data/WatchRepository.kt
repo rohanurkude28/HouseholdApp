@@ -19,47 +19,6 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import com.houseaffairs.app.feature.quickadd.ListTemplate
 
-data class WatchItem(
-    val id: String,
-    val title: String,
-    /** What the family picked ("Netflix", "Theatre"…), if anything. */
-    val platform: String?,
-    val rating: Double?,
-    val ratingSource: String?,
-    val poster: String?,
-    /** Where it streams in India (from TMDB / JustWatch data), or the show's network. */
-    val providers: List<String>,
-    val kind: String?,
-    val year: String?,
-    val lookedUp: Boolean,
-    /** Movies & shows, books or music. */
-    val template: ListTemplate = ListTemplate.WATCH,
-    /** IMDb rating ("8.6") and Rotten Tomatoes score ("93%"), from OMDb when a key is set. */
-    val imdb: String? = null,
-    val rottenTomatoes: String? = null,
-    val status: String = "IDEA",
-    val votes: List<String> = emptyList(),
-    /** Set when picked from search results, so ratings come from exactly that title. */
-    val imdbId: String? = null,
-    /** A link the family saved (trailer, review, shop). */
-    val link: String? = null,
-    /** The family's own photos of it, used when nothing was looked up. */
-    val photos: List<String> = emptyList(),
-    /** Author or artist, for books and music. */
-    val creator: String? = null,
-) {
-    /** The best "where to watch" text: the family's pick, else what the lookup found. */
-    val whereToWatch: String? get() = platform ?: providers.takeIf { it.isNotEmpty() }?.joinToString(", ")
-
-    /** Songs and albums open in YouTube Music (the app if installed); no key needed. */
-    val youtubeUrl: String?
-        get() = if (template == ListTemplate.MUSIC) {
-            "https://music.youtube.com/search?q=" + java.net.URLEncoder.encode(listOfNotNull(title, creator).joinToString(" "), "UTF-8")
-        } else {
-            null
-        }
-}
-
 /**
  * The media lists (movies & shows, books, music), with covers, ratings and where to find them
  * looked up once and saved. TMDB (needs a free key) covers movies and Indian streaming; TVMaze,

@@ -150,7 +150,7 @@ class HomeWidgetWorker(context: Context, params: WorkerParameters) : CoroutineWo
             HomeWidget.save(applicationContext, listOf(WidgetCard("🏠", "HouseAffairs", "Sign in to see your day here", "home")))
             return Result.success()
         }
-        val data = withTimeoutOrNull(20_000) { deps.home().observe(ready.household.id, ready.me, ready.household.baseCurrency).first { it.loaded } } ?: return Result.retry()
+        val data = withTimeoutOrNull(20_000) { deps.home().observe(ready.household.id, ready.me.uid, ready.me.role, ready.me::canAccess, ready.household.baseCurrency).first { it.loaded } } ?: return Result.retry()
         val review = runCatching { deps.weekly().load(ready.household.id, ready.me) }.getOrNull()
         // Lists are Plans; a role without it doesn't see picks from them.
         val media = if (!ready.me.canAccess(com.houseaffairs.app.core.model.AppModule.PLANS)) emptyList()

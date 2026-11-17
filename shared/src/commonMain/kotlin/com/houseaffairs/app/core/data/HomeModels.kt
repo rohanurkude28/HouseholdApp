@@ -104,3 +104,9 @@ data class HomeData(
 /** A task ticked off on [date] at [minute] after midnight. */
 data class DoneTask(val title: String, val date: LocalDate, val minute: Int)
 
+
+/** Document types, each its own folder under HouseAffairs/Documents; also the Documents tab's groups. */
+val DOC_TYPES = listOf(
+    "IDs & passports", "Property & home", "Insurance", "Medical", "Education", "Vehicle",
+    "Bank & tax", "Bills & warranties", "Other",
+)

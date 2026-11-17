@@ -1,5 +1,12 @@
 package com.houseaffairs.app.feature.home
 
+import com.houseaffairs.app.core.data.HomeSection
+import com.houseaffairs.app.core.data.SectionPref
+import com.houseaffairs.app.core.data.parseLayout
+import com.houseaffairs.app.core.data.encodeLayout
+import com.houseaffairs.app.core.data.toggled
+import com.houseaffairs.app.core.data.moved
+import com.houseaffairs.app.feature.home.COOK_TAB_SIZE
 import com.houseaffairs.app.core.data.needsRefill
 import com.houseaffairs.app.core.data.leftOn
 import androidx.lifecycle.ViewModel
@@ -22,7 +29,7 @@ import com.houseaffairs.app.core.data.WatchRepository
 import com.houseaffairs.app.core.data.WishItem
 import com.houseaffairs.app.core.data.rightNow
 import com.houseaffairs.app.core.data.withHistory
-import com.houseaffairs.app.core.data.isoWeek
+import com.houseaffairs.app.core.time.isoWeek
 import kotlinx.coroutines.flow.onEach
 import java.time.LocalDateTime
 import com.houseaffairs.app.core.data.cookIdeas
@@ -62,24 +69,6 @@ import javax.inject.Inject
 import com.houseaffairs.app.core.data.Nudge
 import com.houseaffairs.app.core.data.WeeklyRepository
 
-enum class HomeSection(val label: String) {
-    STATS("Stats at the top"),
-    TODAY("Today: tasks and alerts"),
-    FAMILY("What's new at home"),
-    TIDY("Tidy up & add"),
-    COMING_UP("Coming up"),
-    RIGHT_NOW("For right now"),
-    USE_IT_UP("What to cook"),
-    WATCH("Movies, books & music"),
-    SHOPPING("Shopping list"),
-    GLANCE("At a glance"),
-}
-
-/** How many dishes Home's Cook tab shows. */
-internal const val COOK_TAB_SIZE = 6
-
-data class SectionPref(val section: HomeSection, val visible: Boolean)
-
 enum class HomeFilter(val label: String, val area: Area?) {
     ALL("All", null),
     MONEY("Money", Area.MONEY),
@@ -87,25 +76,6 @@ enum class HomeFilter(val label: String, val area: Area?) {
     HEALTH("Health", Area.HEALTH),
     PLANS("Plans", Area.PLANS),
 }
-
-/** Sections renamed when Home was simplified, so saved layouts keep their order and switches. */
-private val RENAMED = mapOf("ATTENTION" to HomeSection.TODAY, "TIMELINE" to HomeSection.COMING_UP)
-
-internal fun parseLayout(raw: String?): List<SectionPref> {
-    val saved = raw.orEmpty().split(",").mapNotNull { part ->
-        val (name, on) = part.split(":").takeIf { it.size == 2 } ?: return@mapNotNull null
-        (HomeSection.entries.firstOrNull { it.name == name } ?: RENAMED[name])?.let { SectionPref(it, on == "1") }
-    }.distinctBy { it.section }
-    // Sections added in later versions slot in at their default position, switched on.
-    val result = saved.toMutableList()
-    HomeSection.entries.forEachIndexed { index, section ->
-        // "At a glance" repeats the tabs below, so it starts switched off.
-        if (result.none { it.section == section }) result.add(index.coerceAtMost(result.size), SectionPref(section, section != HomeSection.GLANCE))
-    }
-    return result
-}
-
-internal fun encodeLayout(layout: List<SectionPref>) = layout.joinToString(",") { "${it.section.name}:${if (it.visible) 1 else 0}" }
 
 data class HomeUiState(
     val firstName: String = "",
@@ -230,7 +200,7 @@ class HomeViewModel @Inject constructor(
     private val data = ready
         .map { Scope(it.household.id, it.me.copy(joinedAt = null), it.household.baseCurrency) }
         .distinctUntilChanged()
-        .flatMapLatest { home.observe(it.householdId, it.me, it.currency) }
+        .flatMapLatest { home.observe(it.householdId, it.me.uid, it.me.role, it.me::canAccess, it.currency) }
 
     private val members = ready.map { it.household.id }.distinctUntilChanged().flatMapLatest { households.observeMembers(it) }
 
@@ -289,7 +259,7 @@ class HomeViewModel @Inject constructor(
                     things.observeGoals(householdId, uid),
                     things.observeFinished(householdId, uid).map { all ->
                         all.filter { it.collection == "tasks" }.mapNotNull { f ->
-                            f.at?.let { com.houseaffairs.app.core.data.Purchase(f.title, it.toInstant().atZone(java.time.ZoneId.systemDefault()).toLocalDate()) }
+                            f.at?.let { com.houseaffairs.app.core.data.Purchase(f.title, java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).toLocalDate()) }
                         }
                     },
                     ::Plans,
@@ -383,7 +353,8 @@ class HomeViewModel @Inject constructor(
             cookWhy = v.picks.cook.associate { it.title to it.why },
             watchWhy = v.picks.watch.associate { it.title to it.why },
             rightNow = rightNow(
-                now = LocalDateTime.now(),
+                today = LocalDate.now(),
+                hour = LocalDateTime.now().hour,
                 pantry = v.kitchen.pantry,
                 recipes = v.kitchen.recipes,
                 wishes = v.plans.wishes,
@@ -405,15 +376,9 @@ class HomeViewModel @Inject constructor(
         filter.value = value
     }
 
-    fun toggleSection(section: HomeSection) = editLayout { list ->
-        list.map { if (it.section == section) it.copy(visible = !it.visible) else it }
-    }
+    fun toggleSection(section: HomeSection) = editLayout { it.toggled(section) }
 
-    fun moveSection(section: HomeSection, up: Boolean) = editLayout { list ->
-        val from = list.indexOfFirst { it.section == section }
-        val to = if (up) from - 1 else from + 1
-        if (from < 0 || to !in list.indices) list else list.toMutableList().apply { add(to, removeAt(from)) }
-    }
+    fun moveSection(section: HomeSection, up: Boolean) = editLayout { it.moved(section, up) }
 
     private fun editLayout(block: (List<SectionPref>) -> List<SectionPref>) {
         viewModelScope.launch { settings.setHomeLayout(encodeLayout(block(state.value.layout))) }

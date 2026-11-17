@@ -1,5 +1,7 @@
 package com.houseaffairs.app.core.health
 
+import com.houseaffairs.app.core.data.HealthWeek
+
 import android.content.Context
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
@@ -17,7 +19,6 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /** Steps, sleep and workouts over some days, as Health Connect has them. */
-data class HealthWeek(val steps: Long, val sleepHoursPerNight: Double?, val exerciseMinutes: Int)
 
 /**
  * Reads steps, sleep and workouts from Health Connect, where Google Fit, Samsung Health, Fitbit

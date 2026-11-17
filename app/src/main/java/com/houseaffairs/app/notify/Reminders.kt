@@ -139,7 +139,9 @@ object Reminders {
         createChannel(context)
         val open = PendingIntent.getActivity(
             context, key.hashCode(),
-            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            // Where the tap goes: the check-in pops up, a task opens Plans, a dose opens Medicines.
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(com.houseaffairs.app.widget.WidgetInbox.EXTRA_ROUTE, com.houseaffairs.app.core.data.routeForReminder(key)),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val builder = NotificationCompat.Builder(context, CHANNEL)
@@ -250,7 +252,7 @@ class HabitActionReceiver : BroadcastReceiver() {
                 try {
                     val deps = EntryPointAccessors.fromApplication(context.applicationContext, DigestEntryPoint::class.java)
                     val ready = withTimeoutOrNull(10_000) { deps.session().state.first { it is SessionState.Ready || it == SessionState.SignedOut } } as? SessionState.Ready
-                    val data = ready?.let { r -> withTimeoutOrNull(15_000) { deps.home().observe(r.household.id, r.me, r.household.baseCurrency).first { it.loaded } } }
+                    val data = ready?.let { r -> withTimeoutOrNull(15_000) { deps.home().observe(r.household.id, r.me.uid, r.me.role, r.me::canAccess, r.household.baseCurrency).first { it.loaded } } }
                     val task = data?.tasks?.firstOrNull { it.id == taskId }
                     if (ready != null && task != null) {
                         if (intent.getStringExtra("what") == "done") deps.home().completeTask(ready.household.id, ready.user.uid, task)
@@ -303,7 +305,7 @@ class ReminderWorker(context: Context, params: WorkerParameters) : CoroutineWork
         val deps = EntryPointAccessors.fromApplication(applicationContext, DigestEntryPoint::class.java)
         val ready = withTimeoutOrNull(20_000) { deps.session().state.first { it is SessionState.Ready || it == SessionState.SignedOut } }
             as? SessionState.Ready ?: return Result.success()
-        val data = withTimeoutOrNull(20_000) { deps.home().observe(ready.household.id, ready.me, ready.household.baseCurrency).first { it.loaded } }
+        val data = withTimeoutOrNull(20_000) { deps.home().observe(ready.household.id, ready.me.uid, ready.me.role, ready.me::canAccess, ready.household.baseCurrency).first { it.loaded } }
             ?: return Result.retry()
         Reminders.sync(applicationContext, data, ready.me.uid)
         return Result.success()

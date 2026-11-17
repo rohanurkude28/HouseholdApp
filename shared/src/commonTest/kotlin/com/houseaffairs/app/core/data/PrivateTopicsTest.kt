@@ -32,7 +32,7 @@ class PrivateTopicsTest {
     }
 
     @Test
-    fun `choices are the topics, then what the family uses, then the usual ones`() {
+    fun `choices are the topics then what the family uses then the usual ones`() {
         val c = privateChoices(listOf("Baby care", "Toiletries"), listOf("Toiletries", "Other", "Cleaning"))
         assertEquals(listOf("Period care", "Sexual wellness", "Health spending", "Cosmetics & skincare", "Baby care", "Toiletries", "Cleaning"), c)
     }

@@ -68,7 +68,9 @@ class EntryRepository @Inject constructor(
             EntryType.WISH -> doc["status"] = "IDEA"
             EntryType.DREAM -> {
                 doc["achieved"] = false
-                if (doc["emoji"] == null) doc["emoji"] = com.houseaffairs.app.feature.add.DREAM_KINDS[values["kind"]] ?: "⭐"
+                // Not picked: the name says it ("Bali trip" is Travel), else Other.
+                if (doc["kind"] == null) doc["kind"] = com.houseaffairs.app.core.data.dreamKindOf(doc["title"] as? String ?: "") ?: "Other"
+                if (doc["emoji"] == null) doc["emoji"] = com.houseaffairs.app.feature.add.DREAM_KINDS[doc["kind"]] ?: "⭐"
             }
             EntryType.CREDIT -> doc["used"] = false
             EntryType.GROCERY, EntryType.MEDICINE, EntryType.HOUSEHOLD -> {
@@ -257,7 +259,7 @@ class EntryRepository @Inject constructor(
             }
         }
         // Shopping items saved before titles existed used "name".
-        if (type.titleKey != null && values[type.titleKey] == null) values[type.titleKey] = doc.getString("title") ?: doc.getString("name")
+        type.titleKey?.let { key -> if (values[key] == null) values[key] = doc.getString("title") ?: doc.getString("name") }
         val visibleTo = (doc.get("visibleTo") as? List<*>)?.filterIsInstance<String>() ?: listOf("*")
         return values.filterValues { it != null } to visibleTo
     }

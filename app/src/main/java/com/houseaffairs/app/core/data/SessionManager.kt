@@ -33,12 +33,14 @@ sealed interface SessionState {
 class SessionManager @Inject constructor(
     auth: AuthRepository,
     households: HouseholdRepository,
+    settings: SettingsRepository,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    val state: StateFlow<SessionState> = auth.currentUser
-        .flatMapLatest { user ->
-            if (user == null) return@flatMapLatest flowOf(SessionState.SignedOut)
+    val state: StateFlow<SessionState> = combine(auth.currentUser, settings.demoPaused) { user, paused -> user to paused }
+        .flatMapLatest { (user, paused) ->
+            // A demo that was left is kept, not signed out, so "Back to your demo home" can return to it.
+            if (user == null || (user.isAnonymous && paused)) return@flatMapLatest flowOf(SessionState.SignedOut)
             households.observeHouseholdId(user.uid)
                 .flatMapLatest { householdId ->
                     if (householdId == null) {
@@ -57,8 +59,8 @@ class SessionManager @Inject constructor(
                             // Right after creating or joining, the listener can reach the server before
                             // the membership write commits, and rules deny it. Give the write a moment.
                             .retryWhen { cause, attempt ->
-                                val denied = cause is FirebaseFirestoreException &&
-                                    cause.code == FirebaseFirestoreException.Code.PERMISSION_DENIED
+                                val denied = (cause is FirebaseFirestoreException && cause.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) ||
+                                    (cause is dev.gitlive.firebase.firestore.FirebaseFirestoreException && cause.code == dev.gitlive.firebase.firestore.FirestoreExceptionCode.PERMISSION_DENIED)
                                 (denied && attempt < 5).also { if (it) delay(300L * (attempt + 1)) }
                             }
                             // Still denied, e.g. removed from the household: offer setup again.

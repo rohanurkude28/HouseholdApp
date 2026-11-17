@@ -1,5 +1,6 @@
 package com.houseaffairs.ios
 
+import com.houseaffairs.app.core.data.*
 import dev.gitlive.firebase.Firebase
 import dev.gitlive.firebase.auth.GoogleAuthProvider
 import dev.gitlive.firebase.auth.auth

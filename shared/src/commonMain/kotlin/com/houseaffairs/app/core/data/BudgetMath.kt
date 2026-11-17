@@ -128,6 +128,8 @@ data class Txn(
     val paidWith: String? = null,
     /** Which credit card, when there's more than one. */
     val card: String? = null,
+    /** Who paid (a member's uid), when said. */
+    val paidBy: String? = null,
 )
 
 /** A subscription or bill expected later in the cycle. */

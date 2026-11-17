@@ -25,6 +25,13 @@ targets:
         UILaunchScreen: {}
         # Compose Multiplatform needs this for 120 Hz on ProMotion screens.
         CADisableMinimumFrameDurationOnPhone: true
+        # Asked when "Steps & sleep" is connected in Settings; read only.
+        NSHealthShareUsageDescription: "Your steps, sleep and workouts fill in your live-to-100 wheel and answer \"Did you move?\" in the daily check-in. Only read, only on this phone."
+        # Asked the first time someone taps the mic in the + box.
+        # The document camera for "Scan a bill" and the 📷 on forms.
+        NSCameraUsageDescription: "Scan a bill, a pack's expiry date or a nutrition label to fill it in for you."
+        NSMicrophoneUsageDescription: "Speak into the + box instead of typing: \"bought milk and eggs\", \"remind me to call mom at 5\"."
+        NSSpeechRecognitionUsageDescription: "What you say in the + box is turned into text by Apple, then saved like anything typed."
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         # Google sign-in returns to the app through its reversed client id (REVERSED_CLIENT_ID in
         # GoogleService-Info.plist), set below per Firebase project.
@@ -34,6 +41,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.houseaffairs.app
         MARKETING_VERSION: "0.1.0"
+        # The same house-and-tick mark as Android's launcher icon (drawn from ic_launcher_foreground.xml).
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_ENTITLEMENTS: iosApp/iosApp.entitlements
         CURRENT_PROJECT_VERSION: "1"
         FRAMEWORK_SEARCH_PATHS: "$(SRCROOT)/../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)"
         OTHER_LDFLAGS: ["$(inherited)", "-framework", "ComposeApp", "-ObjC"]
@@ -42,6 +52,10 @@ targets:
         # REVERSED_CLIENT_ID from GoogleService-Info.plist (Firebase project houseaffairs-98d6a).
         GOOGLE_REVERSED_CLIENT_ID: com.googleusercontent.apps.456375372275-d5fp6277hh15i1k7njgmgbgug3v6cuf6
     dependencies:
+      - sdk: HealthKit.framework
+      - sdk: Speech.framework
+      - sdk: Vision.framework
+      - sdk: VisionKit.framework
       - package: Firebase
         product: FirebaseAuth
       - package: Firebase

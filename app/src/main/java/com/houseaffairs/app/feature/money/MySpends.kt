@@ -53,36 +53,10 @@ class MySpendsViewModel @Inject constructor(session: SessionManager, money: Mone
     val currency: StateFlow<String> = ready.map { it.household.baseCurrency }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "INR")
 }
 
-/**
- * Money for kids, teens and helpers without the Money module: add what you spent and see your
- * own entries. The family's budget, totals and breakdown stay with the grown-ups (and the rules).
- */
+/** Android's My spends: the shared list (`:ui` MySpends), fed by Hilt. */
 @Composable
 fun MySpendsScreen(onAdd: () -> Unit, onOpen: (String) -> Unit, viewModel: MySpendsViewModel = hiltViewModel()) {
     val spends by viewModel.spends.collectAsStateWithLifecycle()
     val currency by viewModel.currency.collectAsStateWithLifecycle()
-    val accent = LocalHouseColors.current.money
-    LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(bottom = 24.dp)) {
-        item {
-            Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp)) {
-                Text("My spends", style = MaterialTheme.typography.headlineLarge)
-                Text("Add what you spend. The family budget is looked after by the grown-ups.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-        item { AddRow("Add what I spent", accent, onAdd) }
-        if (spends.isEmpty()) {
-            item { Text("Nothing yet. Say “200 stationery” or tap above.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(20.dp)) }
-        } else {
-            item { SectionTitle("What I added") }
-            items(spends, key = { it.id }) { t ->
-                Row(Modifier.fillMaxWidth().clickable { onOpen(t.id) }.padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(t.title, style = MaterialTheme.typography.bodyLarge)
-                        Text("${t.category} · ${formatDate(t.date)}" + if (t.planned) " · planned" else "", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Text(formatMinor(t.amountMinor, currency), style = MaterialTheme.typography.titleSmall)
-                }
-            }
-        }
-    }
+    MySpendsList(spends, currency, onAdd, onOpen)
 }

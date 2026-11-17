@@ -43,6 +43,7 @@ class MoneyViewModel @Inject constructor(
     private val session: SessionManager,
     private val money: MoneyRepository,
     private val settings: SettingsRepository,
+    private val households: com.houseaffairs.app.core.data.HouseholdRepository,
 ) : ViewModel() {
     private val ready = session.state.filterIsInstance<SessionState.Ready>()
     private val ids = ready.map { it.household.id to it.user.uid }.distinctUntilChanged()
@@ -51,6 +52,11 @@ class MoneyViewModel @Inject constructor(
     private val budgetAndSummary = ids.flatMapLatest { (householdId, uid) ->
         combine(money.observeBudget(householdId), money.observeMoney(householdId, uid)) { b, m -> b to m }
     }
+
+    /** First names by uid, so expenses can say who paid ("Ravi paid"); "You" for this person. */
+    val names: StateFlow<Map<String, String>> = ready.map { it.household.id to it.user.uid }.distinctUntilChanged()
+        .flatMapLatest { (hid, uid) -> households.observeMembers(hid).map { list -> list.associate { m -> m.uid to if (m.uid == uid) "You" else m.displayName.substringBefore(' ') } } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
     val state: StateFlow<MoneyUiState> = combine(ready, budgetAndSummary, settings.hideAmounts, error) { r, (budget, m), hide, err ->
         MoneyUiState(

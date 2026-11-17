@@ -42,10 +42,11 @@ import javax.inject.Inject
 import com.houseaffairs.app.feature.quickadd.ListTemplate
 import kotlinx.coroutines.flow.onEach
 
-enum class PlansTab(val label: String) { DREAMS("Vision board"), TASKS("Tasks"), GOALS("Goals"), EVENTS("Events"), LISTS("Lists"), PLACES("Places") }
+/** In the order they're used: to-dos and dates first, dreams later. */
+enum class PlansTab(val label: String) { TASKS("To do"), EVENTS("Events"), LISTS("Lists"), GOALS("Goals"), DREAMS("Trips & dreams"), PLACES("Places") }
 
 data class PlansUiState(
-    val tab: PlansTab = PlansTab.DREAMS,
+    val tab: PlansTab = PlansTab.TASKS,
     /** With Money access: progress, pot and envelopes. Without: just the dreams. */
     val money: MoneyState? = null,
     val dreams: List<Dream> = emptyList(),
@@ -91,7 +92,7 @@ class PlansViewModel @Inject constructor(
     private data class Near(val on: Boolean = false, val center: LatLng? = null, val radiusKm: Double = 2.0, val locating: Boolean = false, val missing: Boolean = false)
 
     private val near = MutableStateFlow(Near())
-    private val tab = MutableStateFlow(PlansTab.DREAMS)
+    private val tab = MutableStateFlow(PlansTab.TASKS)
     private val placeKind = MutableStateFlow<String?>(null)
     private val listFilter = MutableStateFlow<ListTemplate?>(null)
     private val ready = session.state.filterIsInstance<SessionState.Ready>()
@@ -104,7 +105,7 @@ class PlansViewModel @Inject constructor(
             combine(
                 if (s.canMoney) moneyRepo.observeMoney(s.householdId, s.uid) else flowOf(null),
                 moneyRepo.observeDreams(s.householdId, s.uid),
-                home.observe(s.householdId, r.me, r.household.baseCurrency),
+                home.observe(s.householdId, r.me.uid, r.me.role, r.me::canAccess, r.household.baseCurrency),
                 things.observePlaces(s.householdId, s.uid),
                 combine(
                     things.observeWishes(s.householdId, s.uid),
