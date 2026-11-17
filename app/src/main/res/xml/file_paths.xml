@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Where the camera app may write a new photo before it's copied into the app's own folder. -->
+<paths>
+    <cache-path name="camera" path="camera/" />
+    <!-- "Download my data" files, shared to wherever the person picks. -->
+    <cache-path name="export" path="export/" />
+</paths>

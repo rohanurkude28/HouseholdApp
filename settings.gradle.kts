@@ -17,4 +17,6 @@ rootProject.name = "HouseAffairs"
 include(":app")
 include(":shared")
 include(":composeApp")
+include(":data")
+include(":ui")
 

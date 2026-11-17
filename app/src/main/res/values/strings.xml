@@ -2,4 +2,5 @@
 <resources>
     <!-- Working name; change here (and applicationId) once the final name is chosen. -->
     <string name="app_name">HouseAffairs</string>
+    <string name="widget_description">Today\'s tasks, the next birthday, your live-well score and something to watch, one at a time</string>
 </resources>

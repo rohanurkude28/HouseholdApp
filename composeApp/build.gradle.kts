@@ -20,6 +20,8 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             implementation(project(":shared"))
+            implementation(project(":data"))
+            implementation(project(":ui"))
             implementation(compose.runtime)
             implementation(compose.foundation)
             implementation(compose.material3)
@@ -27,6 +29,13 @@ kotlin {
             implementation(libs.kotlinx.datetime)
             implementation(libs.gitlive.firebase.auth)
             implementation(libs.gitlive.firebase.firestore)
+            implementation(libs.coil3.compose)
+            implementation(libs.coil3.network.ktor)
+            implementation(libs.ktor.client.core)
+            implementation(libs.kotlinx.serialization.json)
+        }
+        iosMain.dependencies {
+            implementation(libs.ktor.client.darwin)
         }
     }
 }

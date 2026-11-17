@@ -46,6 +46,7 @@ interface DigestEntryPoint {
     fun home(): HomeRepository
     fun money(): MoneyRepository
     fun settings(): SettingsRepository
+    fun pantry(): com.houseaffairs.app.core.data.PantryRepository
 }
 
 /** Builds today's digest from the same data Home shows and posts one notification. */
@@ -60,7 +61,7 @@ class DigestWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         val ready = withTimeoutOrNull(20_000) { deps.session().state.first { it is SessionState.Ready || it == SessionState.SignedOut } }
             as? SessionState.Ready ?: return Result.success()
         val me = ready.me
-        val data = withTimeoutOrNull(20_000) { deps.home().observe(ready.household.id, me, ready.household.baseCurrency).first { it.loaded } }
+        val data = withTimeoutOrNull(20_000) { deps.home().observe(ready.household.id, me.uid, me.role, me::canAccess, ready.household.baseCurrency).first { it.loaded } }
             ?: return Result.retry()
         val money = if (me.canAccess(AppModule.MONEY)) withTimeoutOrNull(15_000) { deps.money().observeMoney(ready.household.id, me.uid).first() } else null
         val currency = money?.budget?.currency ?: ready.household.baseCurrency

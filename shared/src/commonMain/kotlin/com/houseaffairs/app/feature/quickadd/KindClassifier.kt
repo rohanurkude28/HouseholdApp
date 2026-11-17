@@ -1,5 +1,6 @@
 package com.houseaffairs.app.feature.quickadd
 
+import com.houseaffairs.app.core.util.*
 import kotlin.math.exp
 import kotlin.math.ln
 
@@ -65,7 +66,7 @@ private val UNITS = setOf("g", "gm", "kg", "l", "ml", "pcs", "pack", "packs", "d
 fun phraseKey(text: String): String =
     text.lowercase()
         .replace(Regex("\\d+(?:\\.\\d+)?\\s?(?:g|gm|kg|l|ml|pcs)\\b"), " ")
-        .split(Regex("[^\\p{L}]+"))
+        .splitOn { !it.isLetter() }
         .filter { it.isNotEmpty() && it !in FILLER && it !in UNITS }
         .joinToString(" ")
 

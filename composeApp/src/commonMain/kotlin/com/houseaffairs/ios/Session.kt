@@ -1,5 +1,6 @@
 package com.houseaffairs.ios
 
+import com.houseaffairs.app.core.data.*
 import com.houseaffairs.app.core.model.AppModule
 import com.houseaffairs.app.core.model.Role
 import dev.gitlive.firebase.Firebase
@@ -15,7 +16,16 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.retryWhen
 
-data class HouseholdInfo(val id: String, val name: String, val baseCurrency: String, val createdBy: String)
+data class HouseholdInfo(
+    val id: String,
+    val name: String,
+    val baseCurrency: String,
+    val createdBy: String,
+    /** Private category → who may see new entries on it (owner-set on either phone). */
+    val privateTopics: Map<String, List<String>> = emptyMap(),
+    /** Who doesn't see the family's costs. */
+    val hideCostsFrom: List<String> = emptyList(),
+)
 
 data class MemberInfo(val uid: String, val displayName: String, val role: Role, val moduleAccess: Map<String, Boolean>) {
     fun canAccess(module: AppModule): Boolean = moduleAccess[module.key] == true
@@ -44,7 +54,11 @@ fun observeSession(): Flow<SessionState> {
                     if (!h.exists || !m.exists) return@combine SessionState.NeedsHousehold(user.uid)
                     SessionState.Ready(
                         user.uid,
-                        HouseholdInfo(h.id, h.str("name").orEmpty(), h.str("baseCurrency") ?: "USD", h.str("createdBy").orEmpty()),
+                        HouseholdInfo(
+                            h.id, h.str("name").orEmpty(), h.str("baseCurrency") ?: "USD", h.str("createdBy").orEmpty(),
+                            runCatching { h.get<Map<String, List<String>>?>("privateTopics") }.getOrNull().orEmpty(),
+                            h.strings("hideCostsFrom"),
+                        ),
                         MemberInfo(
                             m.id, m.str("displayName") ?: "Member",
                             m.str("role")?.let { r -> Role.entries.firstOrNull { it.name == r } } ?: Role.ADULT,

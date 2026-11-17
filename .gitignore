@@ -29,3 +29,7 @@
 xcuserdata/
 DerivedData/
 /iosApp/iosApp/Info.plist
+dist/
+iosApp/build/
+/data/build/
+/ui/build/

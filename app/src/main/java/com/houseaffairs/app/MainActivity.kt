@@ -17,12 +17,19 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         takeShare(intent)
+        takeWidget(intent)
         setContent { HouseAffairsRoot() }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         takeShare(intent)
+        takeWidget(intent)
+    }
+
+    /** A widget card was tapped: open the tab it's about once the main screen is up. */
+    private fun takeWidget(intent: Intent?) {
+        intent?.getStringExtra(com.houseaffairs.app.widget.WidgetInbox.EXTRA_ROUTE)?.let { com.houseaffairs.app.widget.WidgetInbox.route.value = it }
     }
 
     /** Text or a link shared in from another app waits in the inbox until the main screen opens it. */

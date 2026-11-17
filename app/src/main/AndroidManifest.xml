@@ -9,6 +9,14 @@
     <!-- Task reminders at their time ("call mom at 5:30"), set again after a restart. -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Live-well: read (never write) steps, sleep and workouts from Health Connect, once allowed. -->
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
+    <uses-permission android:name="android.permission.health.READ_SLEEP" />
+    <uses-permission android:name="android.permission.health.READ_EXERCISE" />
+
+    <queries>
+        <package android:name="com.google.android.apps.healthdata" />
+    </queries>
 
     <application
         android:name=".HouseAffairsApp"
@@ -25,6 +33,10 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Health Connect asks the app to say why it wants steps and sleep. -->
+            <intent-filter>
+                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+            </intent-filter>
             <!-- "Share → HouseAffairs" from Instagram, YouTube, shops, Maps or any text. -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
@@ -32,7 +44,35 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+        <!-- Android 14+: "why this app reads health data" from the system's Health Connect settings. -->
+        <activity-alias
+            android:name="ViewPermissionUsageActivity"
+            android:exported="true"
+            android:targetActivity=".MainActivity"
+            android:permission="android.permission.START_VIEW_PERMISSION_USAGE">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+            </intent-filter>
+        </activity-alias>
+        <!-- Fetch the text-recognition model at install, so the first scan doesn't wait. -->
+        <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="ocr" />
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
+        </provider>
         <receiver android:name=".notify.ReminderReceiver" android:exported="false" />
+        <receiver android:name=".notify.DoseActionReceiver" android:exported="false" />
+        <receiver android:name=".notify.HabitActionReceiver" android:exported="false" />
+        <receiver android:name=".widget.HomeWidgetProvider" android:exported="false" android:label="HouseAffairs">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_info" />
+        </receiver>
         <receiver android:name=".notify.ReminderBootReceiver" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

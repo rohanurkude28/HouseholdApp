@@ -43,6 +43,7 @@ class MoneyViewModel @Inject constructor(
     private val session: SessionManager,
     private val money: MoneyRepository,
     private val settings: SettingsRepository,
+    private val households: com.houseaffairs.app.core.data.HouseholdRepository,
 ) : ViewModel() {
     private val ready = session.state.filterIsInstance<SessionState.Ready>()
     private val ids = ready.map { it.household.id to it.user.uid }.distinctUntilChanged()
@@ -51,6 +52,11 @@ class MoneyViewModel @Inject constructor(
     private val budgetAndSummary = ids.flatMapLatest { (householdId, uid) ->
         combine(money.observeBudget(householdId), money.observeMoney(householdId, uid)) { b, m -> b to m }
     }
+
+    /** First names by uid, so expenses can say who paid ("Ravi paid"); "You" for this person. */
+    val names: StateFlow<Map<String, String>> = ready.map { it.household.id to it.user.uid }.distinctUntilChanged()
+        .flatMapLatest { (hid, uid) -> households.observeMembers(hid).map { list -> list.associate { m -> m.uid to if (m.uid == uid) "You" else m.displayName.substringBefore(' ') } } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
     val state: StateFlow<MoneyUiState> = combine(ready, budgetAndSummary, settings.hideAmounts, error) { r, (budget, m), hide, err ->
         MoneyUiState(
@@ -64,10 +70,37 @@ class MoneyViewModel @Inject constructor(
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MoneyUiState())
 
-    fun saveBudget(budget: Budget, onDone: () -> Unit) {
+    /** How many expenses use [name]: decides whether deleting it needs to ask about them. */
+    fun categoryUse(name: String, onCount: (Int) -> Unit) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        viewModelScope.launch { onCount(runCatching { money.categoryUse(r.household.id, r.user.uid, name) }.getOrDefault(0)) }
+    }
+
+    /** Renames [from] (or with [to] null, removes it; its expenses move to Other). */
+    fun moveCategory(from: String, to: String?, onDone: () -> Unit) {
         val r = session.state.value as? SessionState.Ready ?: return
         viewModelScope.launch {
-            runCatching { money.saveBudget(r.household.id, r.user.uid, budget) }
+            runCatching {
+                if (to == null && money.categoryUse(r.household.id, r.user.uid, from) > 0) money.moveCategory(r.household.id, r.user.uid, from, "Other")
+                money.moveCategory(r.household.id, r.user.uid, from, to)
+            }.onSuccess { onDone() }.onFailure { error.value = "Couldn't change the category. Check your connection and try again." }
+        }
+    }
+
+    /** Deletes [name] and its expenses; Undo brings the expenses back. */
+    fun deleteCategoryWithHistory(name: String, onSaved: (com.houseaffairs.app.feature.add.SavedEntry) -> Unit, onDone: () -> Unit) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        viewModelScope.launch {
+            runCatching { money.deleteCategoryWithHistory(r.household.id, r.user.uid, name) }
+                .onSuccess { undo -> onDone(); onSaved(com.houseaffairs.app.feature.add.SavedEntry("$name and its expenses deleted") { undo() }) }
+                .onFailure { error.value = "Couldn't delete the category. Check your connection and try again." }
+        }
+    }
+
+    fun saveBudget(budget: Budget, from: com.houseaffairs.app.core.data.LimitFrom = com.houseaffairs.app.core.data.LimitFrom.THIS_MONTH, onDone: () -> Unit) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        viewModelScope.launch {
+            runCatching { money.saveBudget(r.household.id, r.user.uid, budget, from) }
                 .onSuccess { onDone() }
                 .onFailure { error.value = "Couldn't save the budget. Check your connection and try again." }
         }

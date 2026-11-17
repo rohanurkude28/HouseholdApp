@@ -57,6 +57,7 @@ fun TourScreen(
     onStep: (Int) -> Unit,
     onFinish: () -> Unit,
     onOpen: (String) -> Unit,
+    onSetupDone: () -> Unit = {},
 ) {
     val context = LocalContext.current
     var index by remember { mutableStateOf(start) }
@@ -65,6 +66,8 @@ fun TourScreen(
         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
     var granted by remember { mutableStateOf(!needsPermission) }
     var finishAfterAsk by remember { mutableStateOf(false) }
+    // The setup step can't be skipped past: each permission gets an answer, yes or not now.
+    var setupAnswered by remember { mutableStateOf(false) }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         granted = ok
         if (finishAfterAsk) onFinish()
@@ -90,7 +93,11 @@ fun TourScreen(
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("${index + 1} of ${steps.size}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.weight(1f))
-                if (index < steps.lastIndex) TextButton(onClick = ::finish) { Text("Skip") }
+                // Skip passes over the feature screens, never the setup: it goes there first if unanswered.
+                val setupAt = steps.indexOfFirst { it.action == TourAction.SETUP }
+                if (index < steps.lastIndex && !(step.action == TourAction.SETUP && !setupAnswered)) {
+                    TextButton(onClick = { if (setupAt > index && !setupAnswered) go(setupAt) else finish() }) { Text("Skip") }
+                }
             }
             AnimatedContent(targetState = step, label = "tour", modifier = Modifier.weight(1f)) { s ->
                 Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
@@ -112,15 +119,12 @@ fun TourScreen(
                     }
                     Spacer(Modifier.height(20.dp))
                     when (s.action) {
-                        TourAction.NOTIFICATIONS -> if (granted) {
-                            Text("✓ Notifications are on", color = MaterialTheme.colorScheme.primary)
-                            // Without "Alarms & reminders", Android may ring a few minutes late.
-                            if (Build.VERSION.SDK_INT >= 31 && !context.getSystemService(AlarmManager::class.java).canScheduleExactAlarms()) {
-                                TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)) }) { Text("Ring at the exact minute") }
-                            }
-                        } else {
-                            Button(onClick = { asked = true; permission.launch(Manifest.permission.POST_NOTIFICATIONS) }, shape = CircleShape) { Text("Allow notifications") }
-                        }
+                        TourAction.SETUP -> PhoneSetup(
+                            notificationsOn = granted,
+                            onNotifications = { asked = true; permission.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                            // Answered here (even "not now"): don't ask again at the end of the tour.
+                            onAnswered = { setupAnswered = it; if (it) { asked = true; onSetupDone() } },
+                        )
                         TourAction.OPEN_MONEY -> OutlinedButton(onClick = { onFinish(); onOpen("money") }, shape = CircleShape) { Text("Set up the budget now") }
                         TourAction.OPEN_KITCHEN -> OutlinedButton(onClick = { onFinish(); onOpen("stock") }, shape = CircleShape) { Text("Open the kitchen") }
                         null -> Unit
@@ -142,10 +146,126 @@ fun TourScreen(
                 Spacer(Modifier.width(0.dp))
                 Button(
                     onClick = { if (index < steps.lastIndex) go(index + 1) else finish() },
+                    enabled = step.action != TourAction.SETUP || setupAnswered,
                     shape = CircleShape,
                     modifier = Modifier.weight(1f),
                 ) { Text(if (index < steps.lastIndex) "Next" else "Start") }
             }
+        }
+    }
+}
+
+/**
+ * Every switch the app needs, on one screen: notifications, exact-time reminders, location for
+ * "near me" and the home-screen widget. Each row turns into a tick once done; coming back from
+ * the phone's settings re-checks them.
+ */
+@Composable
+private fun PhoneSetup(notificationsOn: Boolean, onNotifications: () -> Unit, onAnswered: (Boolean) -> Unit) {
+    val context = LocalContext.current
+    var check by remember { mutableStateOf(0) }
+    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
+        check++
+        onPauseOrDispose { }
+    }
+    fun has(p: String) = ContextCompat.checkSelfPermission(context, p) == PackageManager.PERMISSION_GRANTED
+    val location = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { check++ }
+    var widgetNote by remember { mutableStateOf<String?>(null) }
+    // Read again whenever [check] moves (a result came back, or the app resumed).
+    val exactOk = remember(check) { Build.VERSION.SDK_INT < 31 || context.getSystemService(AlarmManager::class.java).canScheduleExactAlarms() }
+    val locationOk = remember(check) { has(Manifest.permission.ACCESS_COARSE_LOCATION) }
+    val widgetOk = remember(check) { com.houseaffairs.app.widget.HomeWidget.placed(context) }
+    val canPin = remember { android.appwidget.AppWidgetManager.getInstance(context).isRequestPinAppWidgetSupported }
+
+    // One pop-up per switch, in turn, until each is answered: tapping past a list is too easy.
+    data class Ask(val id: String, val emoji: String, val title: String, val why: String, val done: Boolean, val allow: () -> Unit)
+    val asks = listOfNotNull(
+        Ask("notify", "🔔", "Allow notifications?", "So a reminder like “call mom at 5:30” pops up on time, plus one short summary a day.", notificationsOn || Build.VERSION.SDK_INT < 33, onNotifications),
+        if (Build.VERSION.SDK_INT >= 31) Ask("exact", "⏰", "Ring on the exact minute?", "Android may otherwise hold reminders back by a few minutes. You'll see a switch: turn it on, then come back.", exactOk) {
+            context.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, android.net.Uri.parse("package:" + context.packageName)))
+        } else null,
+        Ask("location", "📍", "Use your location for “near me”?", "To show saved places around you, like the pharmacy or a restaurant. Only while the app is open.", locationOk) {
+            location.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+        },
+        if (canPin) Ask("widget", "📱", "Add the widget to your home screen?", "Today's tasks, the next birthday, your live-well score and something to watch, taking turns.", widgetOk) {
+            com.houseaffairs.app.widget.HomeWidget.requestPin(context)
+        } else null,
+    )
+    var answered by remember { mutableStateOf(setOf<String>()) }
+    val current = asks.firstOrNull { !it.done && it.id !in answered }
+    androidx.compose.runtime.LaunchedEffect(current == null) { onAnswered(current == null) }
+    current?.let { a ->
+        androidx.compose.material3.AlertDialog(
+            // No tapping outside or Back: it needs a yes or a not now.
+            onDismissRequest = {},
+            properties = androidx.compose.ui.window.DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+            icon = { Text(a.emoji, fontSize = 32.sp) },
+            title = { Text(a.title, textAlign = TextAlign.Center) },
+            text = { Text(a.why, textAlign = TextAlign.Center) },
+            confirmButton = { Button(onClick = { answered = answered + a.id; a.allow(); check++ }, shape = CircleShape) { Text("Allow") } },
+            dismissButton = { TextButton(onClick = { answered = answered + a.id }) { Text("Not now") } },
+        )
+    }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        SetupRow("🔔", "Notifications", "Reminders and one short summary a day", notificationsOn || Build.VERSION.SDK_INT < 33, "Allow", onNotifications)
+        if (Build.VERSION.SDK_INT >= 31) {
+            SetupRow("⏰", "Ring on the minute", "Without it, Android may ring a few minutes late", exactOk, "Allow") {
+                context.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, android.net.Uri.parse("package:" + context.packageName)))
+            }
+        }
+        SetupRow("📍", "Location", "So “near me” finds saved places around you; only while the app is open", locationOk, "Allow") {
+            location.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+        SetupRow("📱", "Home-screen widget", widgetNote ?: "Today's tasks, birthdays, live-well and what to watch, taking turns", widgetOk, "Add") {
+            if (!com.houseaffairs.app.widget.HomeWidget.requestPin(context)) widgetNote = "Long-press your home screen, tap Widgets, then find HouseAffairs"
+            check++
+        }
+    }
+}
+
+@Composable
+private fun SetupRow(emoji: String, title: String, detail: String, done: Boolean, action: String, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).background(MaterialTheme.colorScheme.surfaceContainerHigh).padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(emoji, fontSize = 22.sp)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Spacer(Modifier.width(8.dp))
+        if (done) Text("✓", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
+        else Button(onClick = onClick, shape = CircleShape) { Text(action) }
+    }
+}
+
+/**
+ * The setup on its own, at launch, for anyone who hasn't answered it (the tour was skipped
+ * before this screen existed, or was left). It stays until every permission has an answer.
+ */
+@Composable
+fun SetupGate(onDone: () -> Unit) {
+    val context = LocalContext.current
+    val needs = Build.VERSION.SDK_INT >= 33 &&
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+    var granted by remember { mutableStateOf(!needs) }
+    var answered by remember { mutableStateOf(false) }
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
+    // Back can't dismiss it either: one answer per switch, then Continue.
+    BackHandler(enabled = !answered) {}
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+        Column(Modifier.fillMaxSize().systemBarsPadding().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+            Text("📲", fontSize = 64.sp)
+            Spacer(Modifier.height(16.dp))
+            Text("Set up your phone", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(8.dp))
+            Text("A few switches so reminders ring on time and your day shows on the home screen.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(20.dp))
+            PhoneSetup(granted, { permission.launch(Manifest.permission.POST_NOTIFICATIONS) }) { answered = it }
+            Spacer(Modifier.height(20.dp))
+            Button(onClick = onDone, enabled = answered, shape = CircleShape, modifier = Modifier.fillMaxWidth()) { Text("Continue") }
         }
     }
 }

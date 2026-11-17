@@ -1,5 +1,7 @@
 package com.houseaffairs.app.core.data
 
+import com.houseaffairs.app.core.util.*
+
 /**
  * Searching movies, shows, books and music by what someone typed or said, which is often a bit
  * off ("batman dark night"). OMDb only matches close titles, so a few variations are tried and the
@@ -24,7 +26,7 @@ private val SPELLINGS = mapOf("night" to "knight", "knite" to "knight", "lord of
 
 /** The query as typed, with common misspellings fixed, then with one word left out at a time. */
 fun searchVariants(query: String): List<String> {
-    val q = query.trim().lowercase().replace(Regex("[^\\p{L}\\p{N} ]"), " ").replace(Regex("\\s+"), " ").trim()
+    val q = query.trim().lowercase().keepOnly { it.isLetterOrDigit() || it == ' ' }.replace(Regex("\\s+"), " ").trim()
     val fixed = SPELLINGS.entries.fold(q) { acc, (from, to) -> acc.replace(Regex("\\b${Regex.escape(from)}\\b"), to) }
     val words = fixed.split(" ").filter { it.isNotEmpty() }
     val dropOne = if (words.size >= 3) words.indices.map { i -> words.filterIndexed { j, _ -> j != i }.joinToString(" ") } else emptyList()
@@ -40,7 +42,7 @@ private val TITLE_FILLER = setOf("the", "a", "an", "of", "and", "part", "to")
 fun rankHits(query: String, hits: List<MediaHit>): List<MediaHit> {
     val words = searchVariants(query).getOrElse(1) { query.lowercase() }.split(" ").filter { it.length > 2 }.toSet()
     fun score(h: MediaHit): Int {
-        val title = h.title.lowercase().split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() && it !in TITLE_FILLER && it.toIntOrNull() == null }
+        val title = h.title.lowercase().words().filter { it.isNotEmpty() && it !in TITLE_FILLER && it.toIntOrNull() == null }
         return words.count { w -> title.any { it.startsWith(w) } } - 2 * title.count { t -> words.none { t.startsWith(it) } }
     }
     return hits.distinctBy { it.title.lowercase() to it.year }

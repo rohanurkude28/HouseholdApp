@@ -1,5 +1,7 @@
 package com.houseaffairs.app.core.time
 
+import kotlinx.datetime.toLocalDateTime
+
 import kotlinx.datetime.DateTimeUnit
 import kotlinx.datetime.DayOfWeek
 import kotlinx.datetime.plus
@@ -23,3 +25,7 @@ actual fun LocalDate.plusMonths(months: Long): LocalDate = plus(months.toInt(), 
 actual fun LocalDate.plusYears(years: Long): LocalDate = plus(years.toInt(), DateTimeUnit.YEAR)
 
 actual fun systemToday(): LocalDate = kotlinx.datetime.Clock.System.todayIn(kotlinx.datetime.TimeZone.currentSystemDefault())
+
+actual fun dateOfMillis(millis: Long): LocalDate = kotlinx.datetime.Instant.fromEpochMilliseconds(millis).toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault()).date
+
+actual fun nowMillis(): Long = kotlinx.datetime.Clock.System.now().toEpochMilliseconds()

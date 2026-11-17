@@ -114,7 +114,7 @@ fun HouseholdSetupScreen(viewModel: HouseholdSetupViewModel = hiltViewModel()) {
             .imePadding(),
     ) {
         HeroBackground(
-            dayPart = DayPart.now(),
+            dayPart = DayPart.at(java.time.LocalTime.now().hour),
             groundColor = MaterialTheme.colorScheme.background,
             modifier = Modifier.fillMaxWidth().height(260.dp),
         ) {

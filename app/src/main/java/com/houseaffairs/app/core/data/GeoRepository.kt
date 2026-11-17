@@ -29,6 +29,42 @@ class GeoRepository @Inject constructor(
     val hasLocationPermission: Boolean
         get() = ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
+    /**
+     * Full addresses matching what's typed ("indiranagar" → "Indiranagar, Bengaluru, Karnataka"),
+     * nearest to the phone first when its location is known. A full address finds the right
+     * place later, so "near me" works.
+     */
+    suspend fun suggest(query: String): List<String> {
+        if (query.trim().length < 3 || !Geocoder.isPresent()) return emptyList()
+        val here = if (hasLocationPermission) runCatching { currentLocation() }.getOrNull() else null
+        val found: List<android.location.Address> = withTimeoutOrNull(6_000) {
+            val geocoder = Geocoder(context)
+            // About 60 km around the phone, so "MG Road" means the one in your city.
+            val box = here?.let { doubleArrayOf(it.lat - 0.5, it.lng - 0.5, it.lat + 0.5, it.lng + 0.5) }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                suspendCancellableCoroutine { cont ->
+                    val listener = object : Geocoder.GeocodeListener {
+                        override fun onGeocode(addresses: MutableList<android.location.Address>) = cont.resume(addresses.toList())
+                        override fun onError(errorMessage: String?) = cont.resume(emptyList())
+                    }
+                    if (box != null) geocoder.getFromLocationName(query, 5, box[0], box[1], box[2], box[3], listener)
+                    else geocoder.getFromLocationName(query, 5, listener)
+                }
+            } else {
+                withContext(Dispatchers.IO) {
+                    @Suppress("DEPRECATION")
+                    runCatching {
+                        (if (box != null) geocoder.getFromLocationName(query, 5, box[0], box[1], box[2], box[3]) else geocoder.getFromLocationName(query, 5)).orEmpty()
+                    }.getOrDefault(emptyList())
+                }
+            }
+        }.orEmpty()
+        return found.mapNotNull { a ->
+            (0..a.maxAddressLineIndex).mapNotNull { a.getAddressLine(it) }.joinToString(", ").ifBlank { null }
+                ?.also { line -> cache[line.trim().lowercase()] = LatLng(a.latitude, a.longitude) }
+        }.distinct()
+    }
+
     /** "Indiranagar" or "Toit, Indiranagar" → coordinates; null offline or when unknown. */
     suspend fun geocode(query: String): LatLng? {
         val key = query.trim().lowercase()
@@ -79,7 +115,9 @@ class GeoRepository @Inject constructor(
     suspend fun fillCoordinates(householdId: String, places: List<PlaceItem>): List<PlaceItem> =
         places.map { place ->
             if (place.lat != null && place.lng != null) return@map place
-            val found = latLngFromLink(place.mapLink) ?: geocode(listOfNotNull(place.title, place.area).joinToString(", "))
+            // A picked full address ("…, Bengaluru, Karnataka") is the surest; then name and area together.
+            val found = latLngFromLink(place.mapLink) ?: place.area?.takeIf { ',' in it }?.let { geocode(it) }
+                ?: geocode(listOfNotNull(place.title, place.area).joinToString(", "))
                 ?: place.area?.let { geocode(it) }
             if (found == null) {
                 place

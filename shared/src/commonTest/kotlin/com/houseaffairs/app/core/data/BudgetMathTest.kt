@@ -154,4 +154,69 @@ class BudgetMathTest {
         assertEquals(null, customCategoryIn("cooked dal", budget))
         assertEquals(null, customCategoryIn("cook 5000", null))
     }
+
+    @Test
+    fun `renaming a category keeps its limit - merging adds limits`() {
+        val budget = Budget(1000, "INR", categories = mapOf("Cook" to 5000, "Home" to 2000), customCategories = listOf("Cook"))
+        val renamed = budgetWithCategory(budget, "Cook", "Cook & maid")
+        assertEquals(mapOf("Home" to 2000L, "Cook & maid" to 5000L), renamed.categories)
+        assertEquals(listOf("Cook & maid"), renamed.customCategories)
+        val merged = budgetWithCategory(budget, "Cook", "Home")
+        assertEquals(mapOf("Home" to 7000L), merged.categories)
+        assertEquals(emptyList<String>(), merged.customCategories)
+        val gone = budgetWithCategory(budget, "Cook", null)
+        assertEquals(mapOf("Home" to 2000L), gone.categories)
+        assertEquals(emptyList<String>(), gone.customCategories)
+    }
+
+    @Test
+    fun `each month keeps the amount it had`() {
+        val budget = Budget(60_000, "INR", limitHistory = listOf(LimitChange(localDate(2026, 9, 1), 50_000), LimitChange(localDate(2026, 11, 1), 60_000)))
+        assertEquals(50_000L, budget.limitFor(localDate(2026, 8, 1)))
+        assertEquals(50_000L, budget.limitFor(localDate(2026, 10, 1)))
+        assertEquals(60_000L, budget.limitFor(localDate(2026, 11, 1)))
+        assertEquals(70_000L, Budget(70_000, "INR").limitFor(localDate(2026, 1, 1)))
+    }
+
+    @Test
+    fun `raising the budget applies from this month - or next - or always`() {
+        val today = localDate(2026, 11, 5)
+        val old = Budget(50_000, "INR")
+        val started = localDate(2026, 9, 1)
+        assertEquals(
+            listOf(LimitChange(started, 50_000), LimitChange(localDate(2026, 11, 1), 60_000)),
+            limitHistoryAfter(old, 60_000, LimitFrom.THIS_MONTH, started, today, 1),
+        )
+        assertEquals(localDate(2026, 12, 1), limitHistoryAfter(old, 60_000, LimitFrom.NEXT_MONTH, started, today, 1).last().from)
+        assertEquals(emptyList<LimitChange>(), limitHistoryAfter(old, 60_000, LimitFrom.ALWAYS, started, today, 1))
+        // Changing it again in the same month replaces that month's amount.
+        val once = old.copy(limitMinor = 60_000, limitHistory = limitHistoryAfter(old, 60_000, LimitFrom.THIS_MONTH, started, today, 1))
+        assertEquals(
+            listOf(LimitChange(started, 50_000), LimitChange(localDate(2026, 11, 1), 55_000)),
+            limitHistoryAfter(once, 55_000, LimitFrom.THIS_MONTH, started, today, 1),
+        )
+        // Same amount: nothing to record.
+        assertEquals(once.limitHistory, limitHistoryAfter(once, 60_000, LimitFrom.THIS_MONTH, started, today, 1))
+    }
+
+    @Test
+    fun `this month's summary uses this month's amount`() {
+        val budget = Budget(60_000, "INR", limitHistory = listOf(LimitChange(localDate(2026, 9, 1), 50_000), LimitChange(localDate(2026, 12, 1), 60_000)))
+        assertEquals(50_000L, summarize(budget, emptyList(), emptyList(), localDate(2026, 11, 5)).limitMinor)
+    }
+
+    @Test
+    fun `monthly dream amounts start - change and stop from a month on`() {
+        val oct = localDate(2026, 10, 1)
+        val nov = localDate(2026, 11, 1)
+        val start = allocationsAfter(emptyList(), mapOf("bali" to 10_000), oct)
+        assertEquals(mapOf("bali" to 10_000L), Budget(0, "INR", dreamAllocations = start).allocatedFor(nov))
+        val stopped = allocationsAfter(start, emptyMap(), nov)
+        val b = Budget(0, "INR", dreamAllocations = stopped)
+        assertEquals(mapOf("bali" to 10_000L), b.allocatedFor(oct))
+        assertEquals(emptyMap<String, Long>(), b.allocatedFor(nov))
+        // Same amount again: nothing changes.
+        assertEquals(start, allocationsAfter(start, mapOf("bali" to 10_000), nov))
+        assertEquals(2_000L, summarize(Budget(10_000, "INR", dreamAllocations = listOf(DreamAllocation("bali", 2_000, nov))), emptyList(), emptyList(), localDate(2026, 11, 5)).allocatedMinor)
+    }
 }

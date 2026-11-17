@@ -30,4 +30,20 @@ class FirstAidTest {
         assertEquals(listOf("b", "a"), medicinesFor("Fever", meds, "mia", today).map { it.id })
         assertEquals(listOf("a"), medicinesFor("Pain", meds, null, today).map { it.id })
     }
+
+    @Test
+    fun severalConditionsAreFoundInTheOrderSaid() {
+        assertEquals(listOf("Fever", "Cold & cough"), caresFor("I have fever and cold").map { it.tag })
+        assertEquals(listOf("Sore throat"), caresFor("my sore throat hurts").map { it.tag })
+    }
+
+    @Test
+    fun aMedicineIsFoundByItsNameWithoutAnyTag() {
+        val cabinet = listOf(
+            MedicineInfo("1", "Crocin 650", emptyList(), emptyList(), null, null),
+            MedicineInfo("2", "Sinarest", emptyList(), emptyList(), null, null),
+        )
+        assertEquals(listOf("1"), medicinesFor("Fever", cabinet, null, today).map { it.id })
+        assertEquals(listOf("2"), medicinesFor("Cold & cough", cabinet, null, today).map { it.id })
+    }
 }

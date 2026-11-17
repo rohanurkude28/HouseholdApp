@@ -6,7 +6,7 @@ import kotlinx.datetime.DayOfWeek
  * A calendar date. On Android it *is* java.time.LocalDate, so the app's own code keeps using
  * java.time unchanged; on iOS it's kotlinx-datetime's. Shared rules use only what's declared here.
  */
-expect class LocalDate
+expect class LocalDate : Comparable<LocalDate>
 
 expect fun localDate(year: Int, month: Int, day: Int): LocalDate
 
@@ -30,7 +30,6 @@ fun LocalDate.plusWeeks(weeks: Long): LocalDate = plusDays(7 * weeks)
 fun LocalDate.minusMonths(months: Long): LocalDate = plusMonths(-months)
 fun LocalDate.isBefore(other: LocalDate): Boolean = toEpochDay() < other.toEpochDay()
 fun LocalDate.isAfter(other: LocalDate): Boolean = toEpochDay() > other.toEpochDay()
-operator fun LocalDate.compareTo(other: LocalDate): Int = toEpochDay().compareTo(other.toEpochDay())
 
 /** Days from [from] to [to]; negative when [to] is earlier (ChronoUnit.DAYS.between). */
 fun daysBetween(from: LocalDate, to: LocalDate): Long = to.toEpochDay() - from.toEpochDay()
@@ -52,10 +51,10 @@ fun clampedDate(year: Int, month: Int, day: Int): LocalDate =
 /** The same day [months] later, as a (year, month) pair; month is 1-based. */
 fun addMonths(year: Int, month: Int, months: Int): Pair<Int, Int> {
     val index = year * 12 + (month - 1) + months
-    return Math.floorDiv(index, 12) to Math.floorMod(index, 12) + 1
+    return DateMath.floorDiv(index, 12) to DateMath.floorMod(index, 12) + 1
 }
 
-private object Math {
+private object DateMath {
     fun floorDiv(a: Int, b: Int): Int = (a - floorMod(a, b)) / b
     fun floorMod(a: Int, b: Int): Int = ((a % b) + b) % b
 }
@@ -101,3 +100,55 @@ fun lastDayOfMonth(year: Int, month: Int): LocalDate = localDate(year, month, le
 
 /** Today on this phone. Only for defaults at the edges; rules take `today` as a parameter. */
 expect fun systemToday(): LocalDate
+
+/** The phone's local day for a moment in epoch millis (a saved timestamp). */
+expect fun dateOfMillis(millis: Long): LocalDate
+
+/** Now, in epoch milliseconds. */
+expect fun nowMillis(): Long
+
+// ---- More of java.time's everyday calls, so rules read the same on both phones.
+
+fun LocalDate.plusDays(days: Int): LocalDate = plusDays(days.toLong())
+fun LocalDate.minusDays(days: Int): LocalDate = plusDays(-days.toLong())
+fun LocalDate.plusWeeks(weeks: Int): LocalDate = plusDays(7L * weeks)
+fun LocalDate.minusWeeks(weeks: Long): LocalDate = plusDays(-7 * weeks)
+fun LocalDate.plusMonths(months: Int): LocalDate = plusMonths(months.toLong())
+fun LocalDate.minusMonths(months: Int): LocalDate = plusMonths(-months.toLong())
+fun LocalDate.plusYears(years: Int): LocalDate = plusYears(years.toLong())
+fun LocalDate.minusYears(years: Long): LocalDate = plusYears(-years)
+fun LocalDate.minusYears(years: Int): LocalDate = plusYears(-years.toLong())
+
+/** The same month, on [day] (clamped to the month's length). */
+fun LocalDate.withDayOfMonth(day: Int): LocalDate = clampedDate(year, monthValue, day)
+fun LocalDate.withMonth(month: Int): LocalDate = clampedDate(year, month, dayOfMonth)
+
+/** Day of the year, 1 for 1 January. */
+val LocalDate.dayOfYear: Int get() = (daysBetween(localDate(year, 1, 1), this) + 1).toInt()
+fun LocalDate.withDayOfYear(day: Int): LocalDate = localDate(year, 1, 1).plusDays((day - 1).toLong())
+
+/** The earlier and later of two dates (minOf/maxOf need Comparable, which the iOS date isn't). */
+fun earlier(a: LocalDate, b: LocalDate): LocalDate = if (a.isAfter(b)) b else a
+fun later(a: LocalDate, b: LocalDate): LocalDate = if (a.isBefore(b)) b else a
+
+fun LocalDate.isEqualTo(other: LocalDate): Boolean = toEpochDay() == other.toEpochDay()
+
+/** The Monday of [date]'s week (the week starts on Monday). */
+fun mondayOf(date: LocalDate): LocalDate = date.minusDays(date.dayOfWeek.ordinal.toLong())
+
+/** The next [day] strictly after [date] (TemporalAdjusters.next). */
+fun nextAfter(date: LocalDate, day: DayOfWeek): LocalDate = nextOrSame(date.plusDays(1), day)
+
+fun LocalDate.lastDayOfMonth(): LocalDate = lastDayOfMonth(year, monthValue)
+fun LocalDate.lengthOfYear(): Int = if (isLeapYear(year)) 366 else 365
+
+/** Stand-ins for LocalDate.MIN/MAX when sorting "no date" to one end. */
+val FAR_PAST: LocalDate get() = localDate(1, 1, 1)
+val FAR_FUTURE: LocalDate get() = localDate(9999, 12, 31)
+
+/** "2026-W45": the ISO week (Monday start; week 1 holds the year's first Thursday). */
+fun isoWeek(date: LocalDate): String {
+    val thursday = date.plusDays((3 - date.dayOfWeek.ordinal).toLong())
+    val week = (thursday.dayOfYear - 1) / 7 + 1
+    return "${thursday.year}-W${week.toString().padStart(2, '0')}"
+}

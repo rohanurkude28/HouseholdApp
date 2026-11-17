@@ -1,0 +1,21 @@
+package com.houseaffairs.app.core.data
+
+import com.houseaffairs.app.core.time.localDate
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+class SearchDishesTest {
+
+    private val today = localDate(2026, 11, 4)
+
+    @Test
+    fun `search finds dishes by name or ingredient makeable first`() {
+        val pantry = listOf(PantryStock("p", "Paneer", 500.0, "g", 500.0), PantryStock("o", "Onion", 3.0, "pcs", 3.0), PantryStock("t", "Tomato", 3.0, "pcs", 3.0), PantryStock("c", "Capsicum", 1.0, "pcs", 1.0))
+        val results = searchDishes("paneer", pantry, com.houseaffairs.app.core.data.SAMPLE_RECIPES, today)
+        assertTrue(results.isNotEmpty())
+        assertTrue(results.first().fit.canCook)
+        assertTrue(results.all { r -> r.recipe.title.lowercase().contains("paneer") || r.recipe.ingredients.any { it.name == "Paneer" } })
+        assertEquals(emptyList<Any>(), searchDishes("p", pantry, emptyList(), today))
+    }
+}

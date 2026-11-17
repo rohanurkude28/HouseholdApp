@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -46,6 +47,10 @@ data class SettingsUiState(
     /** The last "Test & save" result per service, shown under its row. */
     val keyStatus: Map<String, String> = emptyMap(),
     val calendarSyncing: Boolean = false,
+    /** Who doesn't see the family's costs (owner-set). */
+    val hideCostsFrom: List<String> = emptyList(),
+    /** What can be made private: the sensitive topics, then the kitchen and supply categories. */
+    val privateChoices: List<String> = com.houseaffairs.app.core.data.PRIVATE_TOPICS,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -60,6 +65,8 @@ class SettingsViewModel @Inject constructor(
     private val calendarAuth: com.houseaffairs.app.core.calendar.CalendarAuth,
     @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context,
     private val watch: com.houseaffairs.app.core.data.WatchRepository,
+    private val demo: com.houseaffairs.app.core.data.DemoSeeder,
+    private val pantry: com.houseaffairs.app.core.data.PantryRepository,
 ) : ViewModel() {
     private val keyStatus = MutableStateFlow<Map<String, String>>(emptyMap())
 
@@ -82,6 +89,14 @@ class SettingsViewModel @Inject constructor(
     /** Google's consent screen, when Calendar access hasn't been allowed yet; the screen launches it. */
     val calendarConsent = MutableStateFlow<android.app.PendingIntent?>(null)
     private val ready = session.state.filterIsInstance<SessionState.Ready>()
+
+    /** The categories the family's kitchen and supplies use, most-used first, for Privacy's choices. */
+    private val categoriesInUse = ready.map { it.household.id to it.user.uid }.distinctUntilChanged().flatMapLatest { (hid, uid) ->
+        combine(pantry.observePantry(hid, uid), pantry.observeSupplies(hid, uid)) { food, supplies ->
+            (food.map { com.houseaffairs.app.core.data.pantryCategory(it).label } + supplies.map { com.houseaffairs.app.core.data.supplyCategory(it) })
+                .groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.map { it.key }
+        }
+    }.onStart { emit(emptyList()) }
     private val inviteCode = MutableStateFlow<String?>(null)
     private val error = MutableStateFlow<String?>(null)
 
@@ -111,10 +126,11 @@ class SettingsViewModel @Inject constructor(
             smartSuggest = p.smartSuggest,
             privateTopics = r.household.privateTopics,
             integrations = r.household.integrations,
+            hideCostsFrom = r.household.hideCostsFrom,
         )
     }.combine(combine(calendarStore.status, calendarSyncing, keyStatus) { c, busy, k -> Triple(c, busy, k) }) { st, (cal, busy, keys) ->
         st.copy(calendar = cal, calendarSyncing = busy, keyStatus = keys)
-    }
+    }.combine(categoriesInUse) { st, inUse -> st.copy(privateChoices = com.houseaffairs.app.core.data.privateChoices(inUse, USUAL_PRIVATE)) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
 
     /** Switching on asks Google for access first (a consent screen the first time), then syncs. */
@@ -161,6 +177,9 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { settings.setThemeMode(mode) }
     }
 
+    /** Hides the family's costs from [uids] (trips, dreams and lists stay; amounts don't). */
+    fun setHideCosts(uids: List<String>) = withHousehold { households.setHideCosts(it, uids) }
+
     /** Turns a private topic on (seen by [uids]) or off (null). */
     fun setPrivateTopic(topic: String, uids: List<String>?) = withHousehold { households.setPrivateTopic(it, topic, uids) }
 
@@ -199,6 +218,62 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * "Download my data": writes the JSON and expenses CSV into the app's cache and hands back a
+     * share intent, so the person picks where they go (Drive, email, Files).
+     */
+    fun exportData(onReady: (android.content.Intent) -> Unit) {
+        val r = session.state.value as? SessionState.Ready ?: return
+        withHousehold { hid ->
+            val entries = households.exportEntries(hid, r.me)
+            val names = state.value.members.associate { it.uid to it.displayName }
+            val today = java.time.LocalDate.now().toString()
+            val dir = java.io.File(context.cacheDir, "export").apply { deleteRecursively(); mkdirs() }
+            val json = java.io.File(dir, "HouseAffairs-$today.json").apply { writeText(com.houseaffairs.app.core.data.exportJson(r.household.name, today, entries)) }
+            val csv = java.io.File(dir, "HouseAffairs-expenses-$today.csv").apply {
+                writeText(com.houseaffairs.app.core.data.expensesCsv(entries["transactions"].orEmpty(), names))
+            }
+            val uris = arrayListOf(json, csv).map { androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", it) }
+            onReady(
+                android.content.Intent(android.content.Intent.ACTION_SEND_MULTIPLE)
+                    .setType("*/*")
+                    .putParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM, ArrayList(uris))
+                    .putExtra(android.content.Intent.EXTRA_SUBJECT, "HouseAffairs data, $today")
+                    .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION),
+            )
+        }
+    }
+
+    /**
+     * Deletes the account: entries and membership first (the rules need a signed-in member for
+     * that), then the sign-in. Runs outside this screen's scope, which closes once membership goes.
+     */
+    fun deleteAccount(activity: android.content.Context, keepShared: Boolean, onError: (String) -> Unit) {
+        val hid = (session.state.value as? SessionState.Ready)?.household?.id ?: return
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main).launch {
+            runCatching {
+                households.eraseMe(hid, keepShared)
+                auth.deleteAccount(activity)
+            }.onFailure { onError((it as? IllegalStateException)?.message ?: "Your account couldn't be deleted. Check your connection and try again.") }
+        }
+    }
+
+    /**
+     * Switches to a demo home full of sample data, to learn the app without touching the family's.
+     * Runs outside this screen's scope: signing out closes Settings mid-way.
+     */
+    fun tryDemo(onError: (String) -> Unit) {
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main).launch {
+            runCatching {
+                auth.signOut()
+                auth.signInDemo().getOrThrow()
+                val home = households.createHousehold("Demo home", "INR")
+                demo.seed(home, checkNotNull(com.google.firebase.auth.FirebaseAuth.getInstance().currentUser).uid)
+                settings.restartTour()
+            }.onFailure { onError("The demo couldn't start. Sign in again and try from the sign-in screen.") }
+        }
+    }
+
     fun showTour() {
         viewModelScope.launch { settings.restartTour() }
     }
@@ -214,3 +289,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 }
+
+/** Categories offered for Privacy before the family uses them: kitchen aisles, then supply types. */
+private val USUAL_PRIVATE = com.houseaffairs.app.core.data.Aisle.FOOD.map { it.label } + com.houseaffairs.app.core.data.SUPPLY_TYPES
