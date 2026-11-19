@@ -31,5 +31,6 @@ DerivedData/
 /iosApp/iosApp/Info.plist
 dist/
 iosApp/build/
+iosApp/build-device/
 /data/build/
 /ui/build/
