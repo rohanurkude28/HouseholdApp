@@ -318,7 +318,7 @@ fun categoryStyle(category: String): Pair<String, Color> {
 private val CATEGORY_STYLES: Map<String, Pair<String, Color>> = mapOf(
     // Supplies
     "Cosmetics & skincare" to ("💄" to Color(0xFFE07AA8)), "Toiletries" to ("🧴" to Color(0xFF4C9BE0)),
-    "Cleaning" to ("🧽" to Color(0xFF26A69A)), "Laundry" to ("🧺" to Color(0xFF5AB4C8)), "Kitchen" to ("🍳" to Color(0xFFD39B32)),
+    "Cleaning" to ("🧽" to Color(0xFF26A69A)), "Laundry" to ("🧺" to Color(0xFF5AB4C8)), "Kitchen" to ("🍲" to Color(0xFFD39B32)),
     "Batteries" to ("🔋" to Color(0xFF4CAF50)), "Bulbs" to ("💡" to Color(0xFFE2BE1E)), "Stationery" to ("✏️" to Color(0xFF6F7FE0)),
     "First aid" to ("🩹" to Color(0xFFE8664F)),
     // Medicines, by what they're for

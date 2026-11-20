@@ -181,7 +181,7 @@ enum class EntryType(
     SHOPPING(
         "To buy", "Add to shopping list", Icons.Outlined.ShoppingCart, { it.stock }, AppModule.STOCK, "shopping", "title",
         listOf(
-            TextSpec("title", "Item", "Milk, eggs…", required = true),
+            TextSpec("title", "Item", "Milk, bread…", required = true),
             QuantitySpec(units = listOf("pcs", "g", "kg", "ml", "L", "pack")),
             TextSpec("store", "Buy at", essential = false),
             // Guessed from the name when left empty; only needed to correct a guess.
@@ -281,7 +281,7 @@ enum class EntryType(
             ChoiceSpec("rating", "How is it?", listOf("❤️ Love it", "👍 Good", "👎 Not great", "Want to try")),
             // Guessed from the name while typing (placeKindOf); only needed when the name doesn't say.
             ChoiceSpec("kind", "Kind", PLACE_KINDS, essential = false),
-            TextSpec("goodFor", "Things to try or buy there", "Butter chicken, fresh paneer…", multiline = true, essential = false),
+            TextSpec("goodFor", "Things to try or buy there", "Masala dosa, fresh paneer…", multiline = true, essential = false),
             TextSpec("phone", "Phone", essential = false),
             TextSpec("mapLink", "Google Maps link", isLink = true, essential = false),
             TextSpec("note", "Note", essential = false),

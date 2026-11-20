@@ -491,7 +491,7 @@ private fun AddSheet(s: SessionState.Ready, members: List<MemberInfo>, actions: 
     }
 }
 
-private val EXAMPLES = listOf("450 groceries DMart", "need milk and eggs", "call mom at 5 pm", "Riya birthday 12 Dec", "bought 1kg paneer", "crocin for Riya")
+private val EXAMPLES = listOf("450 groceries DMart", "need milk and curd", "call mom at 5 pm", "Riya birthday 12 Dec", "bought 1kg paneer", "crocin for Riya")
 
 private fun opt(key: String, emoji: String, label: String, starts: String) = com.houseaffairs.app.feature.add.MenuOption(key, emoji, label) to starts
 

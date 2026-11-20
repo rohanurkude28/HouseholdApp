@@ -56,9 +56,9 @@ class DemoSeeder @Inject constructor(
         ).forEach { (title, qty, expiry) ->
             save(EntryType.GROCERY, mapOf("title" to title, "quantity" to qty, "expiry" to expiry, "keptAt" to if (title == "Jeera") "Spice box" else null))
         }
-        listOf("Eggs", "Bread", "Coriander", "Ghee").forEach { save(EntryType.SHOPPING, mapOf("title" to it)) }
+        listOf("Paneer", "Bread", "Coriander", "Ghee").forEach { save(EntryType.SHOPPING, mapOf("title" to it)) }
         // A few everyday dishes as the demo family's own recipes, so Cook has something to show.
-        SAMPLE_RECIPES.filter { it.title in setOf("Paneer tikka", "Matar paneer", "Dal tadka", "Curd rice", "Kheer", "Chicken curry", "Veg pulao", "Aloo paratha") }.forEach { r ->
+        SAMPLE_RECIPES.filter { it.title in setOf("Paneer tikka", "Matar paneer", "Dal tadka", "Curd rice", "Kheer", "Palak paneer", "Veg pulao", "Aloo paratha") }.forEach { r ->
             save(
                 EntryType.RECIPE,
                 mapOf(

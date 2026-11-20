@@ -28,7 +28,7 @@ private val STEPS = listOf(
     TourStep("quickadd", "➕", "Just say it", "Tap + and type or speak one line. The app works out what it is and fills the form for you.", "450 groceries DMart · milk over · call mom at 5 pm"),
     TourStep("budget", "💰", "Budget and spending", "Set a monthly budget with your own categories, like cook, maid or insurance. Every expense shows what's left.", "paid cook 6000 cash", TourAction.OPEN_MONEY, AppModule.MONEY),
     TourStep("gullak", "🐷", "Gullak and dreams", "Money left at the end of the month goes to the gullak. Save it toward a dream, like a trip or a new car.", "save 5000 for Bali", module = AppModule.MONEY),
-    TourStep("kitchen", "🍳", "Kitchen", "Pantry, shopping list and recipes in one place. Cooking a dish takes it out of the pantry, and ideas only show dishes you can make.", "made dal for 4", TourAction.OPEN_KITCHEN, AppModule.STOCK),
+    TourStep("kitchen", "🍲", "Kitchen", "Pantry, shopping list and recipes in one place. Cooking a dish takes it out of the pantry, and ideas only show dishes you can make.", "made dal for 4", TourAction.OPEN_KITCHEN, AppModule.STOCK),
     TourStep("medicines", "💊", "Medicines", "Know what's at home, who it's for and when it expires. Say how someone feels to see what helps.", "Riya has a cold", module = AppModule.MEDICINE),
     TourStep("plans", "✅", "Tasks and events", "Tasks can repeat, take turns and ring at the time you pick. Birthdays remind you a day before.", "call mom at 5:30 pm", module = AppModule.PLANS),
     TourStep("lists", "🎬", "Family lists", "Movies, books, music, trips and wishes, with covers and ratings looked up for you.", "want to read Atomic Habits", module = AppModule.PLANS),
