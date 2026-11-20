@@ -42,7 +42,7 @@ val ADD_GROUPS: List<Pair<String, List<AddOption>>> = listOf(
         kind(EntryType.SHOPPING, "🛒", "Need to buy"),
         kind(EntryType.GROCERY, "🥫", "Pantry"),
         kind(EntryType.HOUSEHOLD, "🧴", "Supplies"),
-        kind(EntryType.RECIPE, "🍳", "Recipe"),
+        kind(EntryType.RECIPE, "🍲", "Recipe"),
     ),
     "Plans" to listOf(
         kind(EntryType.TASK, "✅", "To do"),

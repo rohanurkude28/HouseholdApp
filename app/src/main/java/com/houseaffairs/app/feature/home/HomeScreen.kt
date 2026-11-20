@@ -465,7 +465,7 @@ private fun AndroidDeckCard(
     }
     val (emoji, accent) = when (card.kind) {
         CardKind.THING -> "" to areaAccent(area ?: Area.PLANS)
-        CardKind.MEAL -> "🍳" to colors.stock
+        CardKind.MEAL -> "🍲" to colors.stock
         CardKind.EAT_OUT -> "🍽️" to colors.plans
         CardKind.SHOPPING -> "🛒" to colors.stock
         CardKind.SPENDS -> "💸" to colors.money

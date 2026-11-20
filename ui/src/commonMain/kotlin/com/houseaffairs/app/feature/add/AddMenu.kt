@@ -36,7 +36,7 @@ import com.houseaffairs.app.core.data.USUAL_COUNT
 data class MenuOption(val key: String, val emoji: String, val label: String)
 
 /** Typed together, these become several entries at once (the parser splits them). */
-val SEVERAL_EXAMPLES = listOf("200 uber and 500 groceries", "add milk, eggs and bread to shopping list")
+val SEVERAL_EXAMPLES = listOf("200 uber and 500 groceries", "add milk, curd and bread to shopping list")
 
 /**
  * The add menu before anything is typed, the same on both phones: big tiles for what this person

@@ -66,7 +66,7 @@ fun mealAt(hour: Int): String? = when (hour) {
 }
 
 fun mealEmoji(group: String): String = when (group) {
-    "Breakfast" -> "🍳"
+    "Breakfast" -> "🥣"
     "Lunch" -> "🍛"
     "Dinner" -> "🌙"
     "Snacks" -> "🥨"

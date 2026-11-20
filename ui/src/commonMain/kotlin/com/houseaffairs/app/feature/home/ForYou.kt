@@ -313,7 +313,7 @@ private fun WatchRow(watch: List<WatchItem>, why: Map<String, String>, actions: 
 private fun ShoppingCard(items: List<ShoppingItem>, actions: ForYouActions) {
     HaCard(Modifier.fillMaxWidth().padding(horizontal = 20.dp).animateContentSize()) {
         if (items.isEmpty()) {
-            EmptyHint("Your list is empty.", "Say “add milk, eggs and bread to shopping”", onClick = null)
+            EmptyHint("Your list is empty.", "Say “add milk, curd and bread to shopping”", onClick = null)
         } else {
             // Grouped by aisle, each with its own colour, so the list reads like the shop.
             items.groupBy { it.aisle }.entries.sortedBy { it.key.ordinal }.forEachIndexed { gi, (aisle, list) ->

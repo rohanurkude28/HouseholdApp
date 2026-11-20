@@ -59,7 +59,7 @@ object DemoHome {
             save("stock", "GROCERY", mapOf("title" to title, "expiry" to expires?.let { day(it) }, "status" to "IN_STOCK", "level" to 100))
         }
         save("medicines", "MEDICINE", mapOf("title" to "Cough syrup", "usedFor" to listOf("Cold & cough"), "expiry" to day(20), "status" to "IN_STOCK", "level" to 100))
-        listOf("Eggs", "Bread", "Coriander", "Ghee").forEach { save("shopping", "SHOPPING", mapOf("title" to it, "done" to false)) }
+        listOf("Paneer", "Bread", "Coriander", "Ghee").forEach { save("shopping", "SHOPPING", mapOf("title" to it, "done" to false)) }
         save("tasks", "TASK", mapOf("title" to "Pay school fees", "due" to day(0), "assignee" to uid, "done" to false, "assignedBy" to uid))
         save("tasks", "TASK", mapOf("title" to "Water the plants", "due" to day(1), "repeat" to "Weekly", "assignee" to uid, "done" to false, "assignedBy" to uid))
         save("tasks", "TASK", mapOf("title" to "Book car service", "due" to day(3), "done" to false, "assignedBy" to uid))

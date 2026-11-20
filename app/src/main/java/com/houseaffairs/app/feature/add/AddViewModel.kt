@@ -83,7 +83,7 @@ private val EXAMPLES = listOf(
     "450 groceries DMart", "Netflix 649 monthly", "milk over", "crocin for Riya expires March",
     "what can I cook?", "move 2000 from gifts to travel", "can we afford Bali trip?", "dream Bali trip 150000 by March",
     "got Amazon gift card 2000 for gifting", "gold necklace is in the bank locker", "where are the car keys?",
-    "walked 30 min", "I'm feeling feverish", "going to Indiranagar", "what's near me?", "AAA battery 5 units expiry 2028", "add milk, eggs and bread to shopping list", "delete the Uber expense",
+    "walked 30 min", "I'm feeling feverish", "going to Indiranagar", "what's near me?", "AAA battery 5 units expiry 2028", "add milk, curd and bread to shopping list", "delete the Uber expense",
     "Riya birthday 12 Dec", "pay rent tomorrow", "add Dune 2 to watch list",
 )
 

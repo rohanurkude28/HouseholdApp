@@ -183,7 +183,7 @@ internal fun SearchSheet(all: List<Found>, onOpen: (Found) -> Unit, onDone: () -
     val found = remember(query, all) { searchFound(query, all) }
     ModalBottomSheet(onDismissRequest = onDone, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         LazyColumn(Modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            item { OutlinedTextField(query, { query = it }, placeholder = { Text("Find anything: eggs, crocin, keys, DMart…") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
+            item { OutlinedTextField(query, { query = it }, placeholder = { Text("Find anything: milk, crocin, keys, DMart…") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
             if (query.length > 1 && found.isEmpty()) item { Text("Nothing saved about “$query” yet.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             items(found, key = { it.collection + it.entry.id }) { f ->
                 Card(Modifier.fillMaxWidth().clickable { onOpen(f) }, shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLowest)) {
